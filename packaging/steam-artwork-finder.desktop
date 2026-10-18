@@ -1,0 +1,8 @@
+[Desktop Entry]
+Type=Application
+Name=Steam Artwork Finder
+Comment=Artwork and icons for your non-Steam games
+Exec=steam-artwork-finder
+Icon=applications-games
+Categories=Game;Utility;
+Terminal=false
