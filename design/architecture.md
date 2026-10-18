@@ -18,7 +18,8 @@ Status: draft, written from the project brief and the current Qt code (`steam_ar
 - Desktop app, Python + PySide6 (Qt Widgets). Linux first (native and Flatpak Steam), Windows later.
 - Artwork comes from SteamGridDB, which needs a free personal API key.
 - Steam reads artwork at start-up. Icons live in `shortcuts.vdf`, which Steam rewrites on exit, so icon changes while Steam is running can be lost.
-- **Assumption:** some users run this on a Steam Deck in desktop mode (1280×800, touch plus trackpad), so the main window must work at that size.
+- Steam Deck desktop mode is a target (confirmed): the main window must work at 1280×800 with touch-sized controls.
+- Public release on GitHub and Flathub is planned (confirmed), so first-run guidance assumes a stranger.
 
 **Ethical stance (defaults to maximum user protection).**
 - Nothing is written to Steam's files without an action the user took.
@@ -61,10 +62,15 @@ Window
 │   ├── Search box
 │   ├── Filter: All · Needs artwork · Check match
 │   └── Game rows: icon, name, coverage dots (5), match state
-└── Game pane (right)
+├── Start page (right, when "All games" is selected; the default view)
+│   ├── What was found: Steam folder, account, number of non-Steam games
+│   ├── Coverage counts per piece ("Covers 9 of 18")
+│   └── Cover wall: every game as a cover; blank ones dashed, with the name
+└── Game page (right, when a game is selected)
     ├── Title row: game name, "Matched to: <SGDB title, year> · Not this game?"
-    ├── Steam preview (all five slots in their real proportions, each clickable)
-    └── Option tray (appears under the preview when a slot is chosen)
+    ├── Five artwork rows (Cover, Wide cover, Banner, Logo, Icon), each:
+    │   name + where Steam shows it + size | art in use | strip of options + "See all"
+    └── Option tray (opens beside the rows from "See all" or the art in use)
         ├── Slot tabs: Grid · Wide · Hero · Logo · Icon
         ├── Filters: style (official, alternate, minimal…), animated off by default
         ├── Thumbnails in the slot's aspect ratio, current one marked
@@ -84,7 +90,7 @@ Window
 | SGDB game id / match | "Matched to …" |
 | `shortcuts.vdf` | "Steam's shortcut list" (file name only in the backup dialog) |
 
-**Assumption:** "Cover / Wide cover / Banner" reads better than SteamGridDB's "Grid / Wide Grid / Hero" for people who never used SGDB. To confirm with the user, since the original brief used the SGDB names.
+Confirmed by the user (2026-10-18): the UI says "Cover / Wide cover / Banner / Logo / Icon", never SteamGridDB's "Grid / Wide Grid / Hero".
 
 ---
 
@@ -95,7 +101,7 @@ Window
 1. **Find Steam.** Silent. Check native (`~/.local/share/Steam`, `~/.steam/steam`) and Flatpak (`~/.var/app/com.valvesoftware.Steam/...`). If several installs or accounts exist, pick the most recently used and show the switcher. Only if nothing is found does the user see a screen, offering "Choose Steam folder…".
 2. **Show the library immediately**, with current coverage. The user sees value (their games, recognised) before being asked for anything.
 3. **Primary action asks for the key only when needed.** Clicking "Get artwork for 9 games" with no key opens a short sheet: why a key is needed, a button that opens the SteamGridDB API page, a paste field that validates as you paste. Then the fetch continues without a second click.
-4. **Fetch.** Progress in the header ("Getting artwork… 4 of 9"), tiles fill in live in the library list and preview. Cancel is always available and keeps what's finished.
+4. **Fetch.** Progress in the header ("Getting artwork… 4 of 9"), tiles fill in live in the game list, start page and artwork rows. Cancel is always available and keeps what's finished.
 5. **Finish summary** in the notice strip: "9 games updated. 2 need a look." The "Check match" filter is selected automatically if anything is uncertain.
 6. **Apply in Steam.** If Steam is running: "Restart Steam to see the new artwork" with a "Restart Steam" button (only if we can do it safely; otherwise the instruction).
 
@@ -105,9 +111,9 @@ Title row → "Not this game?" → search popover pre-filled with the shortcut n
 
 ### 4.3 Swap one image
 
-Click a slot in the preview → option tray opens under the preview on that slot's tab → hovering or arrow-keying a thumbnail previews it live in the Steam preview above → "Use this" (or double-click / Enter) saves it → toast with Undo. The tray stays open so the user can go to the next slot.
+Each artwork row shows its first six options right beside the art in use. Hovering one previews it in the row; clicking uses it at once → toast with Undo. For more choice, "See all 10" (or clicking the art in use) opens the option tray as a column to the right (an overlay under 1180px wide) with style filters, where hover previews in the row and "Use this" saves.
 
-Why in place instead of the current modal picker: the user judges art by how it sits next to the other four pieces (does the logo read on this banner?), and a modal hides that context.
+Why rows with strips (round 2, user feedback): the round-1 Steam-page imitation hid which box was which piece and hid that each piece has many options. Naming every piece, saying where Steam shows it, and keeping its alternatives visible makes both obvious. The logo row keeps a "Show it on the banner" toggle so logo and banner can still be judged together. Options compared on the Intent wireframe board: design/wireframes-round2-thumbnails.html.
 
 ### 4.4 Restore
 
@@ -119,20 +125,18 @@ Overflow → "Restore backup" → list of dated backups of Steam's shortcut list
 
 **Game pane priority (top to bottom = order of importance):**
 1. Which game and which SteamGridDB title it matched. A wrong match makes everything below wrong, so it comes first.
-2. The Steam preview. This is the product; it gets the most space.
-3. The option tray, only when invoked.
+2. The five artwork rows, each named, with the art in use and its options side by side.
+3. The option tray, only when invoked, as a column beside the rows.
 
-**Steam preview composition.** Mirrors Steam's library page so users recognise it:
-- Banner across the top with the Logo placed over it (bottom-left, as Steam does).
-- Below: Cover (portrait) on the left, Wide cover and Icon to its right.
-- Empty slots show a dashed outline with "Add cover" etc., never a grey void.
-- Each slot shows its state on hover/focus: source (SteamGridDB author), size, and "Change".
+**Start page.** Lands here after launch. Says what the app found on its own, how much art is missing, and shows the library as a cover wall (like Steam's library home). Dashed blank tiles make the gaps the first thing seen.
+
+**Artwork row.** Name (plus "Missing" when empty), one line on where Steam shows it, size; then the art in use at its real shape with "In use · by author"; then "10 options on SteamGridDB", "See all", and six options at the true aspect ratio, the one in use badged. Empty art shows a dashed outline, never a grey void.
 
 **Library row.** Icon (or placeholder initial), name, five coverage dots in a fixed order (cover, wide, banner, logo, icon). A row with an uncertain match gets a "Check" tag. Rows are the only list; no card grid of games, because names need to be scannable and lists of 200 must stay fast.
 
 **Primary action placement.** Header, right side, the only filled button in the window when idle. It disappears (replaced by "All games have artwork") when coverage is complete, so it never asks for a no-op.
 
-**Qt realism.** Every region maps to stock Qt Widgets: `QSplitter` (panes), `QListView` + custom delegate (library rows), a custom `QWidget` composing `QLabel`s/`QPainter` (Steam preview), `QListView` in IconMode (option tray), `QToolButton` menus (overflow), a frameless notice `QFrame`. No web views needed.
+**Qt realism.** Every region maps to stock Qt Widgets: `QSplitter` (panes), `QListView` + custom delegate (library rows), a `QWidget` per artwork row with a horizontal `QListView` strip, a `QListView` in IconMode for the start page wall, `QListView` in IconMode (option tray), `QToolButton` menus (overflow), a frameless notice `QFrame`. No web views needed.
 
 ---
 
@@ -168,15 +172,13 @@ Overflow → "Restore backup" → list of dated backups of Steam's shortcut list
 
 ## 8. Accessibility
 
-- Full keyboard path: library (arrows) → Tab to preview slots → Enter opens tray → arrows through options → Enter applies → Esc closes.
+- Full keyboard path: library (arrows) → Tab through each row's art and options → Enter opens tray → arrows through options → Enter applies → Esc closes.
 - Coverage dots are paired with text for screen readers ("3 of 5 artwork") and never rely on colour alone.
 - Focus is visible on every slot and thumbnail. Hit targets at least 32px for Steam Deck touch.
 - Respect system font scaling; layout must hold at 125% text on 1280×800.
 
 ---
 
-## 9. Open questions for the user
+## 9. Open questions
 
-1. Steam Deck desktop mode: a real target, or desktop PCs only?
-2. Words: "Cover / Wide cover / Banner" or keep SteamGridDB's "Grid / Wide Grid / Hero"?
-3. After a bulk fetch, should uncertain matches be downloaded and flagged (current plan), or held back until the user confirms them?
+1. After a bulk fetch, should uncertain matches be downloaded and flagged (what the mockup does), or held back until the user confirms them?

@@ -62,6 +62,30 @@ def current_icon(shortcut: Shortcut, grid_dir: Path) -> Path | None:
     return existing(grid_dir, shortcut.appid, SLOTS["icon"])
 
 
+@dataclass
+class Change:
+    """Everything needed to undo one artwork change."""
+
+    slot: Slot
+    shortcut: Shortcut
+    new_file: Path | None
+    moved: list[tuple[Path, Path]]  # (original path, where it was moved to)
+    old_icon: str | None = None
+
+
+def _set_aside(grid_dir: Path, stem: str) -> list[tuple[Path, Path]]:
+    moved = []
+    old_dir = grid_dir / ".replaced"
+    for e in IMAGE_EXTS:
+        old = grid_dir / (stem + e)
+        if old.exists():
+            old_dir.mkdir(exist_ok=True)
+            dest = old_dir / f"{stem}.{time.strftime('%Y%m%d-%H%M%S')}-{time.monotonic_ns() % 10**6}{e}"
+            old.replace(dest)
+            moved.append((old, dest))
+    return moved
+
+
 def save_asset(
     grid_dir: Path,
     shortcut: Shortcut,
@@ -69,25 +93,46 @@ def save_asset(
     data: bytes,
     mime: str,
     shortcuts_file: ShortcutsFile | None = None,
-) -> Path:
+) -> Change:
     """Write artwork into the grid folder; old files go to grid/.replaced/."""
     grid_dir.mkdir(parents=True, exist_ok=True)
     ext = MIME_EXT.get(mime) or _sniff_ext(data)
     stem = f"{shortcut.appid}{slot.suffix}"
-    old_dir = grid_dir / ".replaced"
-    for e in IMAGE_EXTS:
-        old = grid_dir / (stem + e)
-        if old.exists():
-            old_dir.mkdir(exist_ok=True)
-            old.replace(old_dir / f"{stem}.{time.strftime('%Y%m%d-%H%M%S')}{e}")
+    moved = _set_aside(grid_dir, stem)
     dest = grid_dir / (stem + ext)
     tmp = dest.with_name(dest.name + ".part")
     tmp.write_bytes(data)
     tmp.replace(dest)
+    change = Change(slot, shortcut, dest, moved)
     if slot.key == "icon" and shortcuts_file is not None:
+        change.old_icon = shortcut.icon
         shortcut.set_icon(str(dest))
         shortcuts_file.save()
-    return dest
+    return change
+
+
+def remove_asset(
+    grid_dir: Path, shortcut: Shortcut, slot: Slot, shortcuts_file: ShortcutsFile | None = None
+) -> Change:
+    """Take a piece of artwork away (kept in grid/.replaced/ for undo)."""
+    moved = _set_aside(grid_dir, f"{shortcut.appid}{slot.suffix}")
+    change = Change(slot, shortcut, None, moved)
+    if slot.key == "icon" and shortcuts_file is not None and shortcut.icon:
+        change.old_icon = shortcut.icon
+        shortcut.set_icon("")
+        shortcuts_file.save()
+    return change
+
+
+def undo(change: Change, shortcuts_file: ShortcutsFile | None = None):
+    if change.new_file is not None and change.new_file.exists():
+        change.new_file.unlink()
+    for original, aside in change.moved:
+        if aside.exists():
+            aside.replace(original)
+    if change.old_icon is not None and shortcuts_file is not None:
+        change.shortcut.set_icon(change.old_icon)
+        shortcuts_file.save()
 
 
 def _sniff_ext(data: bytes) -> str:

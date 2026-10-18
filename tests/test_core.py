@@ -55,7 +55,7 @@ def test_icon_write_backs_up_and_keeps_everything_else(steam_root, sample_bytes)
     sf = ShortcutsFile(path)
     grid = path.parent / "grid"
     sc = sf.shortcuts[0]
-    dest = save_asset(grid, sc, SLOTS["icon"], PNG, "image/png", sf)
+    dest = save_asset(grid, sc, SLOTS["icon"], PNG, "image/png", sf).new_file
 
     backups = list((path.parent / "shortcuts-backups").glob("*.vdf"))
     assert len(backups) == 1 and backups[0].read_bytes() == sample_bytes
@@ -78,8 +78,8 @@ def test_artwork_file_names(steam_root):
     expected = {"grid": f"{sc.appid}p.png", "wide": f"{sc.appid}.png",
                 "hero": f"{sc.appid}_hero.png", "logo": f"{sc.appid}_logo.png"}
     for key, name in expected.items():
-        assert save_asset(grid, sc, SLOTS[key], PNG, "image/png").name == name
-    jpg = save_asset(grid, sc, SLOTS["grid"], b"\xff\xd8\xff" + b"0" * 10, "")
+        assert save_asset(grid, sc, SLOTS[key], PNG, "image/png").new_file.name == name
+    jpg = save_asset(grid, sc, SLOTS["grid"], b"\xff\xd8\xff" + b"0" * 10, "").new_file
     assert jpg.name == f"{sc.appid}p.jpg"
     assert existing(grid, sc.appid, SLOTS["grid"]) == jpg
     assert not (grid / f"{sc.appid}p.png").exists()
@@ -100,3 +100,39 @@ def test_backups_are_capped(steam_root):
     for _ in range(15):
         sf.backup()
     assert len(list(sf.backup_dir.glob("*.vdf"))) == 10
+
+
+def test_undo_restores_previous_art_and_icon(steam_root):
+    from steam_artwork_finder.artwork import remove_asset, undo
+
+    path = steam_root / "userdata/12345678/config/shortcuts.vdf"
+    sf = ShortcutsFile(path)
+    sc = sf.shortcuts[1]
+    grid = path.parent / "grid"
+    first = save_asset(grid, sc, SLOTS["hero"], PNG, "image/png").new_file
+    change = save_asset(grid, sc, SLOTS["hero"], b"\xff\xd8\xff" + b"1" * 10, "image/jpeg")
+    assert existing(grid, sc.appid, SLOTS["hero"]).suffix == ".jpg"
+    undo(change, sf)
+    assert existing(grid, sc.appid, SLOTS["hero"]) == first and first.read_bytes() == PNG
+
+    icon_change = save_asset(grid, sc, SLOTS["icon"], PNG, "image/png", sf)
+    undo(icon_change, sf)
+    assert ShortcutsFile(path).shortcuts[1].icon == "/old/icon.png"
+
+    gone = remove_asset(grid, sc, SLOTS["hero"], sf)
+    assert existing(grid, sc.appid, SLOTS["hero"]) is None
+    undo(gone, sf)
+    assert existing(grid, sc.appid, SLOTS["hero"]) == first
+
+
+def test_restore_backup(steam_root, sample_bytes):
+    path = steam_root / "userdata/12345678/config/shortcuts.vdf"
+    sf = ShortcutsFile(path)
+    sf.shortcuts[0].set_icon("/x.png")
+    sf.save()
+    (backup, count), = sf.backups()
+    assert count == 3
+    sf.restore(backup)
+    assert path.read_bytes() == sample_bytes
+    assert sf.shortcuts[0].icon == ""
+    assert len(sf.backups()) == 2

@@ -40,7 +40,7 @@ Zero configuration: no parser rules, no path hunting, no account. Reads `shortcu
 
 ## Brand Commitments
 
-Working name "Steam Artwork for Non-Steam Games" (`APP_NAME`). No logo or visual identity exists yet. Visual style should match the Steam desktop client so the app feels native next to it (confirmed by user). Not affiliated with Valve or SteamGridDB: borrow Steam's visual language (dark blue-grey surfaces, library layout), never its logo, wordmark or anything implying an official Valve product.
+Working name "Steam Artwork for Non-Steam Games" (set by the user, "for now"; code still says `APP_NAME = "Steam Artwork Finder"` until the app thread renames it). No logo or visual identity exists yet. Visual style should match the Steam desktop client so the app feels native next to it (confirmed by user). Not affiliated with Valve or SteamGridDB: borrow Steam's visual language (dark blue-grey surfaces, library layout), never its logo, wordmark or anything implying an official Valve product.
 
 ## Evidence on Hand
 

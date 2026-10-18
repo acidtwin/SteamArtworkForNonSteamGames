@@ -1,0 +1,1043 @@
+<title>Steam Artwork for Non-Steam Games</title>
+<meta name="claude:viewport-fit-sides" content="cover">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Hanken+Grotesk:wght@400;500;600;700;800&family=Bebas+Neue&family=Archivo+Black&family=Cinzel:wght@700&display=swap">
+<style>
+/* Layout: desktop app window. Header bar, then a split: game list left, Steam-style game preview right, option tray as a third column when open. */
+:root {
+  color-scheme: dark;
+  --ground: #171a21;        /* Steam top bar / window ground */
+  --panel: #1e2329;         /* library list */
+  --stage: #1b2838;         /* game pane */
+  --raised: #2a3442;        /* hover, inputs, tray */
+  --line: #313b48;
+  --text: #dcdedf;
+  --text-2: #a3adb8;
+  --text-3: #8a95a2;
+  --blue: #1a9fff;
+  --blue-ink: #66c0f4;
+  --select: #3d4c5e;
+  --go: #3f7e1d;            /* the one primary action */
+  --go-hover: #4b9123;
+  --go-ink: #ffffff;
+  --warn: #e3b341;
+  --warn-ground: #3a3220;
+  --bad: #ef7b6c;
+
+  --ui: "Hanken Grotesk", "Segoe UI", "Noto Sans", "Helvetica Neue", Arial, sans-serif;
+  --fs-xs: 0.75rem;   /* 12 */
+  --fs-sm: 0.8125rem; /* 13 */
+  --fs-md: 0.9375rem; /* 15 */
+  --fs-lg: 1.125rem;  /* 18 */
+  --fs-xl: 1.625rem;  /* 26 */
+  --r: 3px;
+  --hit: 40px;
+  --action: #1474c8;        /* confirm in tray and dialogs */
+  --action-hover: #1a84dc;
+}
+html, body { height: 100%; }
+body {
+  background: var(--ground);
+  color: var(--text);
+  font-family: var(--ui);
+  font-size: var(--fs-md);
+  line-height: 1.4;
+  -webkit-font-smoothing: antialiased;
+}
+::selection { background: var(--blue); color: #fff; }
+* { box-sizing: border-box; }
+button, input { font: inherit; color: inherit; }
+button { cursor: pointer; }
+:focus-visible { outline: 2px solid var(--blue); outline-offset: 2px; }
+* { scrollbar-width: thin; scrollbar-color: #3d4756 transparent; }
+::-webkit-scrollbar { width: 10px; height: 10px; }
+::-webkit-scrollbar-thumb { background: #3d4756; border-radius: 6px; border: 2px solid transparent; background-clip: padding-box; }
+::-webkit-scrollbar-track { background: transparent; }
+svg.i { width: 18px; height: 18px; flex: none; stroke: currentColor; fill: none; stroke-width: 1.8; stroke-linecap: round; stroke-linejoin: round; }
+.sr { position: absolute; width: 1px; height: 1px; overflow: hidden; clip: rect(0 0 0 0); white-space: nowrap; }
+
+/* ---------- window ---------- */
+.app { height: 100%; display: flex; flex-direction: column; min-height: 0; }
+.titlebar {
+  height: 30px; flex: none; display: flex; align-items: center; justify-content: space-between;
+  padding-inline: max(12px, env(safe-area-inset-left, 0px)) max(8px, env(safe-area-inset-right, 0px));
+  background: #10131a; color: var(--text-3); font-size: var(--fs-xs); letter-spacing: .02em;
+}
+.titlebar .wc { display: flex; gap: 14px; }
+.titlebar .wc span { width: 11px; height: 11px; border-radius: 50%; background: #2c3440; }
+
+.header {
+  flex: none; display: flex; align-items: center; gap: 16px; flex-wrap: wrap;
+  padding-block: 10px;
+  padding-left: max(16px, env(safe-area-inset-left, 0px));
+  padding-right: max(16px, env(safe-area-inset-right, 0px));
+  background: var(--ground); border-bottom: 1px solid #0b0d11;
+}
+.brand { display: flex; align-items: center; gap: 10px; font-weight: 700; letter-spacing: .01em; }
+.brand-mark { width: 26px; height: 26px; border-radius: 4px; background: var(--raised); display: grid; place-items: center; color: var(--blue-ink); }
+.account {
+  display: flex; align-items: center; gap: 8px; height: var(--hit); padding: 0 10px 0 4px;
+  border-radius: var(--r); background: transparent; border: 0; color: var(--text-2); font-size: var(--fs-sm);
+}
+.account:hover { background: var(--raised); color: var(--text); }
+.avatar { width: 28px; height: 28px; border-radius: 3px; background: linear-gradient(135deg, #5a6b80, #2f3a48); display: grid; place-items: center; font-weight: 700; color: #e8edf2; font-size: var(--fs-sm); }
+.summary { color: var(--text-2); font-size: var(--fs-sm); font-variant-numeric: tabular-nums; }
+.summary b { color: var(--text); font-weight: 600; }
+.spacer { flex: 1; }
+
+.btn {
+  height: var(--hit); padding: 0 14px; border-radius: var(--r); border: 0;
+  display: inline-flex; align-items: center; gap: 8px; font-size: var(--fs-sm); font-weight: 600; white-space: nowrap;
+  background: var(--raised); color: var(--text);
+}
+.btn:hover { background: #354152; }
+.btn.go { background: var(--go); color: var(--go-ink); padding: 0 18px; font-size: var(--fs-md); }
+.btn.go:hover { background: var(--go-hover); }
+.btn.quiet { background: transparent; color: var(--blue-ink); padding: 0 8px; }
+.btn.quiet:hover { background: var(--raised); color: #9fd6fa; }
+.btn[disabled] { opacity: .45; cursor: default; }
+.iconbtn { width: var(--hit); height: var(--hit); border-radius: var(--r); border: 0; background: transparent; color: var(--text-2); display: grid; place-items: center; }
+.iconbtn:hover { background: var(--raised); color: var(--text); }
+.done-note { display: inline-flex; align-items: center; gap: 8px; color: var(--text-2); font-size: var(--fs-sm); }
+.done-note svg { color: #8bc34a; }
+
+.progress { display: flex; align-items: center; gap: 12px; font-size: var(--fs-sm); color: var(--text-2); font-variant-numeric: tabular-nums; }
+.bar { width: 180px; height: 6px; border-radius: 3px; background: #0f1217; overflow: hidden; }
+.bar i { display: block; height: 100%; background: var(--blue); width: 0; transition: width .3s ease-out; }
+
+.notice {
+  flex: none; display: flex; align-items: center; gap: 12px; flex-wrap: wrap;
+  padding-block: 8px;
+  padding-left: max(16px, env(safe-area-inset-left, 0px));
+  padding-right: max(16px, env(safe-area-inset-right, 0px));
+  background: var(--warn-ground); color: #f1e3bf; font-size: var(--fs-sm);
+}
+.notice svg { color: var(--warn); }
+.notice.info { background: #1f3346; color: #cfe6f7; }
+.notice.info svg { color: var(--blue-ink); }
+.notice p { margin: 0; flex: 1 1 320px; min-width: 0; }
+.notice .btn { height: 30px; background: rgba(255,255,255,.08); }
+.notice .btn:hover { background: rgba(255,255,255,.14); }
+
+/* ---------- body split ---------- */
+.main { flex: 1; min-height: 0; display: flex; }
+.library { width: 300px; flex: none; background: var(--panel); display: flex; flex-direction: column; min-height: 0; border-right: 1px solid #12151a; }
+.lib-tools { padding: 12px 12px 8px; display: flex; flex-direction: column; gap: 10px; }
+.search { position: relative; }
+.search svg { position: absolute; left: 10px; top: 50%; transform: translateY(-50%); color: var(--text-3); width: 16px; height: 16px; }
+.search input {
+  width: 100%; height: var(--hit); border-radius: var(--r); border: 1px solid transparent; background: #14181e;
+  padding: 0 10px 0 34px; font-size: var(--fs-sm);
+}
+.search input::placeholder { color: var(--text-3); }
+.search input:focus { outline: none; border-color: var(--blue); }
+.filters { display: flex; gap: 4px; }
+.filters button {
+  flex: 1; height: 36px; border: 0; border-radius: var(--r); background: transparent; color: var(--text-2);
+  font-size: var(--fs-xs); font-weight: 600; letter-spacing: .02em; display: inline-flex; align-items: center; justify-content: center; gap: 6px; white-space: nowrap;
+}
+.filters button:hover { background: var(--raised); color: var(--text); }
+.filters button[aria-pressed="true"] { background: var(--select); color: #fff; }
+.filters .n { font-variant-numeric: tabular-nums; color: inherit; opacity: .7; font-weight: 500; }
+
+.games { list-style: none; margin: 0; padding: 0 6px 12px; overflow-y: auto; flex: 1; min-height: 0; }
+.game {
+  width: 100%; display: grid; grid-template-columns: 32px minmax(0, 1fr); gap: 10px; align-items: center;
+  padding: 6px 8px; min-height: 48px; border: 0; border-radius: var(--r); background: transparent; text-align: left;
+}
+.game:hover { background: #2a313b; }
+.game[aria-current="true"] { background: var(--select); }
+.gicon { width: 32px; height: 32px; border-radius: 3px; overflow: hidden; background: #2b333e; display: grid; place-items: center; color: var(--text-3); font-weight: 700; font-size: var(--fs-sm); }
+.gicon svg { width: 100%; height: 100%; display: block; }
+.gname { font-size: var(--fs-sm); font-weight: 600; color: var(--text); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.game[aria-current="true"] .gname { color: #fff; }
+.gmeta { display: flex; align-items: center; gap: 8px; margin-top: 3px; font-size: var(--fs-xs); color: var(--text-3); }
+.dots { display: inline-flex; gap: 4px; }
+.dot { width: 7px; height: 7px; border-radius: 50%; border: 1.5px solid #5d6876; }
+.dot.on { background: var(--blue-ink); border-color: var(--blue-ink); }
+.tag { font-size: 11px; font-weight: 700; letter-spacing: .04em; text-transform: uppercase; padding: 1px 6px; border-radius: 2px; }
+.tag.check { background: var(--warn-ground); color: var(--warn); }
+.tag.miss { background: #3a2626; color: var(--bad); }
+.tag.busy { background: #1f3346; color: var(--blue-ink); }
+.empty-list { padding: 24px 16px; color: var(--text-3); font-size: var(--fs-sm); text-align: center; }
+
+/* ---------- detail ---------- */
+.detail { flex: 1; min-width: 0; display: flex; min-height: 0; background: var(--stage); }
+.stage { flex: 1; min-width: 0; overflow-y: auto; padding: 18px 24px 28px; container-type: inline-size; background: linear-gradient(180deg, #21324a 0, var(--stage) 460px); }
+.titlerow { display: flex; align-items: flex-start; gap: 16px; flex-wrap: wrap; }
+.titlerow h1 { margin: 0; font-size: var(--fs-xl); font-weight: 700; line-height: 1.15; letter-spacing: -.01em; text-wrap: balance; flex: 1 1 280px; min-width: 0; }
+.matchline { margin-top: 6px; display: flex; align-items: center; gap: 6px; flex-wrap: wrap; font-size: var(--fs-sm); color: var(--text-2); position: relative; }
+.matchline b { color: var(--text); font-weight: 600; }
+.matchline .btn.quiet { height: 28px; }
+.source { color: var(--text-3); }
+
+
+/* slot buttons share one language */
+.slot {
+  position: relative; display: block; padding: 0; border: 0; background: #11161d; overflow: hidden; border-radius: var(--r);
+  outline-offset: 3px;
+}
+.slot > svg { display: block; width: 100%; height: 100%; }
+.slot::after { content: ""; position: absolute; inset: 0; border-radius: inherit; box-shadow: inset 0 0 0 2px transparent; transition: box-shadow .15s ease-out; pointer-events: none; }
+.slot:hover::after { box-shadow: inset 0 0 0 2px rgba(102,192,244,.7); }
+.slot.active::after { box-shadow: inset 0 0 0 2px var(--blue); }
+.slot.empty { background: transparent; border: 1.5px dashed #4a5666; }
+.slot.empty:hover { border-color: var(--blue-ink); }
+.slot .add { position: absolute; inset: 0; display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 6px; color: var(--text-2); font-size: var(--fs-sm); font-weight: 600; text-align: center; padding: 8px; }
+.slot .add svg { color: var(--blue-ink); }
+.slot .chip {
+  position: absolute; right: 8px; top: 8px; display: inline-flex; align-items: center; gap: 6px;
+  padding: 4px 8px; border-radius: 2px; background: rgba(10,14,20,.82); color: #e6edf3; font-size: var(--fs-xs); font-weight: 600;
+  opacity: 0; transform: translateY(4px); transition: opacity .15s ease-out, transform .15s ease-out;
+}
+.slot:hover .chip, .slot:focus-visible .chip, .slot.active .chip { opacity: 1; transform: none; }
+.slot.previewing .chip { opacity: 1; transform: none; background: var(--blue); color: #fff; }
+
+/* start page */
+.home-title { margin: 0; font-size: var(--fs-xl); font-weight: 700; line-height: 1.15; letter-spacing: -.01em; }
+.found { margin-top: 6px; display: flex; align-items: center; gap: 8px; flex-wrap: wrap; color: var(--text-2); font-size: var(--fs-sm); }
+.found svg { color: #8bc34a; width: 16px; height: 16px; }
+.found code { font-family: ui-monospace, Menlo, monospace; font-size: var(--fs-xs); color: var(--text); }
+.counts { margin: 18px 0 22px; display: flex; flex-wrap: wrap; gap: 8px 28px; padding: 12px 16px; border-radius: 4px; background: rgba(8,12,18,.32); font-size: var(--fs-sm); color: var(--text-2); font-variant-numeric: tabular-nums; }
+.counts b { color: var(--text); font-weight: 700; }
+.counts .full b { color: #9ccc65; }
+.wall { display: grid; grid-template-columns: repeat(auto-fill, minmax(128px, 1fr)); gap: 20px 14px; }
+.tile { border: 0; background: transparent; padding: 0; text-align: left; display: flex; flex-direction: column; gap: 8px; min-width: 0; }
+.tile .tc { position: relative; aspect-ratio: 2 / 3; border-radius: var(--r); overflow: hidden; background: #11161d; transition: transform .18s ease-out, box-shadow .18s ease-out; }
+.tile .tc svg { display: block; width: 100%; height: 100%; }
+.tile:hover .tc { transform: translateY(-3px); box-shadow: 0 10px 22px rgba(0,0,0,.45); }
+.tile .tc.blank { background: #1d2733; border: 1.5px dashed #4a5666; display: flex; align-items: flex-end; padding: 12px; font-weight: 700; font-size: var(--fs-md); color: var(--text-2); line-height: 1.2; }
+.tile:hover .tc.blank { border-color: var(--blue-ink); }
+.tile .tc .tag { position: absolute; top: 8px; left: 8px; }
+.tile .tn { font-size: var(--fs-sm); font-weight: 600; color: var(--text); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.tile .gmeta { margin-top: -4px; }
+
+/* game page: one row per artwork piece */
+.pieces { margin-top: 14px; display: flex; flex-direction: column; }
+.piece { display: grid; grid-template-columns: 168px auto minmax(0, 1fr); gap: 22px; align-items: start; padding: 20px 0; border-top: 1px solid rgba(255,255,255,.07); }
+.piece-info h2 { margin: 0; font-size: var(--fs-lg); font-weight: 700; display: flex; align-items: center; gap: 8px; }
+.piece-info p { margin: 4px 0 0; font-size: var(--fs-sm); color: var(--text-2); }
+.piece-info .spec { margin-top: 6px; font-size: var(--fs-xs); color: var(--text-3); font-variant-numeric: tabular-nums; }
+.piece-info .ontoggle { margin-top: 10px; display: inline-flex; align-items: center; gap: 8px; min-height: 32px; font-size: var(--fs-xs); color: var(--text-2); cursor: pointer; }
+.piece-info .ontoggle input { accent-color: var(--blue); width: 16px; height: 16px; }
+.current { display: flex; flex-direction: column; gap: 6px; }
+.current .by { font-size: var(--fs-xs); color: var(--text-3); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.cur-cover { width: 124px; aspect-ratio: 2 / 3; }
+.cur-wide { width: 248px; aspect-ratio: 920 / 430; }
+.cur-banner { width: 300px; aspect-ratio: 1920 / 620; }
+.cur-logo { width: 260px; aspect-ratio: 800 / 310; background: repeating-conic-gradient(#273140 0 25%, #1f2833 0 50%) 0 0 / 16px 16px !important; }
+.cur-logo.onbanner { background: #11161d !important; }
+.cur-logo .bn { position: absolute; inset: 0; }
+.cur-logo .bn svg { width: 100%; height: 100%; display: block; }
+.cur-logo .lg { position: absolute; left: 6%; bottom: 10%; width: 62%; height: 70%; }
+.cur-logo .lg svg { width: 100%; height: 100%; display: block; }
+.cur-icon { width: 96px; aspect-ratio: 1; }
+.options-col { min-width: 0; }
+.strip-head { display: flex; align-items: center; gap: 8px; margin-bottom: 8px; font-size: var(--fs-xs); color: var(--text-3); }
+.strip-head b { color: var(--text-2); font-weight: 600; }
+.strip-head .btn.quiet { margin-left: auto; height: 32px; font-size: var(--fs-xs); }
+.strip { display: flex; gap: 10px; overflow-x: auto; padding: 2px 2px 8px; scroll-snap-type: x proximity; }
+.sopt { flex: none; position: relative; padding: 0; border: 0; border-radius: var(--r); overflow: hidden; background: #121820; scroll-snap-align: start; }
+.sopt svg { display: block; width: 100%; height: 100%; }
+.sopt::after { content: ""; position: absolute; inset: 0; border-radius: inherit; box-shadow: inset 0 0 0 2px transparent; transition: box-shadow .12s ease-out; }
+.sopt:hover::after, .sopt:focus-visible::after { box-shadow: inset 0 0 0 2px rgba(102,192,244,.75); }
+.sopt.inuse::after { box-shadow: inset 0 0 0 3px var(--blue); }
+.sopt .now { position: absolute; left: 4px; bottom: 4px; font-size: 10px; font-weight: 800; letter-spacing: .06em; text-transform: uppercase; background: var(--blue); color: #fff; padding: 2px 5px; border-radius: 2px; }
+.so-cover { height: 132px; aspect-ratio: 2 / 3; }
+.so-wide { height: 92px; aspect-ratio: 920 / 430; }
+.so-banner { height: 78px; aspect-ratio: 1920 / 620; }
+.so-logo { height: 76px; aspect-ratio: 800 / 310; background: repeating-conic-gradient(#273140 0 25%, #1f2833 0 50%) 0 0 / 14px 14px; }
+.so-icon { height: 64px; aspect-ratio: 1; }
+.strip-empty { padding: 14px; border-radius: 4px; background: rgba(8,12,18,.32); font-size: var(--fs-sm); color: var(--text-2); }
+@container (max-width: 760px) {
+  .piece { grid-template-columns: minmax(0, 1fr); gap: 12px; }
+  .cur-banner, .cur-logo, .cur-wide { width: 100%; max-width: 360px; }
+}
+
+/* ---------- tray ---------- */
+.tray { width: 360px; flex: none; background: #202935; border-left: 1px solid #10151b; display: flex; flex-direction: column; min-height: 0; }
+.tray[hidden] { display: none !important; }
+.tray-head { padding: 14px 16px 10px; display: flex; flex-direction: column; gap: 10px; border-bottom: 1px solid #18202a; }
+.tray-top { display: flex; align-items: center; justify-content: space-between; gap: 8px; }
+.tray-top h2 { margin: 0; font-size: var(--fs-lg); font-weight: 700; }
+.tabs { display: flex; gap: 2px; background: #161d26; padding: 3px; border-radius: 4px; }
+.tabs button { flex: 1; height: 34px; border: 0; border-radius: 3px; background: transparent; color: var(--text-2); font-size: var(--fs-xs); font-weight: 700; white-space: nowrap; padding: 0 4px; }
+.tabs button:hover { color: var(--text); }
+.tabs button[aria-selected="true"] { background: var(--select); color: #fff; }
+.styles { display: flex; gap: 6px; flex-wrap: wrap; align-items: center; }
+.styles button { height: 32px; padding: 0 10px; border-radius: 14px; border: 1px solid #3a4655; background: transparent; color: var(--text-2); font-size: var(--fs-xs); font-weight: 600; }
+.styles button:hover { color: var(--text); border-color: #56657a; }
+.styles button[aria-pressed="true"] { background: #e6edf3; color: #141a21; border-color: #e6edf3; }
+.styles label { margin-left: auto; min-height: 40px; padding: 0 4px; display: inline-flex; align-items: center; gap: 6px; font-size: var(--fs-xs); color: var(--text-2); cursor: pointer; }
+.styles input { accent-color: var(--blue); width: 18px; height: 18px; }
+.options { flex: 1; min-height: 0; overflow-y: auto; padding: 12px 16px; display: grid; grid-template-columns: minmax(0, 1fr); gap: 12px; align-content: start; }
+.options.cols2 { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+.options.cols3 { grid-template-columns: repeat(3, minmax(0, 1fr)); }
+.opt { min-width: 0; display: flex; flex-direction: column; gap: 6px; padding: 0; border: 0; background: transparent; text-align: left; }
+.opt .thumb { display: block; width: 100%; position: relative; border-radius: var(--r); overflow: hidden; background: #121820; }
+.opt .thumb svg { display: block; width: 100%; height: 100%; }
+.opt.opt-logo .thumb { background: repeating-conic-gradient(#273140 0 25%, #1f2833 0 50%) 0 0 / 16px 16px; }
+.opt .thumb::after { content: ""; position: absolute; inset: 0; border-radius: inherit; box-shadow: inset 0 0 0 2px transparent; transition: box-shadow .12s ease-out; }
+.opt:hover .thumb::after { box-shadow: inset 0 0 0 2px rgba(102,192,244,.6); }
+.opt[aria-pressed="true"] .thumb::after { box-shadow: inset 0 0 0 3px var(--blue); }
+.opt .cap { display: flex; justify-content: space-between; gap: 6px; font-size: 11px; color: var(--text-3); line-height: 1.3; }
+.opt .cap span:first-child { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; min-width: 0; }
+.opt .now { position: absolute; top: 6px; left: 6px; font-size: 10px; font-weight: 800; letter-spacing: .06em; text-transform: uppercase; background: rgba(10,14,20,.85); color: #e6edf3; padding: 2px 6px; border-radius: 2px; }
+.tray-foot { padding: 12px 16px; border-top: 1px solid #18202a; display: flex; gap: 8px; align-items: center; flex-wrap: wrap; }
+.tray-foot .hint { font-size: var(--fs-xs); color: var(--text-3); flex: 1 1 100%; }
+.tray-foot .btn.use { background: var(--action); color: #fff; }
+.tray-foot .btn.use:hover { background: var(--action-hover); }
+.tray-foot .btn.use[disabled] { background: var(--raised); color: var(--text-2); opacity: .7; }
+.no-opts { grid-column: 1 / -1; padding: 28px 8px; text-align: center; color: var(--text-2); font-size: var(--fs-sm); }
+
+/* ---------- full-pane states ---------- */
+.state { flex: 1; display: grid; place-items: center; padding: 32px 24px; background: var(--stage); }
+.state-box { max-width: 480px; display: flex; flex-direction: column; gap: 14px; }
+.state-box h1 { margin: 0; font-size: var(--fs-xl); line-height: 1.2; text-wrap: balance; }
+.state-box p { margin: 0; color: var(--text-2); }
+.state-box code { font-family: ui-monospace, "JetBrains Mono", Menlo, monospace; font-size: var(--fs-xs); color: var(--text); background: #121821; padding: 2px 6px; border-radius: 2px; }
+.state-box ul { margin: 0; padding: 0; list-style: none; display: flex; flex-direction: column; gap: 6px; }
+.state-box li { display: flex; gap: 8px; align-items: center; font-size: var(--fs-sm); color: var(--text-2); }
+.state-box li svg { color: var(--bad); width: 16px; height: 16px; }
+.state-box .row { display: flex; gap: 8px; flex-wrap: wrap; }
+
+/* ---------- popovers, dialogs, toast ---------- */
+.menu, .pop {
+  position: absolute; z-index: 30; background: #2b3542; border-radius: 4px; padding: 6px;
+  box-shadow: 0 10px 30px rgba(0,0,0,.45), 0 2px 6px rgba(0,0,0,.35);
+}
+.menu { right: 12px; top: 100%; margin-top: 4px; width: 280px; }
+.menu button { width: 100%; height: 36px; display: flex; align-items: center; gap: 10px; padding: 0 10px; border: 0; border-radius: 3px; background: transparent; text-align: left; font-size: var(--fs-sm); color: var(--text); }
+.menu button:hover, .menu button:focus-visible { background: var(--select); }
+.menu button svg { color: var(--text-2); }
+.menu hr { border: 0; border-top: 1px solid #3a4655; margin: 6px 4px; }
+.menu .sec { padding: 6px 10px 4px; font-size: 11px; font-weight: 700; letter-spacing: .08em; text-transform: uppercase; color: var(--text-3); }
+.menu .tick { margin-left: auto; color: var(--blue-ink) !important; }
+.pop { left: 0; top: 100%; margin-top: 6px; width: min(420px, calc(100vw - 48px)); padding: 12px; display: flex; flex-direction: column; gap: 10px; }
+.pop .search input { background: #1b222c; }
+.results { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 2px; max-height: 280px; overflow-y: auto; }
+.result { width: 100%; display: grid; grid-template-columns: 34px minmax(0,1fr) auto; gap: 10px; align-items: center; padding: 6px; border: 0; border-radius: 3px; background: transparent; text-align: left; }
+.result:hover, .result:focus-visible { background: var(--select); }
+.result .mc { width: 34px; height: 51px; border-radius: 2px; overflow: hidden; }
+.result .mc svg { width: 100%; height: 100%; display: block; }
+.result b { display: block; font-size: var(--fs-sm); font-weight: 600; color: var(--text); }
+.result small { font-size: var(--fs-xs); color: var(--text-3); }
+.result .cur { font-size: 11px; font-weight: 700; color: var(--blue-ink); text-transform: uppercase; letter-spacing: .05em; }
+
+.scrim { position: fixed; inset: 0; z-index: 40; background: rgba(5,8,12,.62); display: grid; place-items: center; padding: 24px; }
+.dialog { width: min(480px, 100%); background: #222b36; border-radius: 6px; box-shadow: 0 24px 60px rgba(0,0,0,.55); padding: 22px; display: flex; flex-direction: column; gap: 14px; }
+.dialog h2 { margin: 0; font-size: var(--fs-lg); }
+.dialog p { margin: 0; color: var(--text-2); font-size: var(--fs-sm); }
+.dialog ol { margin: 0; padding-left: 20px; color: var(--text-2); font-size: var(--fs-sm); display: flex; flex-direction: column; gap: 4px; }
+.dialog a { color: var(--blue-ink); }
+.field { display: flex; flex-direction: column; gap: 6px; }
+.field label { font-size: var(--fs-xs); font-weight: 700; letter-spacing: .06em; text-transform: uppercase; color: var(--text-3); }
+.field input { height: 40px; border-radius: var(--r); border: 1px solid #3a4655; background: #161c24; padding: 0 12px; font-family: ui-monospace, Menlo, monospace; font-size: var(--fs-sm); letter-spacing: .03em; }
+.field input:focus { outline: none; border-color: var(--blue); }
+.keystate { min-height: 20px; font-size: var(--fs-sm); display: flex; align-items: center; gap: 6px; }
+.keystate.ok { color: #9ccc65; }
+.keystate.bad { color: var(--bad); }
+.keystate.wait { color: var(--text-2); }
+.dialog .row { display: flex; gap: 8px; justify-content: flex-end; flex-wrap: wrap; }
+.dialog .btn.primary { background: var(--action); color: #fff; }
+.dialog .btn.primary:hover { background: var(--action-hover); }
+.backups { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 4px; }
+.backups label { display: grid; grid-template-columns: 18px minmax(0,1fr) auto; gap: 10px; align-items: center; padding: 10px; border-radius: 3px; background: #1a212a; cursor: pointer; font-size: var(--fs-sm); }
+.backups label:hover { background: #26303c; }
+.backups input { accent-color: var(--blue); }
+.backups small { color: var(--text-3); font-variant-numeric: tabular-nums; }
+.backups code { font-family: ui-monospace, Menlo, monospace; font-size: 11px; color: var(--text-3); }
+
+.toast {
+  position: fixed; z-index: 50; left: 50%; bottom: max(20px, env(safe-area-inset-bottom, 0px)); transform: translateX(-50%);
+  display: flex; align-items: center; gap: 14px; padding: 10px 10px 10px 16px; border-radius: 4px;
+  background: #e6edf3; color: #141a21; font-size: var(--fs-sm); font-weight: 600; box-shadow: 0 10px 30px rgba(0,0,0,.45);
+  max-width: calc(100vw - 32px); animation: toastIn .22s cubic-bezier(.2,.9,.3,1);
+}
+.toast button { height: 40px; padding: 0 12px; border: 0; border-radius: 3px; background: #141a21; color: #fff; font-weight: 700; font-size: var(--fs-xs); }
+@keyframes toastIn { from { transform: translate(-50%, 12px); opacity: 0; } }
+@keyframes fill { from { opacity: 0; filter: blur(6px); } }
+.just-filled > svg { animation: fill .45s ease-out; }
+@media (prefers-reduced-motion: reduce) { *, *::before, *::after { animation: none !important; transition: none !important; } }
+
+/* ---------- responsive ---------- */
+@media (max-width: 1180px) {
+  .library { width: 260px; }
+  .tray { position: fixed; z-index: 35; right: 0; top: 0; bottom: 0; width: min(380px, 100vw); box-shadow: -12px 0 40px rgba(0,0,0,.45); padding-top: env(safe-area-inset-top, 0px); }
+}
+@media (max-width: 760px) {
+  html, body { height: auto; }
+  .app { height: auto; min-height: 100%; }
+  .titlebar { display: none; }
+  .main { flex-direction: column; }
+  .library { width: 100%; border-right: 0; border-bottom: 1px solid #12151a; }
+  .games { max-height: 280px; }
+  .lib-tools, .games { padding-left: max(16px, env(safe-area-inset-left, 0px)); padding-right: max(16px, env(safe-area-inset-right, 0px)); }
+  .stage { padding-left: max(16px, env(safe-area-inset-left, 0px)); padding-right: max(16px, env(safe-area-inset-right, 0px)); overflow: visible; }
+  .detail { min-height: 0; }
+  .summary { order: 3; flex-basis: 100%; }
+  .header .btn.go { flex: 1 1 auto; justify-content: center; }
+}
+</style>
+
+<div class="app" id="app"></div>
+
+<script>
+(() => {
+/* ---------------- icons ---------------- */
+const P = {
+  search: '<circle cx="11" cy="11" r="7"/><path d="m20 20-3.5-3.5"/>',
+  more: '<circle cx="5" cy="12" r="1.3"/><circle cx="12" cy="12" r="1.3"/><circle cx="19" cy="12" r="1.3"/>',
+  check: '<path d="m5 12.5 4.5 4.5L19 7.5"/>',
+  x: '<path d="M6 6l12 12M18 6 6 18"/>',
+  plus: '<path d="M12 5v14M5 12h14"/>',
+  alert: '<path d="M12 3.5 2.5 20h19L12 3.5Z"/><path d="M12 10v4.5M12 17.5v.01"/>',
+  info: '<circle cx="12" cy="12" r="9"/><path d="M12 11v5.5M12 7.5v.01"/>',
+  key: '<circle cx="8" cy="15" r="4"/><path d="m11 12 8.5-8.5M16 7l2.5 2.5M14 9l2 2"/>',
+  undo: '<path d="M9 14 4 9l5-5"/><path d="M4 9h10.5a5.5 5.5 0 0 1 0 11H11"/>',
+  folder: '<path d="M3.5 6.5a2 2 0 0 1 2-2h4l2 2.5h7a2 2 0 0 1 2 2v8.5a2 2 0 0 1-2 2h-13a2 2 0 0 1-2-2Z"/>',
+  history: '<path d="M3.5 12a8.5 8.5 0 1 0 2.5-6"/><path d="M3.5 4v4h4"/><path d="M12 8v4.5l3 2"/>',
+  refresh: '<path d="M20 11a8 8 0 0 0-14.5-4.5L3.5 9"/><path d="M3.5 4v5h5"/><path d="M4 13a8 8 0 0 0 14.5 4.5l2-2.5"/><path d="M20.5 20v-5h-5"/>',
+  image: '<rect x="3.5" y="4.5" width="17" height="15" rx="2"/><circle cx="9" cy="10" r="1.8"/><path d="m20.5 16-5-5-8.5 8.5"/>',
+  steam: '<rect x="3" y="5" width="18" height="14" rx="2"/><path d="M3 9h18"/>',
+  user: '<circle cx="12" cy="8.5" r="3.5"/><path d="M5 20a7 7 0 0 1 14 0"/>',
+  about: '<circle cx="12" cy="12" r="9"/><path d="M12 11v5.5M12 7.5v.01"/>',
+  eye: '<path d="M2.5 12S6 5.5 12 5.5 21.5 12 21.5 12 18 18.5 12 18.5 2.5 12 2.5 12Z"/><circle cx="12" cy="12" r="2.8"/>',
+};
+const ico = (n, cls = 'i') => `<svg class="${cls}" viewBox="0 0 24 24" aria-hidden="true">${P[n]}</svg>`;
+const playIco = '<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M7 4.5v15l12.5-7.5Z"/></svg>';
+const esc = s => String(s).replace(/[&<>"]/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[c]));
+
+/* ---------------- slots ---------------- */
+const SLOTS = [
+  { key: 'cover',  label: 'Cover',      w: 600,  h: 900, size: '600 × 900' },
+  { key: 'wide',   label: 'Wide cover', w: 920,  h: 430, size: '920 × 430' },
+  { key: 'banner', label: 'Banner',     w: 1920, h: 620, size: '1920 × 620' },
+  { key: 'logo',   label: 'Logo',       w: 800,  h: 310, size: 'Transparent PNG' },
+  { key: 'icon',   label: 'Icon',       w: 256,  h: 256, size: '256 × 256' },
+];
+const SLOT = Object.fromEntries(SLOTS.map(s => [s.key, s]));
+const STYLES = ['Official', 'Alternate', 'Minimal', 'Alternate', 'Official', 'Minimal', 'Alternate', 'Alternate', 'Minimal', 'Official'];
+const AUTHORS = ['ravenframe', 'deckhand', 'pixelmoth', 'sgdb_kuro', 'lumen.grids', 'fernweh', 'tallgrass', 'neonwax', 'quietcap', 'ashlight'];
+
+/* ---------------- placeholder artwork (synthetic, generated per game) ---------------- */
+function rng(seed) { let s = seed >>> 0; return () => ((s = (s * 1664525 + 1013904223) >>> 0) / 4294967296); }
+function words(name, max) {
+  const out = []; let line = '';
+  for (const w of name.replace(/[()]/g, '').split(/\s+/)) {
+    if ((line + ' ' + w).trim().length > max && line) { out.push(line); line = w; } else line = (line + ' ' + w).trim();
+  }
+  if (line) out.push(line);
+  return out.slice(0, 3);
+}
+// k = average advance per character in em, used to fit titles inside the art
+const FACES = [
+  { f: "'Bebas Neue', Impact, sans-serif", w: 400, up: true, ls: 0.02, k: 0.46 },
+  { f: "'Archivo Black', 'Arial Black', sans-serif", w: 400, up: false, ls: -0.01, k: 0.74 },
+  { f: "Cinzel, Georgia, serif", w: 700, up: true, ls: 0.06, k: 0.92 },
+  { f: "'Hanken Grotesk', sans-serif", w: 800, up: false, ls: -0.02, k: 0.62 },
+];
+const fit = (face, len, room, cap) => Math.min(cap, room / (Math.max(len, 1) * face.k));
+function scene(g, v, W, H, r) {
+  const h = (g.hue + v * 37) % 360, h2 = (h + 40) % 360, h3 = (h + 190) % 360;
+  const id = `g${g.id}${v}${W}`;
+  const kind = v % 5;
+  let s = `<defs><linearGradient id="${id}" x1="0" y1="0" x2="1" y2="1"><stop offset="0" stop-color="hsl(${h},55%,16%)"/><stop offset="1" stop-color="hsl(${h2},60%,38%)"/></linearGradient></defs>`;
+  if (kind === 0) {
+    s += `<rect width="${W}" height="${H}" fill="url(#${id})"/><circle cx="${W * (0.62 + r() * 0.2)}" cy="${H * (0.3 + r() * 0.2)}" r="${Math.min(W, H) * 0.36}" fill="hsl(${h3},70%,62%)" opacity=".55"/>`;
+    for (let i = 0; i < 4; i++) s += `<rect x="${-W * 0.1}" y="${H * (0.55 + i * 0.09)}" width="${W * 1.2}" height="${H * 0.035}" fill="hsl(${h},50%,${10 + i * 4}%)" opacity=".7" transform="rotate(-8 ${W / 2} ${H / 2})"/>`;
+  } else if (kind === 1) {
+    s += `<rect width="${W}" height="${H}" fill="hsl(${h},35%,10%)"/>`;
+    const cx = W * (0.3 + r() * 0.4), cy = H * 0.42;
+    for (let i = 8; i > 0; i--) s += `<circle cx="${cx}" cy="${cy}" r="${Math.max(W, H) * 0.08 * i}" fill="none" stroke="hsl(${h2},75%,${30 + i * 5}%)" stroke-width="${Math.max(W, H) * 0.012}" opacity="${0.15 + i * 0.07}"/>`;
+  } else if (kind === 2) {
+    s += `<rect width="${W}" height="${H}" fill="hsl(${h},55%,30%)"/>`;
+    for (let i = 0; i < 9; i++) s += `<rect x="${(i - 2) * W * 0.18}" y="${-H * 0.2}" width="${W * 0.09}" height="${H * 1.5}" fill="hsl(${i % 2 ? h2 : h3},60%,${22 + (i % 3) * 8}%)" transform="rotate(24 ${W / 2} ${H / 2})"/>`;
+  } else if (kind === 3) {
+    s += `<rect width="${W}" height="${H}" fill="hsl(${h},30%,84%)"/><rect y="${H * 0.62}" width="${W}" height="${H * 0.38}" fill="hsl(${h},45%,18%)"/><circle cx="${W * 0.74}" cy="${H * 0.36}" r="${Math.min(W, H) * 0.14}" fill="hsl(${h3},65%,52%)"/>`;
+  } else {
+    s += `<rect width="${W}" height="${H}" fill="hsl(${h},45%,62%)"/>`;
+    for (let i = 0; i < 4; i++) {
+      const y = H * (0.42 + i * 0.13); let pts = `0,${H} 0,${y}`;
+      for (let x = 0; x <= 6; x++) pts += ` ${W * x / 6},${y - r() * H * 0.18}`;
+      pts += ` ${W},${H}`;
+      s += `<polygon points="${pts}" fill="hsl(${h2},40%,${44 - i * 10}%)"/>`;
+    }
+  }
+  return s;
+}
+function art(g, slotKey, v) {
+  const S = SLOT[slotKey]; const W = S.w, H = S.h; const r = rng(g.seed * 31 + v * 7 + W);
+  const face = FACES[(v + g.seed) % FACES.length];
+  const name = face.up ? g.title.toUpperCase() : g.title;
+  let body = '';
+  if (slotKey === 'logo') {
+    const lines = words(name, 14);
+    const fs = fit(face, Math.max(...lines.map(l => l.length)), W * 0.9, lines.length > 1 ? 120 : 150);
+    const fill = v % 3 === 0 ? '#ffffff' : `hsl(${(g.hue + v * 37 + 190) % 360},80%,72%)`;
+    const y0 = H / 2 - (lines.length - 1) * fs * 0.48 + fs * 0.34;
+    body = lines.map((l, i) => `<text x="${W / 2}" y="${y0 + i * fs * 0.96}" text-anchor="middle" font-family="${face.f}" font-weight="${face.w}" font-size="${fs}" letter-spacing="${face.ls}em" fill="${fill}" stroke="rgba(0,0,0,.55)" stroke-width="${fs * 0.05}" paint-order="stroke">${esc(l)}</text>`).join('');
+  } else if (slotKey === 'icon') {
+    const ini = g.title.replace(/[^A-Za-z0-9 ]/g, '').split(/\s+/).filter(Boolean).slice(0, 2).map(w => w[0]).join('').toUpperCase();
+    const h = (g.hue + v * 37) % 360;
+    body = `<rect width="${W}" height="${H}" rx="${v % 2 ? 0 : 40}" fill="hsl(${h},55%,${v % 3 === 2 ? 70 : 30}%)"/><text x="${W / 2}" y="${H / 2 + 46}" text-anchor="middle" font-family="${face.f}" font-weight="${face.w}" font-size="132" fill="${v % 3 === 2 ? `hsl(${h},50%,16%)` : '#fff'}">${esc(ini)}</text>`;
+  } else {
+    body = scene(g, v, W, H, r);
+    if (slotKey === 'cover') {
+      const lines = words(name, 10); const fs = fit(face, Math.max(...lines.map(l => l.length)), W * 0.84, 120);
+      body += `<rect y="${H * 0.6}" width="${W}" height="${H * 0.4}" fill="rgba(0,0,0,.28)"/>` + lines.map((l, i) => `<text x="${W * 0.08}" y="${H * 0.78 + (i - lines.length + 1) * fs * 0.98 + fs * 0.5}" font-family="${face.f}" font-weight="${face.w}" font-size="${fs}" letter-spacing="${face.ls}em" fill="#fff">${esc(l)}</text>`).join('');
+    } else if (slotKey === 'wide') {
+      const fs = fit(face, name.length, W * 0.88, 110);
+      body += `<text x="${W * 0.06}" y="${H * 0.82}" font-family="${face.f}" font-weight="${face.w}" font-size="${fs}" letter-spacing="${face.ls}em" fill="#fff" stroke="rgba(0,0,0,.35)" stroke-width="${fs * 0.04}" paint-order="stroke">${esc(name)}</text>`;
+    }
+  }
+  return `<svg viewBox="0 0 ${W} ${H}" preserveAspectRatio="xMidYMid ${slotKey === 'logo' ? 'meet' : 'slice'}" aria-hidden="true">${body}</svg>`;
+}
+
+/* ---------------- data ---------------- */
+// Example library for the mockup. Names are real games people commonly add as non-Steam shortcuts.
+const A = (c, w, b, l, i) => ({ cover: c, wide: w, banner: b, logo: l, icon: i });
+const N = null;
+const seedGames = () => [
+  { name: 'Hollow Knight', source: 'Heroic · GOG', title: 'Hollow Knight', year: 2017, hue: 215, art: A(0, 0, 0, 0, 0) },
+  { name: 'Disco Elysium', source: 'Heroic · GOG', title: 'Disco Elysium', year: 2019, hue: 12, art: A(N, N, N, N, N) },
+  { name: 'Cyberpunk 2077', source: 'Heroic · GOG', title: 'Cyberpunk 2077', year: 2020, hue: 52, art: A(0, 0, 0, 0, 0) },
+  { name: 'Outer Wilds', source: 'Heroic · Epic', title: 'Outer Wilds', year: 2019, hue: 26, art: A(2, N, N, N, 0) },
+  { name: 'Minecraft', source: 'Prism Launcher', title: 'Minecraft', year: 2011, hue: 112, art: A(N, N, N, N, 0), check: true, guess: 'Minecraft Dungeons', guessYear: 2020 },
+  { name: 'RetroArch', source: 'Flatpak', title: 'RetroArch', year: 2010, hue: 268, art: A(0, 0, 0, 0, 0) },
+  { name: 'Dolphin Emulator', source: 'Flatpak', title: 'Dolphin', year: 2008, hue: 196, art: A(N, N, N, N, N) },
+  { name: 'PCSX2', source: 'AppImage', title: 'PCSX2', year: 2002, hue: 230, art: A(0, N, 0, N, 0) },
+  { name: 'osu!', source: 'osu-lazer AppImage', title: 'osu!', year: 2007, hue: 330, art: A(N, N, N, N, N) },
+  { name: 'A Short Hike', source: 'itch.io', title: 'A Short Hike', year: 2019, hue: 170, art: A(N, N, N, N, N) },
+  { name: 'Hades', source: 'Heroic · Epic', title: 'Hades', year: 2020, hue: 0, art: A(1, 0, 3, 1, 0) },
+  { name: 'Battle.net', source: 'Lutris', title: 'Battle.net', year: 2009, hue: 205, art: A(N, N, N, N, N) },
+  { name: 'Fallout: New Vegas', source: 'Heroic · GOG', title: 'Fallout New Vegas', year: 2010, hue: 38, art: A(0, 0, N, 0, N) },
+  { name: 'sm64ex', source: 'Native build', title: 'Super Mario 64', year: 1996, hue: 0, art: A(N, N, N, N, N), check: true, guess: 'Super Mario 64', guessYear: 1996 },
+  { name: 'Kenshi', source: 'Heroic · GOG', title: 'Kenshi', year: 2018, hue: 30, art: A(0, 0, 0, 0, 0) },
+  { name: 'Heroic Games Launcher', source: 'Flatpak', title: 'Heroic Games Launcher', year: 2021, hue: 280, art: A(N, N, N, N, 0) },
+  { name: 'Untitled Goose Game', source: 'Heroic · Epic', title: 'Untitled Goose Game', year: 2019, hue: 90, art: A(0, N, 0, N, N) },
+  { name: 'dosbox-staging', source: 'Flatpak', title: 'dosbox-staging', year: null, hue: 250, art: A(N, N, N, N, N), notfound: true },
+].map((g, i) => ({
+  id: i, seed: i * 13 + 5, ...g,
+  match: g.art.cover !== null || g.art.banner !== null ? { name: g.title, year: g.year } : null,
+  status: 'ok', fetching: false,
+}));
+
+const S = {
+  view: 'library',        // library | nosteam | nogames
+  games: seedGames(),
+  sel: null,             // null = start page
+  hoverSlot: null,
+  logoOnBanner: true,
+  filter: 'all',
+  q: '',
+  key: '',
+  steamRunning: true,
+  slot: null,             // open tray slot
+  style: 'All',
+  animated: false,
+  pending: null,          // option index picked in tray, not yet used
+  hover: null,            // option index being previewed
+  fetch: null,            // {done, total, current}
+  lastRun: null,
+  menu: false,
+  pop: false,
+  popQ: '',
+  dialog: null,           // 'key' | 'restore'
+  keyDraft: '', keyState: '',
+  justFilled: new Set(),
+  toast: null,
+};
+
+/* ---------------- derived ---------------- */
+const have = g => SLOTS.filter(s => g.art[s.key] !== null).length;
+const missing = g => SLOTS.filter(s => g.art[s.key] === null).map(s => s.key);
+const fillable = () => S.games.filter(g => missing(g).length && g.status !== 'notfound');
+const needs = () => S.games.filter(g => missing(g).length);
+const checks = () => S.games.filter(g => g.status === 'check');
+const cur = () => (S.sel === null ? null : S.games[S.sel]);
+function visibleGames() {
+  let list = S.games;
+  if (S.filter === 'needs') list = list.filter(g => missing(g).length);
+  if (S.filter === 'check') list = list.filter(g => g.status === 'check' || g.status === 'notfound');
+  if (S.q) list = list.filter(g => g.name.toLowerCase().includes(S.q.toLowerCase()));
+  return list;
+}
+
+/* ---------------- render ---------------- */
+const $app = document.getElementById('app');
+function render() {
+  const focusId = document.activeElement && document.activeElement.id;
+  const caret = document.activeElement && document.activeElement.selectionStart;
+  const libScroll = document.querySelector('.games')?.scrollTop ?? 0;
+  const optScroll = document.querySelector('.options')?.scrollTop ?? 0;
+
+  $app.innerHTML = titlebar() + header() + notice() + body() + dialog() + toast();
+
+  const games = document.querySelector('.games'); if (games) games.scrollTop = libScroll;
+  const opts = document.querySelector('.options'); if (opts) opts.scrollTop = optScroll;
+  if (focusId) {
+    const el = document.getElementById(focusId);
+    if (el) { el.focus({ preventScroll: true }); if (caret != null && el.setSelectionRange) try { el.setSelectionRange(caret, caret); } catch (e) {} }
+  }
+}
+
+function titlebar() {
+  return `<div class="titlebar" aria-hidden="true"><span>Steam Artwork for Non-Steam Games</span><span class="wc"><span></span><span></span><span></span></span></div>`;
+}
+
+function header() {
+  const fill = fillable();
+  let action;
+  if (S.fetch) {
+    const pct = Math.round(S.fetch.done / S.fetch.total * 100);
+    action = `<div class="progress" role="status"><span>Getting artwork… ${S.fetch.done} of ${S.fetch.total}</span><span class="bar"><i style="width:${pct}%"></i></span><button class="btn" data-act="cancel">Cancel</button></div>`;
+  } else if (S.view !== 'library') {
+    action = '';
+  } else if (fill.length) {
+    action = `<button class="btn go" id="getall" data-act="getall">${ico('image')}Get artwork for ${fill.length} game${fill.length > 1 ? 's' : ''}</button>`;
+  } else {
+    action = `<span class="done-note">${ico('check')}Every game that SteamGridDB knows has artwork</span>`;
+  }
+  const nf = S.games.filter(g => g.status === 'notfound').length;
+  const summary = S.view === 'library'
+    ? `<span class="summary"><b>${S.games.length}</b> non-Steam games · <b>${needs().length}</b> missing artwork${nf ? ` · ${nf} not on SteamGridDB` : ''}</span>`
+    : '';
+  return `<header class="header" style="position:relative">
+    <div class="brand"><span class="brand-mark">${ico('image')}</span><span>Artwork for Non-Steam Games</span></div>
+    ${S.view !== 'nosteam' ? `<button class="account" data-act="noop" title="Only one Steam account found on this computer"><span class="avatar">K</span>kestrel</button>` : ''}
+    ${summary}
+    <span class="spacer"></span>
+    ${action}
+    <button class="iconbtn" id="morebtn" data-act="menu" aria-label="More options" aria-expanded="${S.menu}" aria-haspopup="menu">${ico('more')}</button>
+    ${S.menu ? menu() : ''}
+  </header>`;
+}
+
+function menu() {
+  const st = (v, l) => `<button role="menuitemradio" aria-checked="${S.view === v && !(v === 'library' && S.firstRunPreview)}" data-act="view" data-v="${v}">${l}${S.view === v ? ico('check', 'i tick') : ''}</button>`;
+  return `<div class="menu" role="menu" aria-label="More options">
+    <button role="menuitem" data-act="keydialog">${ico('key')}SteamGridDB API key…</button>
+    <button role="menuitem" data-act="restore">${ico('history')}Restore a backup…</button>
+    <button role="menuitem" data-act="toast" data-msg="Opened ~/.local/share/Steam/userdata/…/config/grid">${ico('folder')}Open artwork folder</button>
+    <button role="menuitem" data-act="toast" data-msg="Steam Artwork for Non-Steam Games 0.1 · artwork from SteamGridDB · not affiliated with Valve">${ico('about')}About</button>
+    <hr>
+    <div class="sec">Mockup: other states</div>
+    ${st('library', 'Library')}
+    <button role="menuitem" data-act="reset">${ico('refresh')}Start over (first run)</button>
+    ${st('nosteam', "Steam isn't found")}
+    ${st('nogames', 'No non-Steam games')}
+  </div>`;
+}
+
+function notice() {
+  if (S.view !== 'library') return '';
+  if (S.lastRun && !S.fetch) {
+    const { updated, check, notfound } = S.lastRun;
+    const extra = [check ? `${check} matched with low confidence` : '', notfound ? `${notfound} not found on SteamGridDB` : ''].filter(Boolean).join(', ');
+    return `<div class="notice info" role="status">${ico('info')}<p><b>Added artwork to ${updated} game${updated === 1 ? '' : 's'}.</b> ${extra ? extra + '. ' : ''}${S.steamRunning ? 'Restart Steam to see it.' : ''}</p>
+      ${check || notfound ? `<button class="btn" data-act="filter" data-f="check">Review ${check + notfound}</button>` : ''}
+      ${S.steamRunning ? `<button class="btn" data-act="restartsteam">${ico('refresh')}Restart Steam</button>` : ''}
+      <button class="iconbtn" data-act="dismissrun" aria-label="Dismiss">${ico('x')}</button></div>`;
+  }
+  if (S.steamRunning) {
+    return `<div class="notice" role="status">${ico('alert')}<p>Steam is running. Artwork shows up after Steam restarts. To change icons, quit Steam first, or Steam may undo the change when it closes.</p><button class="btn" data-act="restartsteam">${ico('refresh')}Restart Steam</button></div>`;
+  }
+  return '';
+}
+
+function body() {
+  if (S.view === 'nosteam') return `<main class="main"><section class="state"><div class="state-box">
+    <h1>We couldn't find Steam on this computer</h1>
+    <p>We looked in the usual places:</p>
+    <ul>
+      <li>${ico('x')}<code>~/.local/share/Steam</code></li>
+      <li>${ico('x')}<code>~/.steam/steam</code></li>
+      <li>${ico('x')}<code>~/.var/app/com.valvesoftware.Steam</code> (Flatpak)</li>
+    </ul>
+    <p>If Steam is installed somewhere else, point us to the folder that contains <code>userdata</code>. Sign in to Steam at least once first.</p>
+    <div class="row"><button class="btn go" data-act="view" data-v="library">${ico('folder')}Choose Steam folder…</button><button class="btn" data-act="view" data-v="library">Look again</button></div>
+  </div></section></main>`;
+  if (S.view === 'nogames') return `<main class="main"><section class="state"><div class="state-box">
+    <h1>No non-Steam games yet</h1>
+    <p>This app finds artwork for games you've added to Steam yourself. In Steam, open <b>Games › Add a Non-Steam Game to My Library</b>, pick the game, then come back here.</p>
+    <div class="row"><button class="btn go" data-act="view" data-v="library">${ico('refresh')}Check again</button></div>
+  </div></section></main>`;
+  return `<main class="main">${library()}${detail()}</main>`;
+}
+
+function library() {
+  const list = visibleGames();
+  const f = (k, l, n) => `<button data-act="filter" data-f="${k}" aria-pressed="${S.filter === k}">${l}<span class="n">${n}</span></button>`;
+  return `<nav class="library" aria-label="Your non-Steam games">
+    <div class="lib-tools">
+      <div class="search">${ico('search')}<input id="q" type="search" placeholder="Search your games" value="${esc(S.q)}" aria-label="Search your games"></div>
+      <div class="filters" role="group" aria-label="Show">${f('all', 'All', S.games.length)}${f('needs', 'Missing art', needs().length)}${f('check', 'To check', checks().length + S.games.filter(g => g.status === 'notfound').length)}</div>
+    </div>
+    <ul class="games"><li><button class="game home-row" id="rowhome" data-act="home" aria-current="${S.sel === null}"><span class="gicon">${ico('image')}</span><span class="gname" style="display:block">All games</span></button></li>${list.length ? list.map(row).join('') : `<li class="empty-list">${S.filter === 'check' ? 'Nothing to check. Every match looks right.' : S.filter === 'needs' ? 'Every game has all five pieces of artwork.' : `No games match “${esc(S.q)}”.`}</li>`}</ul>
+  </nav>`;
+}
+
+function row(g) {
+  const n = have(g);
+  const dots = SLOTS.map(s => `<span class="dot${g.art[s.key] !== null ? ' on' : ''}"></span>`).join('');
+  let tag = '';
+  if (g.fetching) tag = '<span class="tag busy">Getting</span>';
+  else if (g.status === 'check') tag = '<span class="tag check">Check match</span>';
+  else if (g.status === 'notfound') tag = '<span class="tag miss">Not found</span>';
+  const label = `${g.name}, ${n} of 5 artwork${g.status === 'check' ? ', match needs checking' : ''}${g.status === 'notfound' ? ', not found on SteamGridDB' : ''}`;
+  return `<li><button class="game" id="row${g.id}" data-act="pick" data-id="${g.id}" aria-current="${g.id === S.sel}" aria-label="${esc(label)}">
+    <span class="gicon">${g.art.icon !== null ? art(g, 'icon', g.art.icon) : esc(g.name[0].toUpperCase())}</span>
+    <span style="min-width:0"><span class="gname" style="display:block">${esc(g.name)}</span>
+    <span class="gmeta"><span class="dots" aria-hidden="true" title="${esc(missing(g).length ? 'Missing: ' + missing(g).map(k => SLOT[k].label.toLowerCase()).join(', ') : 'Cover, wide cover, banner, logo and icon all set')}">${dots}</span>${tag || `<span>${n === 5 ? 'All artwork' : `${n} of 5`}</span>`}</span></span>
+  </button></li>`;
+}
+
+const WHERE = {
+  cover: 'Your library grid and collections.',
+  wide: 'Recent games shelf and Big Picture.',
+  banner: "The wide image at the top of the game's page.",
+  logo: 'Laid over the banner on the game page.',
+  icon: 'The game list, and desktop shortcuts.',
+};
+const OPTS = 10;
+
+function slotHTML(g, key) {
+  const S_ = SLOT[key];
+  const hovering = S.hoverSlot === key && S.hover !== null;
+  const picked = S.slot === key && S.pending !== null;
+  const previewing = hovering || picked;
+  const v = hovering ? S.hover : picked ? S.pending : g.art[key];
+  const active = S.slot === key;
+  const just = S.justFilled.has(`${g.id}:${key}`);
+  const onBanner = key === 'logo' && S.logoOnBanner && g.art.banner !== null;
+  const cl = `slot cur-${key}${v === null ? ' empty' : ''}${active ? ' active' : ''}${previewing ? ' previewing' : ''}${just ? ' just-filled' : ''}${onBanner ? ' onbanner' : ''}`;
+  const aria = v === null ? `Add ${S_.label.toLowerCase()}: see all options` : `${S_.label}: see all options`;
+  let inner;
+  if (v === null) inner = `<span class="add">${ico('plus')}<span>No ${S_.label.toLowerCase()}</span></span>`;
+  else if (onBanner) inner = `<span class="bn">${art(g, 'banner', g.art.banner)}</span><span class="lg">${art(g, 'logo', v)}</span><span class="chip">${previewing ? 'Previewing' : 'See all'}</span>`;
+  else inner = `${art(g, key, v)}<span class="chip">${previewing ? 'Previewing' : 'See all'}</span>`;
+  return `<button class="${cl}" id="slot-${key}" data-act="slot" data-slot="${key}" aria-label="${aria}" aria-expanded="${active}">${inner}</button>`;
+}
+
+function home() {
+  const list = visibleGames();
+  const count = k => S.games.filter(g => g.art[k] !== null).length;
+  const n = S.games.length;
+  return `<section class="detail" aria-label="Library">
+    <div class="stage">
+      <h1 class="home-title">Your non-Steam games</h1>
+      <p class="found">${ico('check')}Found Steam for <b>kestrel</b> at <code>~/.local/share/Steam</code> · ${n} non-Steam games</p>
+      <div class="counts" aria-label="Artwork coverage">${SLOTS.map(sl => `<span class="${count(sl.key) === n ? 'full' : ''}">${sl.label}s <b>${count(sl.key)}</b> of ${n}</span>`).join('')}</div>
+      <div class="wall">${list.map(g => {
+        const nArt = have(g);
+        const dots = SLOTS.map(s => `<span class="dot${g.art[s.key] !== null ? ' on' : ''}"></span>`).join('');
+        const tag = g.fetching ? '<span class="tag busy">Getting</span>' : g.status === 'check' ? '<span class="tag check">Check match</span>' : g.status === 'notfound' ? '<span class="tag miss">Not found</span>' : '';
+        const just = S.justFilled.has(`${g.id}:cover`) ? ' just-filled' : '';
+        return `<button class="tile" data-act="pick" data-id="${g.id}" aria-label="${esc(`${g.name}, ${nArt} of 5 artwork`)}">
+          <span class="tc${g.art.cover === null ? ' blank' : ''}${just}">${g.art.cover !== null ? art(g, 'cover', g.art.cover) : esc(g.name)}${tag}</span>
+          <span class="tn">${esc(g.name)}</span>
+          <span class="gmeta"><span class="dots" aria-hidden="true">${dots}</span><span>${nArt === 5 ? 'All artwork' : `${nArt} of 5`}</span></span>
+        </button>`;
+      }).join('') || `<p class="empty-list">No games match.</p>`}</div>
+    </div>
+  </section>`;
+}
+
+function piece(g, key) {
+  const sl = SLOT[key]; const v = g.art[key];
+  const canPick = g.match && g.status !== 'notfound' && !g.fetching;
+  const so = Array.from({ length: 6 }, (_, i) => i);
+  const strip = canPick
+    ? `<div class="strip-head"><b>${OPTS} options</b> on SteamGridDB<button class="btn quiet" data-act="slot" data-slot="${key}">See all ${OPTS}</button></div>
+       <div class="strip" role="group" aria-label="${sl.label} options">${so.map(i => `<button class="sopt so-${key}${v === i ? ' inuse' : ''}" data-act="pickopt" data-slot="${key}" data-v="${i}" aria-pressed="${v === i}" aria-label="${sl.label} by ${AUTHORS[i]}${v === i ? ', in use' : ''}">${art(g, key, i)}${v === i ? '<span class="now">In use</span>' : ''}</button>`).join('')}</div>`
+    : `<p class="strip-empty">${g.fetching ? 'Looking for options…' : 'Match this game to a SteamGridDB title to see options.'}</p>`;
+  return `<div class="piece">
+    <div class="piece-info">
+      <h2>${sl.label}${v === null ? '<span class="tag miss">Missing</span>' : ''}</h2>
+      <p>${WHERE[key]}</p>
+      <p class="spec">${sl.size}</p>
+      ${key === 'logo' ? `<label class="ontoggle"><input type="checkbox" id="onbanner" data-act="onbanner" ${S.logoOnBanner ? 'checked' : ''} ${g.art.banner === null ? 'disabled' : ''}>Show it on the banner</label>` : ''}
+    </div>
+    <div class="current">${slotHTML(g, key)}<span class="by">${v === null ? 'Nothing set' : `In use · by ${AUTHORS[v]}`}</span></div>
+    <div class="options-col">${strip}</div>
+  </div>`;
+}
+
+function detail() {
+  const g = cur();
+  if (!g) return home();
+  const miss = missing(g);
+  let match;
+  if (g.fetching) match = `<span>Looking up <b>${esc(g.name)}</b> on SteamGridDB…</span>`;
+  else if (g.status === 'notfound') match = `<span>SteamGridDB has no game called <b>${esc(g.name)}</b>.</span><button class="btn quiet" id="matchbtn" data-act="pop">Search by another name</button>`;
+  else if (g.match) match = `<span>Matched to <b>${esc(g.match.name)}</b>${g.match.year ? ` (${g.match.year})` : ''}</span>${g.status === 'check' ? '<span class="tag check">Low confidence</span>' : ''}<button class="btn quiet" id="matchbtn" data-act="pop" aria-expanded="${S.pop}">${g.status === 'check' ? 'Is this right?' : 'Not this game?'}</button>`;
+  else match = `<span>Not matched to a SteamGridDB game yet.</span><button class="btn quiet" id="matchbtn" data-act="pop">Find it</button>`;
+  return `<section class="detail" aria-label="${esc(g.name)}">
+    <div class="stage">
+      <div class="titlerow">
+        <h1>${esc(g.name)}</h1>
+        ${miss.length && g.status !== 'notfound' && !S.fetch ? `<button class="btn" data-act="fillone">${ico('image')}Fill ${miss.length} missing</button>` : ''}
+      </div>
+      <div class="matchline"><span class="source">${esc(g.source)} ·</span>${match}${S.pop ? pop(g) : ''}</div>
+      <div class="pieces">${SLOTS.map(sl => piece(g, sl.key)).join('')}</div>
+    </div>
+    ${tray(g)}
+  </section>`;
+}
+
+function pop(g) {
+  const q = S.popQ || g.name;
+  const base = g.status === 'notfound' ? 'DOSBox Staging' : (g.title);
+  const results = [
+    { name: base, year: g.year || 2021, alt: false },
+    ...(g.guess && g.guess !== base ? [{ name: g.guess, year: g.guessYear }] : []),
+    { name: base + ' (Remastered)', year: (g.year || 2020) + 3 },
+    { name: base.split(' ')[0] + ' Collection', year: (g.year || 2015) + 1 },
+  ];
+  return `<div class="pop" role="dialog" aria-label="Find the right game">
+    <div class="search">${ico('search')}<input id="popq" type="search" value="${esc(q)}" aria-label="Search SteamGridDB"></div>
+    <ul class="results">${results.map((r, i) => {
+      const fake = { ...g, title: r.name, seed: g.seed + i * 3 + 1, hue: (g.hue + i * 60) % 360 };
+      const isCur = g.match && g.match.name === r.name;
+      return `<li><button class="result" data-act="choose" data-name="${esc(r.name)}" data-year="${r.year}" data-i="${i}"><span class="mc">${art(fake, 'cover', 0)}</span><span style="min-width:0"><b>${esc(r.name)}</b><small>${r.year} · ${12 + i * 7} covers, ${4 + i} banners</small></span>${isCur ? '<span class="cur">Current</span>' : ''}</button></li>`;
+    }).join('')}</ul>
+  </div>`;
+}
+
+function tray(g) {
+  if (!S.slot) return `<aside class="tray" hidden></aside>`;
+  const s = SLOT[S.slot];
+  const cols = { cover: 'cols3', wide: 'cols2', banner: '', logo: 'cols2', icon: 'cols3' }[S.slot];
+  const ar = `${s.w} / ${s.h}`;
+  const noOptions = g.status === 'notfound' || !g.match;
+  const opts = Array.from({ length: 10 }, (_, v) => v).filter(v => S.style === 'All' || STYLES[v] === S.style);
+  const tabs = SLOTS.map(t => `<button role="tab" data-act="tab" data-slot="${t.key}" aria-selected="${t.key === S.slot}">${t.label}</button>`).join('');
+  const styles = ['All', 'Official', 'Alternate', 'Minimal'].map(x => `<button data-act="style" data-style="${x}" aria-pressed="${S.style === x}">${x}</button>`).join('');
+  const sel = S.pending;
+  return `<aside class="tray" aria-label="Choose ${s.label.toLowerCase()}">
+    <div class="tray-head">
+      <div class="tray-top"><h2>${s.label}</h2><button class="iconbtn" data-act="closetray" aria-label="Close">${ico('x')}</button></div>
+      <div class="tabs" role="tablist" aria-label="Artwork type">${tabs}</div>
+      ${noOptions ? '' : `<div class="styles">${styles}<label><input type="checkbox" id="anim" data-act="anim" ${S.animated ? 'checked' : ''}>Animated</label></div>`}
+    </div>
+    <div class="options ${cols}" role="group" aria-label="${s.label} options">
+      ${noOptions ? `<p class="no-opts">Match this game to a SteamGridDB title first, then its artwork shows up here.</p>`
+        : opts.map(v => `<button class="opt opt-${S.slot}" id="opt${v}" data-act="opt" data-v="${v}" aria-pressed="${sel === v}" aria-label="${s.label} option by ${AUTHORS[v]}${g.art[S.slot] === v ? ', in use now' : ''}">
+          <span class="thumb" style="aspect-ratio:${ar}">${art(g, S.slot, v)}${g.art[S.slot] === v ? '<span class="now">In use</span>' : ''}</span>
+          <span class="cap"><span>by ${AUTHORS[v]}</span><span>${STYLES[v]}</span></span>
+        </button>`).join('')}
+    </div>
+    <div class="tray-foot">
+      <span class="hint">Tap or hover an option to preview it on the left. ${s.size}. Placeholder art in this mockup.</span>
+      <button class="btn use" data-act="use" ${sel === null || sel === g.art[S.slot] ? 'disabled' : ''}>${ico('check')}Use this ${s.label.toLowerCase()}</button>
+      ${g.art[S.slot] !== null ? `<button class="btn" data-act="clear">Remove</button>` : ''}
+    </div>
+  </aside>`;
+}
+
+function dialog() {
+  if (S.dialog === 'key') {
+    const st = S.keyState;
+    return `<div class="scrim" data-act="scrim"><div class="dialog" role="dialog" aria-modal="true" aria-labelledby="dk">
+      <h2 id="dk">Connect to SteamGridDB</h2>
+      <p>Artwork comes from SteamGridDB, a free community library. It needs a personal API key, which takes a minute to get:</p>
+      <ol><li>Sign in at <a href="https://www.steamgriddb.com/profile/preferences/api" target="_blank" rel="noopener">steamgriddb.com</a> (a Steam login works).</li><li>Open Preferences › API and copy your key.</li><li>Paste it below.</li></ol>
+      <div class="field"><label for="keyin">API key</label><input id="keyin" autocomplete="off" spellcheck="false" placeholder="Paste your key" value="${esc(S.keyDraft)}"></div>
+      <div class="keystate ${st}" role="status">${st === 'wait' ? 'Checking the key…' : st === 'ok' ? ico('check') + 'Key works. It stays on this computer.' : st === 'bad' ? ico('x') + "SteamGridDB didn't accept that key. Check you copied all of it." : ''}</div>
+      <div class="row"><button class="btn" data-act="closedialog">Cancel</button><button class="btn" data-act="examplekey">Use an example key</button><button class="btn primary" data-act="savekey" ${st === 'ok' ? '' : 'disabled'}>${S.after === 'getall' ? 'Save and get artwork' : 'Save key'}</button></div>
+    </div></div>`;
+  }
+  if (S.dialog === 'restore') {
+    const b = [['Today, 23:04', 'Before getting artwork for 9 games', '18 games'], ['Today, 22:41', 'Before changing the icon for Hades', '18 games'], ['12 Oct, 19:15', 'Before changing the cover for Kenshi', '17 games']];
+    return `<div class="scrim" data-act="scrim"><div class="dialog" role="dialog" aria-modal="true" aria-labelledby="dr">
+      <h2 id="dr">Restore Steam's shortcut list</h2>
+      <p>A copy of <code style="font-family:ui-monospace,Menlo,monospace;font-size:12px">shortcuts.vdf</code> is saved before every change. Restoring puts your game names, launch options and icons back the way they were. Artwork files are kept.</p>
+      <ul class="backups">${b.map((x, i) => `<li><label><input type="radio" name="bk" ${i === 0 ? 'checked' : ''}><span><b style="display:block;font-weight:600">${x[1]}</b><small>${x[0]}</small></span><small>${x[2]}</small></label></li>`).join('')}</ul>
+      <div class="row"><button class="btn" data-act="closedialog">Cancel</button><button class="btn primary" data-act="dorestore">Restore</button></div>
+    </div></div>`;
+  }
+  return '';
+}
+
+function toast() {
+  if (!S.toast) return '';
+  return `<div class="toast" role="status"><span>${esc(S.toast.msg)}</span>${S.toast.undo ? '<button data-act="undo">Undo</button>' : ''}</div>`;
+}
+
+/* ---------------- actions ---------------- */
+let toastTimer;
+function say(msg, undo) {
+  S.toast = { msg, undo }; clearTimeout(toastTimer);
+  toastTimer = setTimeout(() => { S.toast = null; render(); }, undo ? 6000 : 3500);
+}
+function markFilled(g, keys) {
+  keys.forEach(k => S.justFilled.add(`${g.id}:${k}`));
+  setTimeout(() => { keys.forEach(k => S.justFilled.delete(`${g.id}:${k}`)); }, 600);
+}
+
+let fetchTimer = null;
+function startFetch(list) {
+  if (!S.key) { S.dialog = 'key'; S.after = list.length > 1 ? 'getall' : 'fillone'; S.afterList = list.map(g => g.id); render(); setTimeout(() => document.getElementById('keyin')?.focus(), 0); return; }
+  const queue = list.map(g => g.id);
+  S.fetch = { done: 0, total: queue.length };
+  S.lastRun = null;
+  const tally = { updated: 0, check: 0, notfound: 0 };
+  const step = () => {
+    if (!S.fetch) return;
+    const id = queue.shift();
+    if (id === undefined) { S.fetch = null; S.lastRun = tally; render(); return; }
+    const g = S.games[id]; g.fetching = true; render();
+    fetchTimer = setTimeout(() => {
+      g.fetching = false;
+      if (g.notfound) { g.status = 'notfound'; tally.notfound++; }
+      else {
+        if (!g.match) g.match = g.check ? { name: g.guess, year: g.guessYear } : { name: g.title, year: g.year };
+        if (g.check && g.status !== 'ok-confirmed') { g.status = 'check'; tally.check++; }
+        const keys = missing(g); keys.forEach(k => g.art[k] = 0); markFilled(g, keys);
+        tally.updated++;
+      }
+      S.fetch.done++;
+      render();
+      fetchTimer = setTimeout(step, 120);
+    }, 420);
+  };
+  render();
+  step();
+}
+
+function closeTray() { S.slot = null; S.pending = null; S.hover = null; S.hoverSlot = null; }
+
+$app.addEventListener('click', e => {
+  const t = e.target.closest('[data-act]');
+  if (!t) { if (S.menu || S.pop) { S.menu = false; S.pop = false; render(); } return; }
+  const act = t.dataset.act; const g = cur();
+  if (act !== 'menu' && act !== 'pop' && !t.closest('.menu') && !t.closest('.pop')) { S.menu = false; S.pop = false; }
+  switch (act) {
+    case 'pick': S.sel = +t.dataset.id; closeTray(); S.pop = false; break;
+    case 'home': S.sel = null; closeTray(); S.pop = false; break;
+    case 'pickopt': {
+      const k = t.dataset.slot, v = +t.dataset.v;
+      if (v === g.art[k]) return;
+      S.slot = S.slot && S.slot !== k ? S.slot : S.slot; S.pendingSlot = k; S.pending = v; applyTo(g, k); return;
+    }
+    case 'onbanner': S.logoOnBanner = t.checked; break;
+    case 'filter': S.filter = S.filter === t.dataset.f && t.closest('.filters') ? 'all' : t.dataset.f; break;
+    case 'getall': startFetch(fillable()); return;
+    case 'fillone': startFetch([g]); return;
+    case 'cancel': clearTimeout(fetchTimer); S.games.forEach(x => x.fetching = false); S.lastRun = null; S.fetch = null; say('Stopped. Artwork already downloaded is kept.'); break;
+    case 'menu': S.menu = !S.menu; break;
+    case 'pop': S.pop = !S.pop; S.popQ = ''; render(); setTimeout(() => document.getElementById('popq')?.focus(), 0); return;
+    case 'choose': {
+      const prev = g.match ? { ...g.match } : null; const prevStatus = g.status;
+      g.match = { name: t.dataset.name, year: +t.dataset.year }; g.status = 'ok';
+      if (prevStatus === 'notfound') { g.notfound = false; }
+      g.seed = g.seed + (+t.dataset.i) * 3 + (prev && prev.name === t.dataset.name ? 0 : 1);
+      S.pop = false;
+      say(prev && prev.name !== t.dataset.name ? `Matched to ${t.dataset.name}. Artwork you already have is kept.` : `Confirmed: ${t.dataset.name}.`);
+      break;
+    }
+    case 'slot': {
+      const k = t.dataset.slot;
+      if (S.slot === k) closeTray(); else { S.slot = k; S.pending = null; S.hover = null; S.style = 'All'; }
+      break;
+    }
+    case 'tab': S.slot = t.dataset.slot; S.pending = null; S.hover = null; break;
+    case 'style': S.style = t.dataset.style; break;
+    case 'anim': S.animated = t.checked; return;
+    case 'opt': {
+      const v = +t.dataset.v;
+      if (e.detail === 2) { S.pending = v; apply(g); return; }
+      S.pending = v; break;
+    }
+    case 'use': apply(g); return;
+    case 'clear': {
+      const k = S.slot, prev = g.art[k]; g.art[k] = null; S.pending = null;
+      S.undo = () => { g.art[k] = prev; };
+      say(`Removed the ${SLOT[k].label.toLowerCase()}.`, true); break;
+    }
+    case 'closetray': closeTray(); break;
+    case 'undo': if (S.undo) { S.undo(); S.undo = null; } S.toast = null; break;
+    case 'restartsteam': S.steamRunning = false; S.lastRun = S.lastRun; say('Steam restarted. Your new artwork is in your library.'); break;
+    case 'dismissrun': S.lastRun = null; break;
+    case 'keydialog': S.dialog = 'key'; S.after = null; S.keyDraft = S.key; S.keyState = S.key ? 'ok' : ''; render(); setTimeout(() => document.getElementById('keyin')?.focus(), 0); return;
+    case 'examplekey': S.keyDraft = '3f9c0e21b7d84a6e9f05c2d1a8b4e7f0'; checkKey(); return;
+    case 'savekey': {
+      S.key = S.keyDraft; S.dialog = null; const after = S.after; S.after = null;
+      if (after) { startFetch(S.afterList.map(id => S.games[id])); return; }
+      say('API key saved.'); break;
+    }
+    case 'closedialog': S.dialog = null; break;
+    case 'scrim': if (e.target === t) S.dialog = null; else return; break;
+    case 'restore': S.dialog = 'restore'; break;
+    case 'dorestore': S.dialog = null; say("Restored Steam's shortcut list from Today, 23:04."); break;
+    case 'toast': say(t.dataset.msg); break;
+    case 'view': S.view = t.dataset.v; closeTray(); break;
+    case 'reset': Object.assign(S, { view: 'library', games: seedGames(), sel: null, filter: 'all', q: '', key: '', steamRunning: true, lastRun: null, fetch: null }); closeTray(); break;
+    case 'noop': return;
+  }
+  render();
+});
+
+function apply(g) { applyTo(g, S.slot); }
+function applyTo(g, k) {
+  const v = S.pending;
+  if (v === null || v === g.art[k]) return;
+  const prev = g.art[k];
+  g.art[k] = v; markFilled(g, [k]); S.pending = null; S.hover = null; S.hoverSlot = null;
+  S.undo = () => { g.art[k] = prev; };
+  const note = k === 'icon' && S.steamRunning ? ' Quit Steam before it closes, or it may undo the icon.' : '';
+  say(`${SLOT[k].label} saved for ${g.name}.${note}`, true);
+  render();
+}
+
+let keyTimer;
+function checkKey() {
+  S.keyState = S.keyDraft.trim().length >= 20 ? 'wait' : (S.keyDraft.trim() ? 'bad' : '');
+  render();
+  clearTimeout(keyTimer);
+  if (S.keyState === 'wait') keyTimer = setTimeout(() => { S.keyState = /^[a-f0-9]{32}$/i.test(S.keyDraft.trim()) ? 'ok' : 'bad'; render(); }, 650);
+}
+
+$app.addEventListener('input', e => {
+  if (e.target.id === 'q') { S.q = e.target.value; render(); }
+  if (e.target.id === 'popq') { S.popQ = e.target.value; }
+  if (e.target.id === 'keyin') { S.keyDraft = e.target.value; clearTimeout(keyTimer); keyTimer = setTimeout(checkKey, 350); }
+});
+
+// live preview while browsing options (strip or tray)
+function optOf(el) {
+  const o = el.closest && el.closest('.opt, .sopt'); if (!o) return null;
+  return { slot: o.classList.contains('sopt') ? o.dataset.slot : S.slot, v: +o.dataset.v, el: o };
+}
+$app.addEventListener('mouseover', e => {
+  const o = optOf(e.target); if (!o) return;
+  if (S.hover !== o.v || S.hoverSlot !== o.slot) { S.hover = o.v; S.hoverSlot = o.slot; renderPreviewOnly(o.slot); }
+});
+$app.addEventListener('mouseout', e => {
+  const o = optOf(e.target); if (!o || o.el.contains(e.relatedTarget)) return;
+  const slot = S.hoverSlot; S.hover = null; S.hoverSlot = null; renderPreviewOnly(slot);
+});
+$app.addEventListener('focusin', e => {
+  const o = optOf(e.target); if (!o) return;
+  const prev = S.hoverSlot; S.hover = o.v; S.hoverSlot = o.slot; if (prev && prev !== o.slot) renderPreviewOnly(prev); renderPreviewOnly(o.slot);
+});
+function renderPreviewOnly(slot) {
+  const g = cur(); if (!g || !slot) return;
+  const el = document.getElementById('slot-' + slot); if (!el) return;
+  const tmp = document.createElement('div'); tmp.innerHTML = slotHTML(g, slot);
+  el.replaceWith(tmp.firstElementChild);
+}
+
+document.addEventListener('keydown', e => {
+  if (e.key === 'Escape') {
+    if (S.dialog) S.dialog = null; else if (S.menu) S.menu = false; else if (S.pop) S.pop = false; else if (S.slot) closeTray(); else return;
+    render();
+  }
+  if (e.key === 'Enter' && e.target.closest && e.target.closest('.opt') && S.pending === +e.target.closest('.opt').dataset.v) { e.preventDefault(); apply(cur()); }
+});
+
+render();
+})();
+</script>

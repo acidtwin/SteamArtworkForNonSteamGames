@@ -1,0 +1,287 @@
+"""The option tray: every SteamGridDB option for one piece, beside the game page."""
+
+from __future__ import annotations
+
+from PySide6.QtCore import QRectF, QSize, Qt, Signal
+from PySide6.QtGui import QFont, QFontMetrics, QPainter, QPainterPath, QPen
+from PySide6.QtWidgets import (
+    QButtonGroup,
+    QHBoxLayout,
+    QListView,
+    QListWidget,
+    QListWidgetItem,
+    QPushButton,
+    QStyle,
+    QStyledItemDelegate,
+    QTabBar,
+    QToolButton,
+    QVBoxLayout,
+    QWidget,
+)
+
+from ..artwork import SLOTS
+from .theme import q
+from .widgets import FlowLayout, draw_badge, draw_checker, fill_rect, label
+
+ORDER = ("grid", "wide", "hero", "logo", "icon")
+ROLE_ASSET = Qt.ItemDataRole.UserRole
+ROLE_PIX = Qt.ItemDataRole.UserRole + 1
+ROLE_INUSE = Qt.ItemDataRole.UserRole + 2
+
+
+def thumb_size(slot_key: str) -> QSize:
+    return {
+        "grid": QSize(100, 150),
+        "wide": QSize(150, 70),
+        "hero": QSize(310, 100),
+        "logo": QSize(150, 70),
+        "icon": QSize(64, 64),
+    }[slot_key]
+
+
+class OptionDelegate(QStyledItemDelegate):
+    def __init__(self, tray):
+        super().__init__()
+        self.tray = tray
+
+    def sizeHint(self, option, index):
+        s = thumb_size(self.tray.slot.key)
+        return QSize(s.width() + 8, s.height() + 26)
+
+    def paint(self, p: QPainter, option, index):
+        p.save()
+        p.setRenderHint(QPainter.RenderHint.Antialiasing)
+        s = thumb_size(self.tray.slot.key)
+        r = QRectF(option.rect.x() + 4, option.rect.y() + 4, s.width(), s.height())
+        clip = QPainterPath()
+        clip.addRoundedRect(r, 3, 3)
+        p.setClipPath(clip)
+        pm = index.data(ROLE_PIX)
+        logo = self.tray.slot.key == "logo"
+        if logo:
+            draw_checker(p, r)
+        else:
+            p.fillRect(r, q("raised"))
+        if pm is not None and not pm.isNull():
+            if logo:
+                sp = pm.scaled(s * 0.86, Qt.AspectRatioMode.KeepAspectRatio, Qt.TransformationMode.SmoothTransformation)
+                p.drawPixmap(int(r.x() + (s.width() - sp.width()) / 2), int(r.y() + (s.height() - sp.height()) / 2), sp)
+            else:
+                p.drawPixmap(r.topLeft(), fill_rect(pm, s))
+        p.setClipping(False)
+        if index.data(ROLE_INUSE):
+            draw_badge(p, r)
+        sel = bool(option.state & QStyle.StateFlag.State_Selected)
+        hov = bool(option.state & QStyle.StateFlag.State_MouseOver)
+        if sel or hov:
+            p.setPen(QPen(q("blue") if sel else q("text3"), 2))
+            p.drawRoundedRect(r.adjusted(1, 1, -1, -1), 3, 3)
+        a = index.data(ROLE_ASSET)
+        f = QFont(option.font)
+        f.setPointSizeF(8)
+        p.setFont(f)
+        p.setPen(q("text3"))
+        cap = f"by {a.author or 'unknown'}" + (f" · {a.style}" if a.style else "")
+        cap = QFontMetrics(f).elidedText(cap, Qt.TextElideMode.ElideRight, s.width())
+        p.drawText(QRectF(r.left(), r.bottom() + 4, s.width(), 16), Qt.AlignmentFlag.AlignLeft, cap)
+        p.restore()
+
+
+class OptionTray(QWidget):
+    closed = Signal()
+    use = Signal(object, object)  # slot, Asset
+    remove = Signal(object)  # slot
+    preview = Signal(object, object)  # slot, QPixmap or None
+    slot_changed = Signal(object)
+
+    def __init__(self, win):
+        super().__init__()
+        self.win = win
+        self.slot = SLOTS["grid"]
+        self.setObjectName("tray")
+        self.setAttribute(Qt.WidgetAttribute.WA_StyledBackground)
+        self.setFixedWidth(370)
+        lay = QVBoxLayout(self)
+        lay.setContentsMargins(16, 14, 16, 14)
+        lay.setSpacing(10)
+        head = QHBoxLayout()
+        self.title = label("", "heading")
+        head.addWidget(self.title, 1)
+        x = QToolButton()
+        x.setText("✕")
+        x.setToolTip("Close (Esc)")
+        x.clicked.connect(self.close_tray)
+        head.addWidget(x)
+        lay.addLayout(head)
+        self.tabs = QTabBar()
+        self.tabs.setExpanding(True)
+        self.tabs.setUsesScrollButtons(False)
+        self.tabs.setObjectName("slottabs")
+        self.tabs.setDrawBase(False)
+        for key in ORDER:
+            self.tabs.addTab(SLOTS[key].label)
+        self.tabs.currentChanged.connect(self._tab)
+        lay.addWidget(self.tabs)
+        self.chip_host = QWidget()
+        self.chip_row = FlowLayout(self.chip_host)
+        self.chips = QButtonGroup(self)
+        self.chips.buttonClicked.connect(lambda *_: self._filter())
+        lay.addWidget(self.chip_host)
+        self.list = QListWidget()
+        self.list.setViewMode(QListView.ViewMode.IconMode)
+        self.list.setResizeMode(QListView.ResizeMode.Adjust)
+        self.list.setMovement(QListView.Movement.Static)
+        self.list.setUniformItemSizes(True)
+        self.list.setMouseTracking(True)
+        self.list.setSpacing(4)
+        self.list.setVerticalScrollMode(QListView.ScrollMode.ScrollPerPixel)
+        self.list.setItemDelegate(OptionDelegate(self))
+        self.list.itemEntered.connect(self._hover)
+        self.list.viewportEntered.connect(lambda: self.preview.emit(self.slot, None))
+        self.list.currentItemChanged.connect(self._selected)
+        self.list.itemDoubleClicked.connect(lambda *_: self._use())
+        self.list.itemActivated.connect(lambda *_: self._use())
+        lay.addWidget(self.list, 1)
+        self.status = label("", "faint", wrap=True)
+        lay.addWidget(self.status)
+        self.more = QPushButton("Load more")
+        self.more.clicked.connect(self._more)
+        lay.addWidget(self.more)
+        foot = QHBoxLayout()
+        self.use_btn = QPushButton("Use this")
+        self.use_btn.setProperty("kind", "confirm")
+        self.use_btn.clicked.connect(self._use)
+        foot.addWidget(self.use_btn, 1)
+        self.remove_btn = QPushButton("Remove")
+        self.remove_btn.clicked.connect(lambda: self.remove.emit(self.slot))
+        foot.addWidget(self.remove_btn)
+        lay.addLayout(foot)
+        self.assets = []
+        self.page = 0
+
+    def open_slot(self, slot):
+        self.slot = slot
+        self.tabs.blockSignals(True)
+        self.tabs.setCurrentIndex(ORDER.index(slot.key))
+        self.tabs.blockSignals(False)
+        self.title.setText(slot.label)
+        self.use_btn.setText(f"Use this {slot.label.lower()}")
+        self.list.setIconSize(thumb_size(slot.key))
+        self.assets = []
+        self.page = 0
+        self.list.clear()
+        self._chips([])
+        self.more.hide()
+        self.show()
+        self._update_buttons()
+        self.load()
+
+    def load(self):
+        game = self.win.current_game()
+        if game is None:
+            self.status.setText("Match this game to a SteamGridDB title first.")
+            return
+        self.status.setText("Loading options…")
+        slot, page, appid = self.slot, self.page, self.win.current_shortcut().appid
+        self.win.fetch_assets(game.id, slot.key, page,
+                              lambda assets: self._loaded(slot, page, appid, assets))
+
+    def _loaded(self, slot, page, appid, assets):
+        if slot is not self.slot or page != self.page or self.win.current_shortcut().appid != appid:
+            return
+        if assets is None:
+            self.status.setText("Couldn't load options from SteamGridDB.")
+            return
+        self.assets += assets
+        applied = self.win.config.get_applied(appid, slot.key)
+        in_use = applied.get("id") if applied and self.win.slot_path(self.win.current_shortcut(), slot) else None
+        for a in assets:
+            it = QListWidgetItem()
+            it.setData(ROLE_ASSET, a)
+            it.setData(ROLE_INUSE, a.id == in_use)
+            it.setToolTip(f"{a.width} × {a.height} · {a.style or 'style unknown'} · by {a.author or 'unknown'}")
+            self.list.addItem(it)
+            self.win.load_thumb(a, it)
+        self.more.setVisible(len(assets) >= 50)
+        self._chips(sorted({a.style for a in self.assets if a.style}))
+        self._filter()
+        if not self.assets:
+            self.status.setText(f"No {slot.label.lower()} for this game on SteamGridDB yet.")
+        else:
+            info = SLOTS[slot.key]
+            self.status.setText(f"{len(self.assets)} options. Hover to preview, click to pick, then "
+                                f"“Use this {info.label.lower()}”.")
+
+    def _more(self):
+        self.page += 1
+        self.more.hide()
+        self.load()
+
+    def _chips(self, styles: list[str]):
+        for b in self.chips.buttons():
+            self.chips.removeButton(b)
+            b.deleteLater()
+        for name in ["all"] + styles:
+            b = QPushButton(name.replace("_", " ").capitalize() if name != "all" else "All")
+            b.setProperty("kind", "chip")
+            b.setProperty("style_key", name)
+            b.setCheckable(True)
+            b.setChecked(name == "all")
+            b.setCursor(Qt.CursorShape.PointingHandCursor)
+            self.chips.addButton(b)
+            self.chip_row.addWidget(b)
+        self.chip_host.setVisible(len(styles) > 1)
+        self.chip_row.invalidate()
+
+    def _filter(self):
+        b = self.chips.checkedButton()
+        want = b.property("style_key") if b else "all"
+        for i in range(self.list.count()):
+            a = self.list.item(i).data(ROLE_ASSET)
+            self.list.item(i).setHidden(want != "all" and a.style != want)
+
+    def _tab(self, i):
+        self.preview.emit(self.slot, None)
+        self.open_slot(SLOTS[ORDER[i]])
+        self.slot_changed.emit(self.slot)
+
+    def _hover(self, item):
+        self.preview.emit(self.slot, item.data(ROLE_PIX))
+
+    def leaveEvent(self, e):
+        self.preview.emit(self.slot, None)
+        super().leaveEvent(e)
+
+    def _selected(self, *_):
+        self._update_buttons()
+
+    def _update_buttons(self):
+        it = self.list.currentItem()
+        self.use_btn.setEnabled(it is not None and not it.data(ROLE_INUSE))
+        sc = self.win.current_shortcut()
+        self.remove_btn.setEnabled(sc is not None and self.win.slot_path(sc, self.slot) is not None)
+
+    def _use(self):
+        it = self.list.currentItem()
+        if it is not None and not it.data(ROLE_INUSE):
+            self.use.emit(self.slot, it.data(ROLE_ASSET))
+
+    def mark_in_use(self):
+        sc = self.win.current_shortcut()
+        applied = self.win.config.get_applied(sc.appid, self.slot.key) if sc else None
+        in_use = applied.get("id") if applied and self.win.slot_path(sc, self.slot) else None
+        for i in range(self.list.count()):
+            it = self.list.item(i)
+            it.setData(ROLE_INUSE, it.data(ROLE_ASSET).id == in_use)
+        self._update_buttons()
+
+    def close_tray(self):
+        self.preview.emit(self.slot, None)
+        self.hide()
+        self.closed.emit()
+
+    def keyPressEvent(self, e):
+        if e.key() == Qt.Key.Key_Escape:
+            self.close_tray()
+        else:
+            super().keyPressEvent(e)

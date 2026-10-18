@@ -93,11 +93,34 @@ class ShortcutsFile:
         while dest.exists():
             dest = self.backup_dir / f"shortcuts-{stamp}-{n}.vdf"
             n += 1
-        shutil.copy2(self.path, dest)
-        backups = sorted(self.backup_dir.glob("shortcuts-*.vdf"))
-        for old in backups[:-MAX_BACKUPS]:
+        shutil.copyfile(self.path, dest)
+        for old in self._backup_files()[MAX_BACKUPS:]:
             old.unlink(missing_ok=True)
         return dest
+
+    def _backup_files(self) -> list[Path]:
+        files = list(self.backup_dir.glob("shortcuts-*.vdf"))
+        return sorted(files, key=lambda p: (p.stat().st_mtime_ns, p.name), reverse=True)
+
+    def backups(self) -> list[tuple[Path, int]]:
+        """Saved copies, newest first, with how many games each one lists."""
+        out = []
+        for p in self._backup_files():
+            try:
+                count = len(_shortcut_maps(binvdf.loads(p.read_bytes())))
+            except (OSError, binvdf.VDFError):
+                count = -1
+            out.append((p, count))
+        return out
+
+    def restore(self, backup: Path):
+        """Put a backup back, keeping a copy of the current file first."""
+        binvdf.loads(backup.read_bytes())  # refuse a broken backup
+        self.backup()
+        tmp = self.path.with_name(".shortcuts-restore")
+        shutil.copy2(backup, tmp)
+        os.replace(tmp, self.path)
+        self.reload()
 
     def save(self):
         """Back up, write atomically, then re-read to prove the file is sound."""

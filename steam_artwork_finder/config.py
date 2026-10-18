@@ -51,6 +51,17 @@ class Config:
         self.data.setdefault("matches", {})[str(appid)] = {"id": game_id, "name": name}
         self.save()
 
+    def get_applied(self, appid: int, slot: str) -> dict | None:
+        return self.data.get("applied", {}).get(str(appid), {}).get(slot)
+
+    def set_applied(self, appid: int, slot: str, info: dict | None):
+        per_game = self.data.setdefault("applied", {}).setdefault(str(appid), {})
+        if info is None:
+            per_game.pop(slot, None)
+        else:
+            per_game[slot] = info
+        self.save()
+
     def save(self):
         self.path.parent.mkdir(parents=True, exist_ok=True)
         tmp = self.path.with_suffix(".tmp")

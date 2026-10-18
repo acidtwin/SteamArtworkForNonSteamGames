@@ -5,261 +5,41 @@ from __future__ import annotations
 import sys
 from pathlib import Path
 
-from PySide6.QtCore import QSize, Qt, QUrl
-from PySide6.QtGui import QIcon, QPixmap
+from PySide6.QtCore import QTimer, QUrl, Qt
+from PySide6.QtGui import QAction, QDesktopServices, QIcon, QPixmap
 from PySide6.QtWidgets import (
     QApplication,
     QComboBox,
-    QDialog,
-    QDialogButtonBox,
     QFileDialog,
-    QFrame,
-    QGridLayout,
     QHBoxLayout,
     QLabel,
-    QLineEdit,
-    QListWidget,
     QListWidgetItem,
     QMainWindow,
+    QMenu,
     QMessageBox,
-    QProgressBar,
     QPushButton,
     QSizePolicy,
     QSplitter,
     QStackedWidget,
+    QToolButton,
     QVBoxLayout,
     QWidget,
 )
 
 from .. import APP_NAME, __version__
-from ..artwork import SLOTS, Slot, current_icon, existing, save_asset
+from ..artwork import SLOTS, Slot, current_icon, existing, remove_asset, save_asset, undo
 from ..config import Config
-from ..sgdb import AuthError, Game, SteamGridDB
+from ..sgdb import Asset, AuthError, Game, SteamGridDB, clean_name
 from ..shortcuts import Shortcut, ShortcutsFile
 from ..steam import SteamUser, find_steam_roots, list_users, steam_running
-from . import workers
+from . import theme, workers
+from .dialogs import ApiKeyDialog, MatchDialog, RestoreDialog
+from .gamepage import GamePage
+from .library import GameList, StartPage
+from .tray import ROLE_PIX, OptionTray
+from .widgets import ArtView, Notice, Toast, label, load_pixmap
 
-API_KEY_URL = "https://www.steamgriddb.com/profile/preferences/api"
-
-
-def pixmap_from(data: bytes | None = None, path: Path | None = None) -> QPixmap:
-    pm = QPixmap()
-    if path is not None:
-        pm.load(str(path))
-    elif data:
-        pm.loadFromData(data)
-    return pm
-
-
-class ApiKeyDialog(QDialog):
-    def __init__(self, parent, current: str):
-        super().__init__(parent)
-        self.setWindowTitle("SteamGridDB API key")
-        lay = QVBoxLayout(self)
-        intro = QLabel(
-            "Artwork comes from SteamGridDB. Paste your free API key below.<br>"
-            f'You can get one at <a href="{API_KEY_URL}">steamgriddb.com</a> '
-            "(sign in, then Preferences → API)."
-        )
-        intro.setOpenExternalLinks(True)
-        intro.setWordWrap(True)
-        lay.addWidget(intro)
-        self.edit = QLineEdit(current)
-        self.edit.setPlaceholderText("API key")
-        self.edit.setEchoMode(QLineEdit.EchoMode.PasswordEchoOnEdit)
-        lay.addWidget(self.edit)
-        self.status = QLabel()
-        lay.addWidget(self.status)
-        bb = QDialogButtonBox(QDialogButtonBox.StandardButton.Save | QDialogButtonBox.StandardButton.Cancel)
-        bb.accepted.connect(self._check)
-        bb.rejected.connect(self.reject)
-        lay.addWidget(bb)
-        self.buttons = bb
-
-    def _check(self):
-        key = self.edit.text().strip()
-        if not key:
-            self.status.setText("Please paste a key first.")
-            return
-        self.status.setText("Checking key…")
-        self.buttons.setEnabled(False)
-
-        def done(ok):
-            self.buttons.setEnabled(True)
-            if ok:
-                self.accept()
-            else:
-                self.status.setText("SteamGridDB didn't accept that key.")
-
-        def failed(msg):
-            self.buttons.setEnabled(True)
-            self.status.setText(msg)
-
-        workers.run(SteamGridDB(key).check_key, on_done=done, on_error=failed)
-
-    def key(self) -> str:
-        return self.edit.text().strip()
-
-
-class MatchDialog(QDialog):
-    """Search SteamGridDB and pick which game a shortcut is."""
-
-    def __init__(self, parent, sgdb: SteamGridDB, name: str):
-        super().__init__(parent)
-        self.sgdb = sgdb
-        self.setWindowTitle(f"Which game is “{name}”?")
-        self.resize(460, 420)
-        lay = QVBoxLayout(self)
-        row = QHBoxLayout()
-        self.edit = QLineEdit(name)
-        self.edit.returnPressed.connect(self.search)
-        btn = QPushButton("Search")
-        btn.clicked.connect(self.search)
-        row.addWidget(self.edit)
-        row.addWidget(btn)
-        lay.addLayout(row)
-        self.list = QListWidget()
-        self.list.itemDoubleClicked.connect(lambda *_: self.accept())
-        lay.addWidget(self.list)
-        self.status = QLabel()
-        lay.addWidget(self.status)
-        bb = QDialogButtonBox(QDialogButtonBox.StandardButton.Ok | QDialogButtonBox.StandardButton.Cancel)
-        bb.accepted.connect(self.accept)
-        bb.rejected.connect(self.reject)
-        lay.addWidget(bb)
-        self.search()
-
-    def search(self):
-        self.status.setText("Searching…")
-        self.list.clear()
-        workers.run(self.sgdb.search, self.edit.text(), on_done=self._show, on_error=self.status.setText)
-
-    def _show(self, games: list[Game]):
-        self.status.setText("" if games else "No matches. Try a shorter name.")
-        for g in games:
-            label = g.name + (f" ({g.year})" if g.year else "") + ("  ✓" if g.verified else "")
-            it = QListWidgetItem(label)
-            it.setData(Qt.ItemDataRole.UserRole, g)
-            self.list.addItem(it)
-        if games:
-            self.list.setCurrentRow(0)
-
-    def selected(self) -> Game | None:
-        it = self.list.currentItem()
-        return it.data(Qt.ItemDataRole.UserRole) if it else None
-
-
-class PickerDialog(QDialog):
-    """A grid of SteamGridDB options for one artwork slot."""
-
-    def __init__(self, parent, sgdb: SteamGridDB, slot: Slot, game: Game):
-        super().__init__(parent)
-        self.sgdb, self.slot, self.game = sgdb, slot, game
-        self.setWindowTitle(f"{slot.label} for {game.name}")
-        self.resize(900, 640)
-        lay = QVBoxLayout(self)
-        self.list = QListWidget()
-        self.list.setViewMode(QListWidget.ViewMode.IconMode)
-        self.list.setResizeMode(QListWidget.ResizeMode.Adjust)
-        self.list.setMovement(QListWidget.Movement.Static)
-        self.list.setSpacing(8)
-        h = 180
-        w = int(h * slot.aspect)
-        if w > 320:
-            w, h = 320, int(320 / slot.aspect)
-        self.thumb = QSize(w, h)
-        self.list.setIconSize(self.thumb)
-        self.list.itemDoubleClicked.connect(lambda *_: self.accept())
-        lay.addWidget(self.list)
-        row = QHBoxLayout()
-        self.status = QLabel("Loading options…")
-        row.addWidget(self.status, 1)
-        self.more = QPushButton("Load more")
-        self.more.clicked.connect(self.load)
-        self.more.setEnabled(False)
-        row.addWidget(self.more)
-        lay.addLayout(row)
-        bb = QDialogButtonBox()
-        bb.addButton("Use this", QDialogButtonBox.ButtonRole.AcceptRole)
-        bb.addButton(QDialogButtonBox.StandardButton.Cancel)
-        bb.accepted.connect(self.accept)
-        bb.rejected.connect(self.reject)
-        lay.addWidget(bb)
-        self.page = 0
-        self.load()
-
-    def load(self):
-        self.more.setEnabled(False)
-        workers.run(
-            self.sgdb.assets, self.slot.key, self.game.id, self.page,
-            on_done=self._show, on_error=self.status.setText,
-        )
-        self.page += 1
-
-    def _show(self, assets):
-        if not assets and self.list.count() == 0:
-            self.status.setText(f"SteamGridDB has no {self.slot.label.lower()} for this game yet.")
-            return
-        self.status.setText(f"{self.list.count() + len(assets)} options. Double-click to use one.")
-        self.more.setEnabled(len(assets) >= 50)
-        placeholder = QPixmap(self.thumb)
-        placeholder.fill(Qt.GlobalColor.darkGray)
-        for a in assets:
-            it = QListWidgetItem(QIcon(placeholder), f"{a.width}×{a.height}")
-            it.setToolTip(f"by {a.author or 'unknown'} · {a.style} · score {a.score}")
-            it.setData(Qt.ItemDataRole.UserRole, a)
-            it.setSizeHint(QSize(self.thumb.width() + 16, self.thumb.height() + 32))
-            self.list.addItem(it)
-            workers.run(
-                workers.cached_download, a.thumb, self.sgdb.download,
-                on_done=lambda data, it=it: self._set_thumb(it, data),
-            )
-
-    def _set_thumb(self, item, data):
-        pm = pixmap_from(data)
-        if not pm.isNull() and self.isVisible():
-            item.setIcon(QIcon(pm.scaled(self.thumb, Qt.AspectRatioMode.KeepAspectRatio,
-                                         Qt.TransformationMode.SmoothTransformation)))
-
-    def selected(self):
-        it = self.list.currentItem()
-        return it.data(Qt.ItemDataRole.UserRole) if it else None
-
-
-class SlotCard(QFrame):
-    def __init__(self, slot: Slot, on_choose, preview_height: int):
-        super().__init__()
-        self.slot = slot
-        self.setFrameShape(QFrame.Shape.StyledPanel)
-        lay = QVBoxLayout(self)
-        top = QHBoxLayout()
-        title = QLabel(f"<b>{slot.label}</b>")
-        top.addWidget(title, 1)
-        self.button = QPushButton("Change…")
-        self.button.clicked.connect(lambda: on_choose(slot))
-        top.addWidget(self.button)
-        lay.addLayout(top)
-        self.preview = QLabel()
-        self.preview.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        self.preview_size = QSize(int(preview_height * slot.aspect), preview_height)
-        self.preview.setMinimumSize(min(self.preview_size.width(), 360), preview_height)
-        self.preview.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Expanding)
-        lay.addWidget(self.preview, 1)
-
-    def show_file(self, path: Path | None):
-        if path is None:
-            self.preview.setPixmap(QPixmap())
-            self.preview.setText("Missing")
-            self.button.setText("Choose…")
-            return
-        pm = pixmap_from(path=path)
-        if pm.isNull():
-            self.preview.setText(path.name)
-        else:
-            self.preview.setPixmap(pm.scaled(
-                self.preview.size().boundedTo(self.preview_size).expandedTo(QSize(64, 64)),
-                Qt.AspectRatioMode.KeepAspectRatio, Qt.TransformationMode.SmoothTransformation))
-        self.button.setText("Change…")
+ORDER = ("grid", "wide", "hero", "logo", "icon")
 
 
 class MainWindow(QMainWindow):
@@ -267,113 +47,218 @@ class MainWindow(QMainWindow):
         super().__init__()
         self.setWindowTitle(APP_NAME)
         self.resize(1280, 800)  # Steam Deck screen
+        self.home = Path.home()
         self.config = Config()
         self.sgdb = SteamGridDB(self.config.api_key)
         self.users: list[SteamUser] = []
         self.user: SteamUser | None = None
         self.sfile: ShortcutsFile | None = None
+        self.status: dict[int, str] = {}  # appid -> "notfound" | "check" | "getting"
+        self.asset_cache: dict[tuple, list[Asset]] = {}
+        self.current = -1
         self.busy = False
+        self.cancel_fetch = False
+        self.notice_kind = None
 
         central = QWidget()
         self.setCentralWidget(central)
         outer = QVBoxLayout(central)
-
-        bar = QHBoxLayout()
-        self.account = QComboBox()
-        self.account.currentIndexChanged.connect(self._account_changed)
-        bar.addWidget(QLabel("Steam account:"))
-        bar.addWidget(self.account)
-        bar.addStretch(1)
-        self.fill_all = QPushButton("Get missing artwork for all games")
-        self.fill_all.clicked.connect(self.fill_everything)
-        bar.addWidget(self.fill_all)
-        refresh = QPushButton("Refresh")
-        refresh.clicked.connect(self.reload_shortcuts)
-        bar.addWidget(refresh)
-        settings = QPushButton("API key…")
-        settings.clicked.connect(self.ask_api_key)
-        bar.addWidget(settings)
-        outer.addLayout(bar)
-
-        self.banner = QLabel()
-        self.banner.setWordWrap(True)
-        self.banner.setStyleSheet("background:#5a4500;color:white;padding:6px;border-radius:4px;")
-        self.banner.hide()
-        outer.addWidget(self.banner)
+        outer.setContentsMargins(0, 0, 0, 0)
+        outer.setSpacing(0)
+        outer.addWidget(self._build_header())
+        self.notice = Notice()
+        outer.addWidget(self.notice)
 
         self.pages = QStackedWidget()
         outer.addWidget(self.pages, 1)
+        self.pages.addWidget(self._full_message(
+            "Couldn't find Steam",
+            "Is Steam installed, and have you signed in to it at least once?",
+            "Choose Steam folder…", self.choose_steam_folder))
+        self.pages.addWidget(self._full_message(
+            "No non-Steam games yet",
+            "Add one in Steam with Games → Add a Non-Steam Game to My Library, then come back here.",
+            "Check again", self.reload_shortcuts))
 
-        # Page 0: Steam not found
-        nf = QWidget()
-        nfl = QVBoxLayout(nf)
-        nfl.addStretch(1)
-        msg = QLabel("<h2>Couldn't find Steam</h2>Is Steam installed and have you signed in at least once?")
-        msg.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        nfl.addWidget(msg)
-        pick = QPushButton("Choose Steam folder…")
-        pick.clicked.connect(self.choose_steam_folder)
-        nfl.addWidget(pick, 0, Qt.AlignmentFlag.AlignCenter)
-        nfl.addStretch(1)
-        self.pages.addWidget(nf)
+        self.split = QSplitter()
+        self.split.setChildrenCollapsible(False)
+        self.split.setHandleWidth(1)
+        self.game_list = GameList(self)
+        self.game_list.setMinimumWidth(260)
+        self.game_list.picked.connect(self.show_index)
+        self.split.addWidget(self.game_list)
+        self.stage = QStackedWidget()
+        self.stage.setObjectName("stage")
+        self.stage.setAttribute(Qt.WidgetAttribute.WA_StyledBackground)
+        self.start = StartPage(self)
+        self.start.picked.connect(lambda i: self.game_list.select(i))
+        self.page = GamePage(self)
+        self.page.fill.connect(self.fill_current)
+        self.page.change_match.connect(self.change_match)
+        self.stage.addWidget(self.start)
+        self.stage.addWidget(self.page)
+        self.split.addWidget(self.stage)
+        self.tray = OptionTray(self)
+        self.tray.hide()
+        self.tray.use.connect(self.apply_option)
+        self.tray.remove.connect(self.remove_art)
+        self.tray.preview.connect(self._tray_preview)
+        self.split.addWidget(self.tray)
+        self.split.setStretchFactor(1, 1)
+        self.split.setSizes([300, 980, 0])
+        self.pages.addWidget(self.split)
 
-        # Page 1: games
-        split = QSplitter()
-        self.games = QListWidget()
-        self.games.setIconSize(QSize(32, 32))
-        self.games.currentRowChanged.connect(self.show_game)
-        split.addWidget(self.games)
-
-        detail = QWidget()
-        dl = QVBoxLayout(detail)
-        head = QHBoxLayout()
-        self.title = QLabel()
-        self.title.setStyleSheet("font-size:20px;font-weight:600;")
-        head.addWidget(self.title, 1)
-        self.fill_one = QPushButton("Get missing artwork")
-        self.fill_one.clicked.connect(self.fill_current)
-        head.addWidget(self.fill_one)
-        dl.addLayout(head)
-        mrow = QHBoxLayout()
-        self.match_label = QLabel()
-        mrow.addWidget(self.match_label, 1)
-        self.match_btn = QPushButton("Wrong game?")
-        self.match_btn.clicked.connect(self.change_match)
-        mrow.addWidget(self.match_btn)
-        dl.addLayout(mrow)
-
-        grid = QGridLayout()
-        self.cards = {
-            "grid": SlotCard(SLOTS["grid"], self.choose_asset, 240),
-            "wide": SlotCard(SLOTS["wide"], self.choose_asset, 110),
-            "icon": SlotCard(SLOTS["icon"], self.choose_asset, 80),
-            "hero": SlotCard(SLOTS["hero"], self.choose_asset, 100),
-            "logo": SlotCard(SLOTS["logo"], self.choose_asset, 90),
-        }
-        grid.addWidget(self.cards["grid"], 0, 0, 3, 1)
-        grid.addWidget(self.cards["wide"], 0, 1)
-        grid.addWidget(self.cards["icon"], 0, 2)
-        grid.addWidget(self.cards["hero"], 1, 1, 1, 2)
-        grid.addWidget(self.cards["logo"], 2, 1, 1, 2)
-        grid.setColumnStretch(1, 2)
-        grid.setColumnStretch(2, 1)
-        dl.addLayout(grid, 1)
-        split.addWidget(detail)
-        split.setSizes([300, 900])
-        self.detail = detail
-        self.pages.addWidget(split)
-
-        # Page 2: no shortcuts
-        empty = QLabel("<h2>No non-Steam games yet</h2>Add one in Steam with "
-                       "<i>Games → Add a Non-Steam Game to My Library</i>, then press Refresh.")
-        empty.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        self.pages.addWidget(empty)
-
-        self.progress = QProgressBar()
-        self.progress.hide()
-        self.statusBar().addPermanentWidget(self.progress)
-
+        self.toast = Toast(central)
+        self.steam_timer = QTimer(self, interval=5000, timeout=self.update_notice)
+        self.steam_timer.start()
         self.detect_steam()
+
+    # ---- layout pieces ----------------------------------------------------
+
+    def _build_header(self) -> QWidget:
+        bar = QWidget()
+        bar.setObjectName("header")
+        bar.setAttribute(Qt.WidgetAttribute.WA_StyledBackground)
+        lay = QHBoxLayout(bar)
+        lay.setContentsMargins(24, 10, 16, 10)
+        lay.setSpacing(14)
+        mark = QLabel("▣")
+        mark.setStyleSheet(f"color: {theme.C['blue_ink']}; font-size: 15pt;")
+        lay.addWidget(mark)
+        lay.addWidget(label(APP_NAME, "appname"))
+        lay.addSpacing(10)
+        self.account = QComboBox()
+        self.account.currentIndexChanged.connect(self._account_changed)
+        lay.addWidget(self.account)
+        self.account_label = label("", "muted")
+        lay.addWidget(self.account_label)
+        self.summary = label("", "muted")
+        self.summary.setTextFormat(Qt.TextFormat.RichText)
+        lay.addWidget(self.summary, 3)
+        lay.addStretch(1)
+        self.done_note = label("✓  Every game has all its artwork", "muted")
+        lay.addWidget(self.done_note, 2)
+        self.progress_label = label("", "muted")
+        self.progress_label.setAlignment(Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter)
+        lay.addWidget(self.progress_label, 2)
+        self.cancel_btn = QPushButton("Cancel")
+        self.cancel_btn.clicked.connect(self._cancel)
+        lay.addWidget(self.cancel_btn)
+        self.fill_btn = QPushButton()
+        self.fill_btn.setProperty("kind", "go")
+        self.fill_btn.clicked.connect(self.fill_everything)
+        lay.addWidget(self.fill_btn)
+        more = QToolButton()
+        more.setText("⋯")
+        more.setToolTip("More")
+        more.setPopupMode(QToolButton.ToolButtonPopupMode.InstantPopup)
+        menu = QMenu(more)
+        for text, fn in (
+            ("SteamGridDB API key…", self.ask_api_key),
+            ("Restore a backup…", self.restore_backup),
+            ("Open the artwork folder", self.open_grid_folder),
+            (None, None),
+            ("Check for changes", self.reload_shortcuts),
+            ("Choose Steam folder…", self.choose_steam_folder),
+            (None, None),
+            ("About", self.about),
+        ):
+            if text is None:
+                menu.addSeparator()
+            else:
+                menu.addAction(QAction(text, menu, triggered=fn))
+        more.setMenu(menu)
+        lay.addWidget(more)
+        for w in (self.summary, self.done_note, self.progress_label):
+            # Let these shrink rather than force the window wider than the Deck's screen.
+            w.setSizePolicy(QSizePolicy.Policy.Ignored, QSizePolicy.Policy.Preferred)
+            w.setMinimumWidth(60)
+        self.summary.setMinimumWidth(120)
+        for w in (self.done_note, self.progress_label, self.cancel_btn, self.fill_btn, self.account, self.account_label):
+            w.hide()
+        return bar
+
+    def _full_message(self, title, text, button, fn) -> QWidget:
+        w = QWidget()
+        w.setObjectName("stage")
+        w.setAttribute(Qt.WidgetAttribute.WA_StyledBackground)
+        lay = QVBoxLayout(w)
+        lay.addStretch(1)
+        t = label(title, "title")
+        t.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        lay.addWidget(t)
+        m = label(text, "muted", wrap=True)
+        m.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        lay.addWidget(m)
+        lay.addSpacing(12)
+        b = QPushButton(button)
+        b.setProperty("kind", "go")
+        b.clicked.connect(fn)
+        lay.addWidget(b, 0, Qt.AlignmentFlag.AlignCenter)
+        lay.addStretch(2)
+        return w
+
+    def resizeEvent(self, e):
+        super().resizeEvent(e)
+        if self.toast.isVisible():
+            self.toast.move((self.centralWidget().width() - self.toast.width()) // 2,
+                            self.centralWidget().height() - self.toast.height() - 28)
+
+    # ---- state helpers used by the pages ----------------------------------
+
+    def slot_path(self, sc: Shortcut, slot: Slot) -> Path | None:
+        if slot.key == "icon":
+            return current_icon(sc, self.user.grid_dir)
+        return existing(self.user.grid_dir, sc.appid, slot)
+
+    def coverage(self, sc: Shortcut) -> list[bool]:
+        return [self.slot_path(sc, SLOTS[k]) is not None for k in ORDER]
+
+    def cover_path(self, sc: Shortcut) -> Path | None:
+        return self.slot_path(sc, SLOTS["grid"])
+
+    def icon_pixmap(self, sc: Shortcut) -> QPixmap | None:
+        p = self.slot_path(sc, SLOTS["icon"])
+        return load_pixmap(p) if p else None
+
+    def current_shortcut(self) -> Shortcut | None:
+        if self.sfile and 0 <= self.current < len(self.sfile.shortcuts):
+            return self.sfile.shortcuts[self.current]
+        return None
+
+    def current_game(self) -> Game | None:
+        sc = self.current_shortcut()
+        m = self.config.get_match(sc.appid) if sc else None
+        return Game(m["id"], m["name"]) if m else None
+
+    def load_thumb(self, asset: Asset, target):
+        def done(data):
+            pm = load_pixmap(data=data, key=("thumb", asset.thumb))
+            try:
+                if isinstance(target, ArtView):
+                    target.set_pixmap(pm)
+                elif isinstance(target, QListWidgetItem):
+                    target.setData(ROLE_PIX, pm)
+            except RuntimeError:  # the widget was replaced meanwhile
+                pass
+
+        workers.run(workers.cached_download, asset.thumb, self.sgdb.download, on_done=done)
+
+    def fetch_assets(self, game_id: int, slot_key: str, page: int, callback):
+        key = (game_id, slot_key, page)
+        if key in self.asset_cache:
+            callback(self.asset_cache[key])
+            return
+
+        def done(assets):
+            self.asset_cache[key] = assets
+            callback(assets)
+
+        def failed(msg):
+            self._network_problem(msg)
+            callback(None)
+
+        workers.run(self.sgdb.assets, slot_key, game_id, page, on_done=done, on_error=failed)
 
     # ---- Steam & shortcuts -------------------------------------------------
 
@@ -385,10 +270,14 @@ class MainWindow(QMainWindow):
         for u in self.users:
             self.account.addItem(u.label, u)
         self.account.blockSignals(False)
-        self.account.setEnabled(len(self.users) > 1)
+        many = len(self.users) > 1
+        self.account.setVisible(many)
+        self.account_label.setVisible(len(self.users) == 1)
         if not self.users:
             self.pages.setCurrentIndex(0)
+            self.update_header()
             return
+        self.account_label.setText(self.users[0].label)
         self._account_changed(0)
 
     def choose_steam_folder(self):
@@ -397,6 +286,7 @@ class MainWindow(QMainWindow):
             roots = find_steam_roots([Path(d)])
             if not roots:
                 QMessageBox.warning(self, APP_NAME, "That folder doesn't have a Steam “userdata” folder inside it.")
+                return
             self.detect_steam(roots)
 
     def _account_changed(self, idx: int):
@@ -410,238 +300,430 @@ class MainWindow(QMainWindow):
         try:
             self.sfile = ShortcutsFile(self.user.shortcuts_path)
         except Exception as e:
-            QMessageBox.critical(self, APP_NAME, f"Couldn't read your Steam shortcuts:\n{e}")
+            QMessageBox.critical(
+                self, APP_NAME,
+                f"Steam's shortcut list couldn't be read:\n{e}\n\nYou can restore a backup from the ⋯ menu.")
             self.sfile = None
-            self.pages.setCurrentIndex(2)
+            self.pages.setCurrentIndex(1)
             return
-        self._update_banner()
-        prev = self.games.currentRow()
-        self.games.clear()
+        self.update_notice()
         if not self.sfile.shortcuts:
-            self.pages.setCurrentIndex(2)
+            self.pages.setCurrentIndex(1)
+            self.update_header()
             return
-        self.pages.setCurrentIndex(1)
-        for sc in self.sfile.shortcuts:
-            it = QListWidgetItem()
-            self.games.addItem(it)
-            self._refresh_item(it, sc)
-        self.games.setCurrentRow(max(0, min(prev, self.games.count() - 1)))
+        self.pages.setCurrentIndex(2)
+        if self.current >= len(self.sfile.shortcuts):
+            self.current = -1
+        self.game_list.rebuild()
+        self.start.rebuild()
+        self.update_header()
 
-    def _refresh_item(self, item: QListWidgetItem, sc: Shortcut):
-        have = self._count_art(sc)
-        item.setText(f"{sc.name}\n{have} of 5 artwork" if have < 5 else f"{sc.name}\nAll artwork set")
-        icon = current_icon(sc, self.user.grid_dir)
-        item.setIcon(QIcon(str(icon)) if icon else QIcon())
+    def update_header(self):
+        if not self.sfile or not self.sfile.shortcuts:
+            self.summary.setText("")
+            self.fill_btn.hide()
+            return
+        n = len(self.sfile.shortcuts)
+        need = sum(1 for sc in self.sfile.shortcuts if not all(self.coverage(sc)))
+        self.summary.setText(f"<b>{n}</b> non-Steam game{'s' if n != 1 else ''} · <b>{need}</b> missing artwork")
+        if self.busy:
+            return
+        self.fill_btn.setText(f"Get artwork for {need} game{'s' if need != 1 else ''}")
+        self.fill_btn.setVisible(need > 0)
+        self.done_note.setVisible(need == 0)
 
-    def _count_art(self, sc: Shortcut) -> int:
-        n = sum(1 for k, s in SLOTS.items() if k != "icon" and existing(self.user.grid_dir, sc.appid, s))
-        return n + (1 if current_icon(sc, self.user.grid_dir) else 0)
-
-    def _update_banner(self):
+    def update_notice(self):
+        if self.notice_kind == "summary":
+            return
         if self.user and steam_running(self.user.userdata.parent.parent):
-            self.banner.setText(
-                "Steam is running. New artwork appears after you restart Steam. "
-                "For icons, close Steam first so it doesn't overwrite the change when it exits.")
-            self.banner.show()
-        else:
-            self.banner.hide()
+            if self.notice_kind != "steam":
+                self.notice_kind = "steam"
+                self.notice.show_message(
+                    "warn",
+                    "Steam is running. New artwork shows up after Steam restarts. To change icons, "
+                    "quit Steam first, or Steam may undo the change when it closes.")
+        elif self.notice_kind == "steam":
+            self.notice_kind = None
+            self.notice.hide()
 
-    def current(self) -> Shortcut | None:
-        row = self.games.currentRow()
-        if self.sfile and 0 <= row < len(self.sfile.shortcuts):
-            return self.sfile.shortcuts[row]
-        return None
+    def _summary_notice(self, text: str):
+        self.notice_kind = "summary"
 
-    def show_game(self, *_):
-        sc = self.current()
+        def dismiss():
+            self.notice_kind = None
+            self.notice.hide()
+            self.update_notice()
+
+        actions = [("Dismiss", dismiss)]
+        if any(v in ("notfound", "check") for v in self.status.values()):
+            actions.insert(0, ("Show games to check", lambda: (self.game_list.filter_buttons["check"].click())))
+        self.notice.show_message("info", text, actions)
+
+    def _network_problem(self, msg: str):
+        self.toast.show_message(msg)
+
+    def refresh_all(self):
+        self.game_list.update_counts()
+        self.game_list.refresh()
+        self.start.refresh()
+        self.update_header()
+        if self.current >= 0:
+            self.page.refresh_current()
+            if self.tray.isVisible():
+                self.tray.mark_in_use()
+
+    # ---- navigation -------------------------------------------------------
+
+    def show_index(self, idx: int):
+        self.current = idx
+        if idx < 0 or not self.sfile:
+            self.tray.hide()
+            self.stage.setCurrentWidget(self.start)
+            self.start.refresh()
+            return
+        self.stage.setCurrentWidget(self.page)
+        self.page.scroll.verticalScrollBar().setValue(0)
+        self.page.show_game()
+        self.load_options()
+        if self.tray.isVisible():
+            self.tray.open_slot(self.tray.slot)
+
+    def load_options(self):
+        sc = self.current_shortcut()
         if not sc:
             return
-        self.title.setText(sc.name or "(unnamed)")
-        m = self.config.get_match(sc.appid)
-        self.match_label.setText(f"SteamGridDB: {m['name']}" if m else "SteamGridDB: not matched yet")
-        for key, card in self.cards.items():
-            if key == "icon":
-                card.show_file(current_icon(sc, self.user.grid_dir))
-            else:
-                card.show_file(existing(self.user.grid_dir, sc.appid, SLOTS[key]))
+        if not self.config.api_key:
+            self.page.set_all_messages("Add your free SteamGridDB API key (⋯ menu) to see artwork options.")
+            return
+        game = self.current_game()
+        if game:
+            self._load_rows(sc, game)
+            return
+        if self.status.get(sc.appid) == "notfound":
+            self.page.set_all_messages("This game wasn't found on SteamGridDB. Use “Search by another name” above.")
+            return
+        self.page.set_all_messages("Finding this game on SteamGridDB…")
+        appid = sc.appid
 
-    def _refresh_current(self):
-        row = self.games.currentRow()
-        sc = self.current()
-        if sc:
-            self._refresh_item(self.games.item(row), sc)
-            self.show_game()
+        def matched(game):
+            self._record_match(sc, game)
+            if self.current_shortcut() is not None and self.current_shortcut().appid == appid:
+                self.page.update_match()
+                self.load_options()
+            self.refresh_all()
 
-    # ---- SteamGridDB ------------------------------------------------------
+        workers.run(self.sgdb.best_match, sc.name, on_done=matched,
+                    on_error=lambda m: (self.page.set_all_messages(m), self._key_problem(m)))
+
+    def _record_match(self, sc: Shortcut, game: Game | None):
+        if game is None:
+            self.status[sc.appid] = "notfound"
+            return
+        if not self.config.get_match(sc.appid):
+            self.config.set_match(sc.appid, game.id, game.name)
+        exact = clean_name(game.name).casefold() == clean_name(sc.name).casefold()
+        if exact:
+            self.status.pop(sc.appid, None)
+        else:
+            self.status[sc.appid] = "check"
+
+    def _load_rows(self, sc: Shortcut, game: Game):
+        appid = sc.appid
+        for key, row in self.page.rows.items():
+            row.set_loading()
+
+            def got(assets, row=row, key=key):
+                cur = self.current_shortcut()
+                if cur is None or cur.appid != appid:
+                    return
+                if assets is None:
+                    row.set_message("Couldn't reach SteamGridDB. Check your connection and open the game again.")
+                else:
+                    more = len(assets) >= 50
+                    row.set_assets(assets, more)
+
+            self.fetch_assets(game.id, key, 0, got)
+
+    def open_tray(self, slot: Slot):
+        if self.current_game() is None:
+            self.change_match() if self.config.api_key else self.ask_api_key()
+            return
+        self.tray.open_slot(slot)
+        self.tray.list.setFocus()
+
+    def _tray_preview(self, slot: Slot, pm):
+        row = self.page.rows.get(slot.key)
+        if row is None:
+            return
+        if pm is not None and not pm.isNull():
+            backdrop = row.art.backdrop if slot.key == "logo" else None
+            row.art.set_pixmap(pm, backdrop)
+            row.caption.setText("Previewing")
+            row._previewing = True
+        elif row._previewing:
+            row._previewing = False
+            row.show_current()
+
+    # ---- changing artwork -------------------------------------------------
+
+    def apply_option(self, slot: Slot, asset: Asset):
+        sc = self.current_shortcut()
+        if not sc or self.busy:
+            return
+        self.toast.show_message(f"Saving {slot.label.lower()}…", ms=20000)
+
+        def done(data):
+            self._save(sc, slot, data, asset, toast=True)
+
+        workers.run(self.sgdb.download, asset.url, on_done=done,
+                    on_error=lambda m: self.toast.show_message(f"Couldn't download it: {m}"))
+
+    def _save(self, sc: Shortcut, slot: Slot, data: bytes, asset: Asset, toast: bool):
+        before = self.config.get_applied(sc.appid, slot.key)
+        try:
+            change = save_asset(self.user.grid_dir, sc, slot, data, asset.mime, self.sfile)
+        except Exception as e:
+            self.toast.show_message(f"Couldn't save the {slot.label.lower()}: {e}")
+            return
+        self.config.set_applied(sc.appid, slot.key, {"id": asset.id, "author": asset.author})
+        self.refresh_all()
+        if toast:
+            def revert():
+                try:
+                    undo(change, self.sfile)
+                except Exception as e:
+                    self.toast.show_message(f"Couldn't undo: {e}")
+                    return
+                self.config.set_applied(sc.appid, slot.key, before)
+                self.refresh_all()
+                self.toast.show_message(f"{slot.label} put back.")
+
+            self.toast.show_message(f"{slot.label} updated for {sc.name}.", undo=revert)
+
+    def remove_art(self, slot: Slot):
+        sc = self.current_shortcut()
+        if not sc:
+            return
+        before = self.config.get_applied(sc.appid, slot.key)
+        try:
+            change = remove_asset(self.user.grid_dir, sc, slot, self.sfile)
+        except Exception as e:
+            self.toast.show_message(f"Couldn't remove it: {e}")
+            return
+        self.config.set_applied(sc.appid, slot.key, None)
+        self.refresh_all()
+
+        def revert():
+            undo(change, self.sfile)
+            self.config.set_applied(sc.appid, slot.key, before)
+            self.refresh_all()
+
+        self.toast.show_message(f"{slot.label} removed.", undo=revert)
+
+    # ---- SteamGridDB key and matching ---------------------------------------
 
     def ensure_key(self) -> bool:
-        if self.config.api_key:
-            return True
-        return self.ask_api_key()
+        return bool(self.config.api_key) or self.ask_api_key()
 
     def ask_api_key(self) -> bool:
         dlg = ApiKeyDialog(self, self.config.api_key)
         if dlg.exec():
             self.config.api_key = dlg.key()
             self.sgdb.api_key = self.config.api_key
+            self.asset_cache.clear()
+            if self.current >= 0:
+                self.load_options()
             return True
         return False
 
-    def _match(self, sc: Shortcut) -> Game | None:
-        """Runs in a worker: the saved match, or SteamGridDB's best guess."""
-        m = self.config.get_match(sc.appid)
-        if m:
-            return Game(m["id"], m["name"])
-        return self.sgdb.best_match(sc.name)
-
-    def _remember(self, sc: Shortcut, game: Game | None):
-        if game and not self.config.get_match(sc.appid):
-            self.config.set_match(sc.appid, game.id, game.name)
+    def _key_problem(self, msg: str):
+        if "API key" in msg:
+            self.toast.show_message(msg)
 
     def change_match(self):
-        sc = self.current()
+        sc = self.current_shortcut()
         if not sc or not self.ensure_key():
             return
         dlg = MatchDialog(self, self.sgdb, sc.name)
         if dlg.exec() and dlg.selected():
             g = dlg.selected()
             self.config.set_match(sc.appid, g.id, g.name)
-            self.show_game()
+            self.status.pop(sc.appid, None)
+            self.page.update_match()
+            self.load_options()
+            self.refresh_all()
+            if self.tray.isVisible():
+                self.tray.open_slot(self.tray.slot)
 
-    def choose_asset(self, slot: Slot):
-        sc = self.current()
-        if not sc or not self.ensure_key():
-            return
-        self.statusBar().showMessage(f"Finding {sc.name} on SteamGridDB…")
-
-        def matched(game):
-            self.statusBar().clearMessage()
-            if game is None:
-                QMessageBox.information(self, APP_NAME, f"Couldn't find “{sc.name}” on SteamGridDB. "
-                                        "Use “Wrong game?” to search for it by another name.")
-                return
-            self._remember(sc, game)
-            self.show_game()
-            dlg = PickerDialog(self, self.sgdb, slot, game)
-            if dlg.exec() and dlg.selected():
-                a = dlg.selected()
-                self.statusBar().showMessage(f"Downloading {slot.label.lower()}…")
-                workers.run(self.sgdb.download, a.url,
-                            on_done=lambda data: self._apply(sc, slot, data, a.mime),
-                            on_error=self._error)
-
-        workers.run(self._match, sc, on_done=matched, on_error=self._error)
-
-    def _apply(self, sc: Shortcut, slot: Slot, data: bytes, mime: str):
-        try:
-            save_asset(self.user.grid_dir, sc, slot, data, mime, self.sfile)
-        except Exception as e:
-            self._error(f"Couldn't save {slot.label.lower()}: {e}")
-            return
-        self.statusBar().showMessage(f"Saved {slot.label.lower()} for {sc.name}", 4000)
-        for i, s in enumerate(self.sfile.shortcuts):
-            if s is sc:
-                self._refresh_item(self.games.item(i), sc)
-        self.show_game()
+    # ---- filling gaps in bulk ---------------------------------------------
 
     def _missing_slots(self, sc: Shortcut) -> list[Slot]:
-        out = []
-        for key, slot in SLOTS.items():
-            have = current_icon(sc, self.user.grid_dir) if key == "icon" else existing(self.user.grid_dir, sc.appid, slot)
-            if not have:
-                out.append(slot)
-        return out
+        return [SLOTS[k] for k, have in zip(ORDER, self.coverage(sc)) if not have]
 
     def _fetch_missing(self, jobs, progress):
         """Worker: for each (shortcut, slots), match and download the top pick."""
-        notes = []
-        for i, (sc, slots) in enumerate(jobs):
-            progress(("step", i, sc.name))
+        report = {"updated": 0, "notfound": [], "gaps": 0, "errors": []}
+        for i, (sc, slots, saved) in enumerate(jobs):
+            if self.cancel_fetch:
+                break
+            progress(("step", i, sc))
             try:
-                game = self._match(sc)
+                game = Game(saved["id"], saved["name"]) if saved else self.sgdb.best_match(sc.name)
             except AuthError:
                 raise
             except Exception as e:
-                notes.append(f"{sc.name}: {e}")
+                report["errors"].append(f"{sc.name}: {e}")
                 continue
+            progress(("match", sc, game, bool(saved)))
             if game is None:
-                notes.append(f"{sc.name}: not found on SteamGridDB")
+                report["notfound"].append(sc.name)
                 continue
-            progress(("match", sc, game))
+            got = False
             for slot in slots:
+                if self.cancel_fetch:
+                    break
                 try:
                     assets = self.sgdb.assets(slot.key, game.id)
                     if not assets:
-                        notes.append(f"{sc.name}: no {slot.label.lower()} available")
+                        report["gaps"] += 1
                         continue
                     data = self.sgdb.download(assets[0].url)
-                    progress(("asset", sc, slot, data, assets[0].mime))
+                    progress(("asset", sc, slot, data, assets[0]))
+                    got = True
                 except AuthError:
                     raise
                 except Exception as e:
-                    notes.append(f"{sc.name} {slot.label.lower()}: {e}")
-        return notes
+                    report["errors"].append(f"{sc.name} {slot.label.lower()}: {e}")
+            report["updated"] += got
+        return report
 
     def _run_fill(self, shortcuts: list[Shortcut]):
         if self.busy or not self.ensure_key():
             return
-        jobs = [(sc, self._missing_slots(sc)) for sc in shortcuts]
-        jobs = [j for j in jobs if j[1]]
+        jobs = [(sc, self._missing_slots(sc), self.config.get_match(sc.appid)) for sc in shortcuts]
+        jobs = [j for j in jobs if j[1] and self.status.get(j[0].appid) != "notfound"]
         if not jobs:
-            self.statusBar().showMessage("Nothing missing. Use Change… on any artwork to swap it.", 5000)
+            self.toast.show_message("Nothing to fill in. Click any artwork to swap it.")
             return
-        self._set_busy(True, len(jobs))
+        self._set_busy(True)
+        total = len(jobs)
 
         def on_progress(ev):
             kind = ev[0]
             if kind == "step":
-                self.progress.setValue(ev[1])
-                self.statusBar().showMessage(f"Getting artwork for {ev[2]}…")
+                _, i, sc = ev
+                self.progress_label.setText(f"Getting artwork…  {i + 1} of {total}")
+                self.status[sc.appid] = "getting"
+                self.game_list.refresh()
             elif kind == "match":
-                self._remember(ev[1], ev[2])
+                _, sc, game, saved = ev
+                self.status.pop(sc.appid, None)
+                if not saved:
+                    self._record_match(sc, game)
+                if self.current_shortcut() is sc:
+                    self.page.update_match()
+                self.game_list.refresh()
             elif kind == "asset":
-                _, sc, slot, data, mime = ev
-                try:
-                    save_asset(self.user.grid_dir, sc, slot, data, mime, self.sfile)
-                except Exception as e:
-                    self.statusBar().showMessage(f"Couldn't save {slot.label.lower()} for {sc.name}: {e}")
-                for i, s in enumerate(self.sfile.shortcuts):
-                    if s is sc:
-                        self._refresh_item(self.games.item(i), sc)
+                _, sc, slot, data, asset = ev
+                self._save(sc, slot, data, asset, toast=False)
 
-        def done(notes):
+        def done(report):
             self._set_busy(False)
-            self.show_game()
-            self.statusBar().showMessage("Done. Restart Steam to see the new artwork.", 8000)
-            if notes:
-                QMessageBox.information(self, APP_NAME, "Finished, with a few gaps:\n\n" + "\n".join(notes[:30]))
+            for sc, *_ in jobs:
+                if self.status.get(sc.appid) == "getting":
+                    self.status.pop(sc.appid, None)
+            self.refresh_all()
+            if self.current >= 0:
+                self.load_options()
+            parts = [f"{report['updated']} game{'s' if report['updated'] != 1 else ''} updated."]
+            if report["notfound"]:
+                parts.append(f"{len(report['notfound'])} not found on SteamGridDB.")
+            checks = sum(1 for v in self.status.values() if v == "check")
+            if checks:
+                parts.append(f"{checks} matched by best guess, worth a quick check.")
+            if report["gaps"]:
+                parts.append(f"{report['gaps']} piece{'s' if report['gaps'] != 1 else ''} had no options yet.")
+            if report["errors"]:
+                parts.append(f"{len(report['errors'])} couldn't be downloaded.")
+            if self.cancel_fetch:
+                parts.insert(0, "Stopped.")
+            parts.append("Restart Steam to see the new artwork.")
+            self._summary_notice(" ".join(parts))
 
         def failed(msg):
             self._set_busy(False)
-            self._error(msg)
+            for sc, *_ in jobs:
+                if self.status.get(sc.appid) == "getting":
+                    self.status.pop(sc.appid, None)
+            self.refresh_all()
+            QMessageBox.warning(self, APP_NAME, msg)
 
+        self.cancel_fetch = False
         workers.run(self._fetch_missing, jobs, on_progress=on_progress, on_done=done, on_error=failed)
 
     def fill_current(self):
-        sc = self.current()
+        sc = self.current_shortcut()
         if sc:
+            if self.status.get(sc.appid) == "notfound":
+                self.status.pop(sc.appid, None)
             self._run_fill([sc])
 
     def fill_everything(self):
         if self.sfile:
             self._run_fill(list(self.sfile.shortcuts))
 
-    def _set_busy(self, busy: bool, total: int = 0):
-        self.busy = busy
-        for w in (self.fill_all, self.fill_one, self.detail, self.account):
-            w.setEnabled(not busy)
-        self.progress.setVisible(busy)
-        self.progress.setRange(0, total)
-        self.progress.setValue(0)
+    def _cancel(self):
+        self.cancel_fetch = True
+        self.progress_label.setText("Stopping…")
 
-    def _error(self, msg: str):
-        self.statusBar().clearMessage()
-        QMessageBox.warning(self, APP_NAME, msg)
+    def _set_busy(self, busy: bool):
+        self.busy = busy
+        self.fill_btn.setVisible(not busy)
+        self.progress_label.setVisible(busy)
+        self.cancel_btn.setVisible(busy)
+        self.done_note.hide()
+        self.account.setEnabled(not busy)
+        self.page.fill_btn.setEnabled(not busy)
+        if not busy:
+            self.update_header()
+
+    # ---- menu actions -----------------------------------------------------
+
+    def restore_backup(self):
+        if not self.sfile:
+            return
+        dlg = RestoreDialog(self, self.sfile.backups())
+        if dlg.exec() and dlg.selected():
+            if self.user and steam_running(self.user.userdata.parent.parent):
+                if QMessageBox.question(
+                        self, APP_NAME, "Steam is running and may overwrite the restored list when it "
+                        "closes. Restore anyway?") != QMessageBox.StandardButton.Yes:
+                    return
+            try:
+                self.sfile.restore(dlg.selected())
+            except Exception as e:
+                QMessageBox.warning(self, APP_NAME, f"Couldn't restore that backup: {e}")
+                return
+            self.reload_shortcuts()
+            self.toast.show_message("Backup restored. The list you had before is saved as a backup too.")
+
+    def open_grid_folder(self):
+        if self.user:
+            self.user.grid_dir.mkdir(parents=True, exist_ok=True)
+            QDesktopServices.openUrl(QUrl.fromLocalFile(str(self.user.grid_dir)))
+
+    def about(self):
+        QMessageBox.about(
+            self, APP_NAME,
+            f"<b>{APP_NAME}</b> {__version__}<br><br>Artwork comes from "
+            "<a href='https://www.steamgriddb.com'>SteamGridDB</a> and its artists.<br>"
+            "Not affiliated with Valve or SteamGridDB.")
+
+    def keyPressEvent(self, e):
+        if e.key() == Qt.Key.Key_Escape and self.tray.isVisible():
+            self.tray.close_tray()
+        else:
+            super().keyPressEvent(e)
 
 
 def main() -> int:
@@ -649,14 +731,11 @@ def main() -> int:
     app.setApplicationName(APP_NAME)
     app.setApplicationVersion(__version__)
     app.setDesktopFileName("steam-artwork-finder")
-    # Finger-sized controls for the Steam Deck's touchscreen.
-    app.setStyleSheet(
-        "QPushButton { min-height: 36px; padding: 0 14px; }"
-        "QComboBox, QLineEdit { min-height: 34px; }"
-        "QListWidget::item { min-height: 44px; }"
-    )
+    app.setStyle("Fusion")
+    app.setPalette(theme.palette())
+    app.setStyleSheet(theme.stylesheet())
+    app.setWindowIcon(QIcon.fromTheme("applications-games"))
     win = MainWindow()
     win.show()
-    if not win.config.api_key and win.users:
-        win.ask_api_key()
+    win.game_list.list.setFocus()
     return app.exec()
