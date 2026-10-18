@@ -1,4 +1,4 @@
-# Steam Artwork Finder
+# Steam Artwork for Non-Steam Games
 
 A small desktop app that gives your **non-Steam games** proper artwork in Steam. It finds Steam on its own, lists every non-Steam shortcut you've added, and pulls all five artwork types from [SteamGridDB](https://www.steamgriddb.com) in one click. You can then swap any piece you don't like from a visual picker.
 

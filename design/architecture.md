@@ -1,4 +1,4 @@
-# Steam Artwork Finder: experience architecture
+# Steam Artwork for Non-Steam Games: experience architecture
 
 Phase 1 of the Intent + Impeccable workflow. This file says what the app must achieve and how a person moves through it. It deliberately says nothing about colour, type or visual style; that belongs to DESIGN.md (Impeccable).
 
