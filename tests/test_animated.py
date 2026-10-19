@@ -166,3 +166,14 @@ def test_library_plays_animated_covers_on_screen(qapp, window):
     wall.viewport().repaint()
     assert not anim.anims
     win.config.data["show_animated"] = True
+
+
+def test_own_animated_file_is_kept_as_it_is():
+    pytest.importorskip("PySide6")
+    from steam_artwork_finder.gui import localfile
+
+    data = make_apng(40, 60, [(0, 0, 40, 60, (255, 0, 0, 255), 100, 0, 0), (0, 0, 40, 60, (0, 0, 255, 255), 100, 0, 0)])
+    cover = localfile.load(SLOTS["grid"], data, "moving.png", "/x/moving.png")
+    assert cover.pick.data == data and cover.pick.asset.animated
+    icon = localfile.load(SLOTS["icon"], data, "moving.png")
+    assert not icon.pick.asset.animated  # Steam doesn't play icons

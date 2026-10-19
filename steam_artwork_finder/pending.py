@@ -8,6 +8,22 @@ from .sgdb import Asset
 
 
 @dataclass
+class LocalFile(Asset):
+    """A picture from the user's own files, picked in place of a SteamGridDB option.
+
+    `path` is where it came from (empty for a pasted picture); `moving` says
+    it's an animated PNG or WebP that Steam will play.
+    """
+
+    path: str = ""
+    moving: bool = False
+
+    @property
+    def animated(self) -> bool:
+        return self.moving
+
+
+@dataclass
 class Pick:
     """One waiting change to one piece of a game's artwork.
 

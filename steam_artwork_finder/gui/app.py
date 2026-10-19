@@ -26,7 +26,7 @@ from .. import APP_NAME, __version__
 from .. import artwork
 from ..artwork import SLOTS, Slot, current_icon, existing, prune_replaced, remove_asset, save_asset, undo
 from ..config import Config
-from ..pending import Pending, Pick
+from ..pending import LocalFile, Pending, Pick
 from ..sgdb import Asset, AuthError, Game, SGDBError, SteamGridDB, clean_name, name_variants
 from ..shortcuts import Shortcut
 from ..steam import (
@@ -39,7 +39,7 @@ from ..steam import (
     steam_running,
     wait_until_closed,
 )
-from . import icons, motion, theme, workers
+from . import icons, localfile, motion, theme, workers
 from .chrome import ContentBar, Header, StatusBar, SteamPopover
 from .steamfolder import SteamFolderPopover
 from .dialogs import AboutDialog, ConfirmDialog, KeyPopover, MatchDialog, QuitDialog, RestoreDialog
@@ -463,11 +463,14 @@ class MainWindow(QMainWindow):
             return None
         return self.pick_pix.get((sc.appid, slot_key))
 
-    def _stage(self, sc: Shortcut, slot_key: str, pick: Pick):
+    def _stage(self, sc: Shortcut, slot_key: str, pick: Pick, pm: QPixmap | None = None):
         self.pending.set(sc.appid, slot_key, pick)
         key = (sc.appid, slot_key)
         self.pick_pix.pop(key, None)
         if pick.clears:
+            return
+        if pm is not None:
+            self.pick_pix[key] = pm
             return
         if pick.data:
             self.pick_pix[key] = load_pixmap(data=pick.data, key=("pick", pick.asset.id))
@@ -487,6 +490,33 @@ class MainWindow(QMainWindow):
             return
         self._stage(sc, slot.key, Pick(asset))
         self.refresh_all()
+
+    def stage_file(self, slot: Slot, path: str | None = None, image=None):
+        """Pick a picture from the user's files (or a pasted one) for a piece of the open game.
+
+        It's read and, if Steam couldn't use it as it is, converted off the GUI thread; then it
+        waits for Apply like any other pick. A picture far off for its piece still goes in, with a word.
+        """
+        sc = self.current_shortcut()
+        if not sc or self.busy == "apply":
+            return
+        if path:
+            self.config.data["last_image_folder"] = str(Path(path).parent)
+            self.config.save()
+
+        def done(loaded):
+            if self.current_shortcut() is not sc or self.busy == "apply":
+                return
+            asset = loaded.pick.asset
+            if asset.animated and self.show_animated:
+                self.motion_files[asset.id] = ("frames", asset.path)
+            self._stage(sc, slot.key, loaded.pick, QPixmap.fromImage(loaded.preview))
+            self.refresh_all()
+            if loaded.note:
+                self.toast.show_message(loaded.note)
+
+        fn, arg = (localfile.load_path, path) if path else (localfile.load_image, image)
+        workers.run(fn, slot, arg, on_done=done, on_error=lambda msg: self.toast.show_message(msg))
 
     def stage_clear(self, slot: Slot):
         sc = self.current_shortcut()
@@ -1152,7 +1182,10 @@ class MainWindow(QMainWindow):
                 self.commit_match(sc)
                 if self.status.get(sc.appid) == "check":
                     self.status.pop(sc.appid, None)
-                self.config.set_applied(sc.appid, key, {"id": pick.asset.id, "author": pick.asset.author})
+                info = {"id": pick.asset.id, "author": pick.asset.author}
+                if isinstance(pick.asset, LocalFile):
+                    info["file"] = Path(pick.asset.path).name if pick.asset.path else "Pasted picture"
+                self.config.set_applied(sc.appid, key, info)
             self.pending.drop(sc.appid, key)
             self.pick_pix.pop((sc.appid, key), None)
             if change.reloaded:

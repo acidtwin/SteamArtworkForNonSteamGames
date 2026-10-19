@@ -759,3 +759,97 @@ def test_option_strips_line_up_and_banners_keep_their_top(qapp, window):
     assert QColor(centred.pixel(50, 0)) == QColor("red") and QColor(centred.pixel(50, 49)) == QColor("blue")
     top = fill_rect(pm, QSize(100, 50), top=True).toImage()
     assert QColor(top.pixel(50, 0)) == QColor("red") and QColor(top.pixel(50, 49)) == QColor("red")
+
+
+def _image_bytes(w, h, fmt="PNG", alpha=True):
+    from PySide6.QtCore import QBuffer, QByteArray, QIODevice
+    from PySide6.QtGui import QColor, QImage
+
+    img = QImage(w, h, QImage.Format.Format_ARGB32 if alpha else QImage.Format.Format_RGB32)
+    img.fill(QColor(30, 120, 200, 128 if alpha else 255))
+    arr = QByteArray()
+    buf = QBuffer(arr)
+    buf.open(QIODevice.OpenModeFlag.WriteOnly)
+    img.save(buf, fmt)
+    buf.close()
+    return bytes(arr.data())
+
+
+def test_own_file_waits_until_apply_and_undoes(qapp, window, tmp_path):
+    from steam_artwork_finder.artwork import SLOTS, existing
+    from steam_artwork_finder.pending import LocalFile
+
+    win = window
+    src = tmp_path / "pics" / "my cover.jpg"
+    src.parent.mkdir()
+    data = _image_bytes(600, 900, "JPG", alpha=False)
+    src.write_bytes(data)
+    win.open_game(0)
+    _pump(qapp)
+    sc = win.current_shortcut()
+    row = win.page.rows["grid"]
+    assert row.file_tile.isVisible()  # there even without an API key or options
+    win.stage_file(SLOTS["grid"], path=str(src))
+    _pump(qapp, 2000, until=lambda: win.pending.count(sc.appid))
+    pick = win.pending.get(sc.appid, "grid")
+    assert isinstance(pick.asset, LocalFile) and pick.data == data  # a JPEG is kept as it is
+    assert row.caption.text() == "Not applied yet" and not row.art.pixmap.isNull()
+    assert win.config.data["last_image_folder"] == str(src.parent)
+    assert existing(win.user.grid_dir, sc.appid, SLOTS["grid"]) is None
+
+    win.apply_games([sc.appid])
+    _pump(qapp, 3000, until=lambda: not win.busy)
+    path = existing(win.user.grid_dir, sc.appid, SLOTS["grid"])
+    assert path is not None and path.suffix == ".jpg" and path.read_bytes() == data
+    assert win.config.get_applied(sc.appid, "grid")["file"] == "my cover.jpg"
+    assert path.parent == win.user.grid_dir and path.name == f"{sc.appid}p.jpg"  # a copy, named Steam's way
+    assert src.read_bytes() == data  # the user's own file is left alone
+    win.page.show_game()
+    assert row.caption.text() == "In use · your file"
+    win.toast.undo_now()
+    assert existing(win.user.grid_dir, sc.appid, SLOTS["grid"]) is None
+
+
+def test_own_file_is_converted_and_warned_about(qapp):
+    from PySide6.QtGui import QImage
+
+    from steam_artwork_finder.artwork import SLOTS
+    from steam_artwork_finder.gui import localfile
+
+    bmp = localfile.load(SLOTS["hero"], _image_bytes(1920, 620, "BMP", alpha=False), "a.bmp")
+    assert bmp.pick.asset.mime == "image/png" and bmp.pick.data.startswith(b"\x89PNG") and not bmp.note
+
+    wide = localfile.load(SLOTS["grid"], _image_bytes(920, 430), "w.png")
+    assert "wider than a cover" in wide.note
+    small = localfile.load(SLOTS["hero"], _image_bytes(400, 130), "s.png")
+    assert "small" in small.note
+    logo = localfile.load(SLOTS["logo"], _image_bytes(400, 200, "JPG", alpha=False), "l.jpg")
+    assert "see-through" in logo.note
+
+    big = localfile.load(SLOTS["grid"], _image_bytes(4000, 6000), "big.png")
+    assert big.pick.asset.height == 3840 and max(big.preview.width(), big.preview.height()) <= 1920
+
+    pasted = localfile.load_image(SLOTS["icon"], QImage.fromData(_image_bytes(256, 256), "PNG"))
+    assert pasted.pick.data.startswith(b"\x89PNG") and pasted.pick.asset.path == ""
+    with pytest.raises(localfile.FileProblem):
+        localfile.load(SLOTS["grid"], b"not a picture", "x.png")
+
+
+def test_own_icon_is_copied_and_linked_from_steams_folder(qapp, window, tmp_path):
+    from steam_artwork_finder.artwork import SLOTS, existing
+
+    win = window
+    src = tmp_path / "icon.bmp"
+    src.write_bytes(_image_bytes(256, 256, "BMP", alpha=False))
+    win.open_game(0)
+    _pump(qapp)
+    sc = win.current_shortcut()
+    win.stage_file(SLOTS["icon"], path=str(src))
+    _pump(qapp, 2000, until=lambda: win.pending.count(sc.appid))
+    win.apply_games([sc.appid])
+    _pump(qapp, 3000, until=lambda: not win.busy)
+    path = existing(win.user.grid_dir, sc.appid, SLOTS["icon"])
+    assert path is not None and path.name == f"{sc.appid}_icon.png"  # converted for Steam
+    assert win.sfile.find(sc.appid).icon == str(path)  # points at the copy, never the original
+    src.unlink()
+    assert path.exists()
