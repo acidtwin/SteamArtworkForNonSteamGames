@@ -836,3 +836,27 @@ def test_startup_learns_what_steamgriddb_lacks(qapp, window):
     win.check_gaps()  # once a session is enough
     _pump(qapp, 300)
     assert len(asked) == 15
+
+
+def test_startup_makes_the_icon_steamgriddb_lacks(qapp, window, tmp_path):
+    from PySide6.QtGui import QImage
+
+    from steam_artwork_finder.artwork import SLOTS, save_asset
+    from steam_artwork_finder.gui.fallback import GENERATED
+
+    win = window
+    win.config.data["api_key"] = "x"
+    sc = win.sfile.shortcuts[0]
+    win.config.set_match(sc.appid, 9, sc.name)
+    img = QImage(60, 90, QImage.Format.Format_RGB32)
+    img.fill(0x3366CC)
+    img.save(str(tmp_path / "c.png"))
+    save_asset(win.user.grid_dir, sc, SLOTS["grid"], (tmp_path / "c.png").read_bytes(), "image/png", None)
+    win.forget_files()
+    win.sgdb.assets = lambda kind, game_id, page=0, *a, **k: []
+    win.sgdb.match = lambda name: (None, 0)
+    win.set_connection("connected")
+    _pump(qapp, 3000, until=lambda: win.pending.get(sc.appid, "icon") is not None)
+    assert win.pending.get(sc.appid, "icon").asset.style == GENERATED
+    _pump(qapp, 300)
+    assert [b.text() for b in win.cbar.buttons] == ["Apply (1 Game)"]  # nothing left to get, just apply

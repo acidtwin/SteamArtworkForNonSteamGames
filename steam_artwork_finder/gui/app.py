@@ -898,6 +898,9 @@ class MainWindow(QMainWindow):
         def got(result):
             appid, key, none = result
             self.config.set_no_art(appid, key, none)
+            sc = next((g for g in self.sfile.shortcuts if g.appid == appid), None) if self.sfile else None
+            if none and key == "icon" and sc is not None:
+                self._fallback_icon(sc)  # no icon there: one made from its other artwork waits for Apply
             self.refresh_soon()
 
         workers.run(work, on_progress=got, on_done=lambda *_: None,
