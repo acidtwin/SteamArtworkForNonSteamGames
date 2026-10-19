@@ -40,12 +40,14 @@ from .tray import ROLE_PIX, OptionTray
 from .widgets import ArtView, Notice, Toast, label, load_pixmap
 
 ORDER = ("grid", "wide", "hero", "logo", "icon")
+APP_ICON = Path(__file__).with_name("icons") / "app.svg"
 
 
 class MainWindow(QMainWindow):
     def __init__(self):
         super().__init__()
         self.setWindowTitle(APP_NAME)
+        self.setWindowIcon(QIcon(str(APP_ICON)))
         self.resize(1280, 800)  # Steam Deck screen
         self.home = Path.home()
         self.config = Config()
@@ -122,8 +124,8 @@ class MainWindow(QMainWindow):
         lay = QHBoxLayout(bar)
         lay.setContentsMargins(24, 10, 16, 10)
         lay.setSpacing(14)
-        mark = QLabel("▣")
-        mark.setStyleSheet(f"color: {theme.C['blue_ink']}; font-size: 15pt;")
+        mark = QLabel()
+        mark.setPixmap(QIcon(str(APP_ICON)).pixmap(32, 32))
         lay.addWidget(mark)
         lay.addWidget(label(APP_NAME, "appname"))
         lay.addSpacing(10)
@@ -730,11 +732,11 @@ def main() -> int:
     app = QApplication(sys.argv)
     app.setApplicationName(APP_NAME)
     app.setApplicationVersion(__version__)
-    app.setDesktopFileName("steam-artwork-finder")
+    app.setDesktopFileName("io.github.acidtwin.SteamArtworkForNonSteamGames")
     app.setStyle("Fusion")
     app.setPalette(theme.palette())
     app.setStyleSheet(theme.stylesheet())
-    app.setWindowIcon(QIcon.fromTheme("applications-games"))
+    app.setWindowIcon(QIcon(str(APP_ICON)))
     win = MainWindow()
     win.show()
     win.game_list.list.setFocus()

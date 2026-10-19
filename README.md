@@ -48,6 +48,13 @@ pip install -r requirements.txt
 python3 -m steam_artwork_finder
 ```
 
+To add it to your app menu on Linux, install the launcher and its icon:
+
+```bash
+install -Dm644 packaging/io.github.acidtwin.SteamArtworkForNonSteamGames.desktop ~/.local/share/applications/io.github.acidtwin.SteamArtworkForNonSteamGames.desktop
+install -Dm644 packaging/io.github.acidtwin.SteamArtworkForNonSteamGames.svg ~/.local/share/icons/hicolor/scalable/apps/io.github.acidtwin.SteamArtworkForNonSteamGames.svg
+```
+
 ### 3. Use it
 
 1. Press **Get artwork for N games** to fill every gap at once, or pick a game on the left.

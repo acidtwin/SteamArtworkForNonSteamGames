@@ -3,6 +3,6 @@ Type=Application
 Name=Steam Artwork for Non-Steam Games
 Comment=Artwork and icons for your non-Steam games
 Exec=steam-artwork-finder
-Icon=applications-games
+Icon=io.github.acidtwin.SteamArtworkForNonSteamGames
 Categories=Game;Utility;
 Terminal=false
