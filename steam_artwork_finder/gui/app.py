@@ -890,7 +890,7 @@ class MainWindow(QMainWindow):
             buttons = self.cbar.set_buttons(specs)
             if specs and specs[0][3] == self.fill_everything:
                 names = [g.name or "(unnamed)" for g in needy]
-                buttons[0].setToolTip("Missing artwork:\n" + "\n".join(names[:20])
+                buttons[0].setToolTip("Get artwork for:\n" + "\n".join(names[:20])
                                       + (f"\n…and {len(names) - 20} more" if len(names) > 20 else "")
                                       if names else "Every game has all the artwork SteamGridDB has")
         self._show_status()
@@ -1495,6 +1495,7 @@ class MainWindow(QMainWindow):
                 line.append(f"{plural(len(made), 'icon')} made from other artwork")
             if skipped:
                 line.append(f"{skipped} skipped (not found before)")
+            found = found or len(made)
             self.show_note("done" if found else "info", " · ".join(line), hold=8000 if found else None)
 
         def failed(msg):
