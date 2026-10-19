@@ -25,3 +25,9 @@ Ideas and jobs saved for later, once the app is more final.
 
 - Choose a licence (the metainfo file has a placeholder).
 - Write the Flatpak manifest for Flathub.
+
+## Later
+
+- **TheGamesDB as a gap-filling artwork source** (box art, fanart and clear logos, cropped to
+  Steam's shapes). Parked 2026-10-19: it needs a developer key, applied for at
+  https://api.thegamesdb.net/key.php after signing up, which felt too much for a quick, simple app.
