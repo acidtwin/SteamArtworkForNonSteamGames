@@ -115,6 +115,20 @@ def set_icon(shortcuts_file: ShortcutsFile, shortcut: Shortcut, path: str) -> bo
     Returns True when the list was reloaded (or `shortcut` was stale), so the
     caller can rebuild anything that indexes into it.
     """
+    reloaded = _edit(shortcuts_file, shortcut, lambda sc: sc.set_icon(path))
+    shortcut.icon = path
+    return reloaded
+
+
+def set_name(shortcuts_file: ShortcutsFile, shortcut: Shortcut, name: str) -> bool:
+    """Retitle the shortcut and save, keeping its appid (so its artwork stays linked).
+    Made on the live list like `set_icon`, with the same return value."""
+    reloaded = _edit(shortcuts_file, shortcut, lambda sc: sc.set_name(name))
+    shortcut.name = name
+    return reloaded
+
+
+def _edit(shortcuts_file: ShortcutsFile, shortcut: Shortcut, change) -> bool:
     reloaded = False
     if shortcuts_file.changed_on_disk():
         shortcuts_file.reload()
@@ -122,7 +136,7 @@ def set_icon(shortcuts_file: ShortcutsFile, shortcut: Shortcut, path: str) -> bo
     live = shortcuts_file.find(shortcut.appid)
     if live is None:
         raise ShortcutsChanged(f"{shortcut.name} is no longer in Steam's game list")
-    live.set_icon(path)
+    change(live)
     try:
         shortcuts_file.save()
     except ShortcutsChanged:  # Steam wrote between the check and the save
@@ -131,9 +145,8 @@ def set_icon(shortcuts_file: ShortcutsFile, shortcut: Shortcut, path: str) -> bo
         live = shortcuts_file.find(shortcut.appid)
         if live is None:
             raise
-        live.set_icon(path)
+        change(live)
         shortcuts_file.save()
-    shortcut.icon = path
     return reloaded or live is not shortcut
 
 

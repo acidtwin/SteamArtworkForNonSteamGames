@@ -123,3 +123,19 @@ def test_suggestions_use_the_folder_for_file_names():
     assert suggestions("SB.exe", win)[0] == ("Super Bomberman R", "folder")
     assert suggestions("game.exe", "/home/acid/game.exe") == [("game", "file")]  # a home folder is no name
     assert suggestions("Celeste - GOG", "/home/a/Games/Celeste/Celeste") == [("Celeste", "name")]
+
+
+def test_generic_titles_search_by_folder():
+    from steam_artwork_finder.sgdb import generic_name, search_name, suggestions
+
+    hk = '"C:\\Games\\Hollow Knight\\game.exe"'
+    assert generic_name("game.exe", hk) and search_name("game.exe", hk) == "Hollow Knight"
+    assert generic_name("Launcher", "/home/u/Games/Hades II/Launcher.exe")
+    assert search_name("Launcher", "/home/u/Games/Hades II/Launcher.exe") == "Hades II"
+    assert generic_name("hollow_knight", "/home/u/Games/Hollow Knight/hollow_knight.x86_64")
+    assert suggestions("Launcher", "/g/Hades II/Launcher.exe")[0] == ("Hades II", "folder")
+    # Real titles stay as they are, even when the program has the game's name.
+    assert not generic_name("Celeste", "/home/deck/Games/Celeste/Celeste")
+    assert not generic_name("Hollow Knight™", "/opt/hk/hollow_knight.x86_64")
+    assert search_name("Celeste", "/home/deck/Games/Celeste/Celeste") == "Celeste"
+    assert search_name("Launcher") == "Launcher"  # nothing better to go on

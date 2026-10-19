@@ -25,10 +25,20 @@ class Pick:
 
 
 class Pending:
-    """appid -> {slot key -> Pick}."""
+    """appid -> {slot key -> Pick}, and appid -> new title for games being renamed."""
 
     def __init__(self):
         self.by_game: dict[int, dict[str, Pick]] = {}
+        self.names: dict[int, str] = {}
+
+    def name(self, appid: int) -> str | None:
+        return self.names.get(appid)
+
+    def set_name(self, appid: int, name: str | None):
+        if name is None:
+            self.names.pop(appid, None)
+        else:
+            self.names[appid] = name
 
     def get(self, appid: int, slot_key: str) -> Pick | None:
         return self.by_game.get(appid, {}).get(slot_key)
@@ -39,6 +49,7 @@ class Pending:
     def drop(self, appid: int, slot_key: str | None = None):
         if slot_key is None:
             self.by_game.pop(appid, None)
+            self.names.pop(appid, None)
             return
         picks = self.by_game.get(appid)
         if picks is not None:
@@ -50,13 +61,16 @@ class Pending:
         return dict(self.by_game.get(appid, {}))
 
     def count(self, appid: int) -> int:
-        return len(self.by_game.get(appid, {}))
+        """Waiting changes for one game: its picks, and its new title."""
+        return len(self.by_game.get(appid, {})) + (appid in self.names)
 
     def games(self) -> list[int]:
-        return [a for a, picks in self.by_game.items() if picks]
+        out = [a for a, picks in self.by_game.items() if picks]
+        return out + [a for a in self.names if a not in out]
 
     def clear(self):
         self.by_game.clear()
+        self.names.clear()
 
     def __bool__(self) -> bool:
-        return any(self.by_game.values())
+        return any(self.by_game.values()) or bool(self.names)

@@ -633,6 +633,8 @@ class MatchCard(QWidget):
     home = Signal()
     get_all = Signal()
     apply = Signal()
+    rename = Signal()
+    unrename = Signal()
 
     def __init__(self, parent=None):
         super().__init__(parent)
@@ -700,6 +702,17 @@ class MatchCard(QWidget):
         self.key_btn.setAccessibleDescription("Add a free SteamGridDB API key")
         self.key_btn.clicked.connect(self.add_key.emit)
         acts.addWidget(self.key_btn)
+        # A game stuck with a title like "game.exe" is offered its SteamGridDB name.
+        self.rename_btn = QPushButton()
+        self.rename_btn.setProperty("kind", "confirm")
+        self.rename_btn.clicked.connect(self.rename.emit)
+        self.rename_btn.hide()
+        acts.addWidget(self.rename_btn)
+        self.unrename_btn = QPushButton("Undo Rename")
+        self.unrename_btn.setObjectName("bannerghost")
+        self.unrename_btn.clicked.connect(self.unrename.emit)
+        self.unrename_btn.hide()
+        acts.addWidget(self.unrename_btn)
         self.get_btn = QPushButton("Get All Artwork")
         self.get_btn.setObjectName("bannerget")
         self.get_btn.setIcon(icons.icon("download", 15, "white"))
@@ -731,6 +744,20 @@ class MatchCard(QWidget):
         self.title.setText(name)
         self.title.setAccessibleName(name)
         self.update()  # a game with no banner gets its own colours
+
+    def set_rename(self, old: str, suggest: str | None, staged: bool):
+        """Offer to retitle a game called `old` to `suggest`, or (`staged`) to take that back."""
+        self.unrename_btn.setVisible(staged)
+        self.unrename_btn.setToolTip(f"Keep the name “{old}”")
+        self.unrename_btn.setAccessibleDescription(f"Keep the name {old} instead")
+        self.rename_btn.setVisible(bool(suggest) and not staged)
+        if suggest:
+            short = QFontMetricsF(self.rename_btn.font()).elidedText(suggest, Qt.TextElideMode.ElideRight, 220)
+            self.rename_btn.setText(f"Rename to {short}")
+            self.rename_btn.setToolTip(f"“{old}” doesn't say which game this is. "
+                                       f"Steam will call it “{suggest}” once you apply.")
+            self.rename_btn.setAccessibleDescription(f"Rename {old} to {suggest} in Steam when you apply")
+        self._fit()
 
     def set_actions(self, can_get: bool, changes: int, busy: bool):
         self.get_btn.setEnabled(can_get and not busy)
@@ -882,6 +909,8 @@ class GamePage(QWidget):
         self.card.home.connect(win.go_home)
         self.card.get_all.connect(win.fill_current)
         self.card.apply.connect(lambda: win.apply_games([win.current_shortcut().appid]))
+        self.card.rename.connect(win.stage_rename)
+        self.card.unrename.connect(win.unstage_rename)
         top.addWidget(self.card)
 
         lay = QVBoxLayout()
@@ -928,7 +957,9 @@ class GamePage(QWidget):
                                 self.win.match_candidates(sc) if check else 0)
         else:
             self.card.set_state("finding", sc.name or "(unnamed)")
-        self.card.set_game(sc.name or "(unnamed)")
+        self.card.set_game(self.win.shown_name(sc))
+        staged = self.win.pending.name(sc.appid) is not None
+        self.card.set_rename(sc.name, self.win.rename_suggestion(sc), staged)
         self._card_cover()
 
     def _card_cover(self):

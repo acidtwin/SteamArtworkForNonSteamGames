@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import re
+
 from PySide6.QtCore import QEvent, QPoint, QPointF, QRect, QRectF, QSize, Qt, QTimer, Signal
 from PySide6.QtGui import QAction, QColor, QFont, QFontMetrics, QPainter, QPainterPath, QPen, QPixmap
 from PySide6.QtWidgets import (
@@ -36,6 +38,9 @@ NEW_BG = C["action"]
 FILTERS = (("all", "All Games", "All"), ("missing", "Missing Art", "Missing Art"), ("check", "To Check", "To Check"))
 # key, name, icon: how the library shows its games
 VIEWS = (("list", "List", "view-list"), ("grid", "Grid", "view-grid"), ("details", "Details", "view-details"))
+# key, name, icon: the order the library lists its games in
+SORTS = (("az", "A to Z", "sort-az"), ("za", "Z to A", "sort-za"),
+         ("missing", "Missing artwork first", "images"), ("recent", "Recently added", "history"))
 PIECES = ("Covers", "Wide covers", "Banners", "Logos", "Icons")
 
 
@@ -84,6 +89,30 @@ def status_text(win, idx: int) -> tuple[str, str | None]:
     tag = win.status.get(sc.appid)
     have = sum(win.coverage(sc))
     return ("All artwork" if have == 5 else f"{have} of 5"), tag
+
+
+def _natural(name: str) -> tuple:
+    """A sort key for names that puts "Game 2" before "Game 10", and unnamed games last."""
+    parts = [(0, int(t), "") if t.isdigit() else (1, 0, t) for t in re.split(r"(\d+)", name.strip().casefold()) if t]
+    return (not parts, parts)
+
+
+def sorted_indices(win, mode: str) -> list[int]:
+    """Indexes into the shortcut list in the order `mode` (a SORTS key) shows them.
+
+    Steam adds new shortcuts to the end of its list, so "recent" is that list backwards.
+    """
+    scs = win.sfile.shortcuts if win.sfile else []
+    order = list(range(len(scs)))
+    if mode == "recent":
+        return order[::-1]
+    by_name = sorted(order, key=lambda i: _natural(scs[i].name))
+    if mode == "za":
+        named = [i for i in by_name if scs[i].name.strip()]
+        return named[::-1] + [i for i in by_name if not scs[i].name.strip()]
+    if mode == "missing":
+        return sorted(by_name, key=lambda i: -win.coverage(scs[i]).count(False))  # stable: A to Z within
+    return by_name
 
 
 def is_ready(win, idx: int) -> bool:
@@ -429,6 +458,13 @@ class ViewMenu(PopupMenu):
         super().__init__("VIEW", "Library view", [ViewRow(key, text, icon) for key, text, icon in VIEWS], 200, parent)
 
 
+class SortMenu(PopupMenu):
+    """The popup beside the Home bar: the order games are listed in."""
+
+    def __init__(self, parent=None):
+        super().__init__("SORT BY", "Sort games", [ViewRow(key, text, icon) for key, text, icon in SORTS], 250, parent)
+
+
 class SearchBox(QFrame):
     """The search field with the filter button inside it on the right."""
 
@@ -536,23 +572,25 @@ class HomeButton(QAbstractButton):
 
 
 class ViewButton(QAbstractButton):
-    """The square beside the Home bar, showing the library view in use; opens the view menu."""
+    """A square beside the Home bar showing the choice in use (the library view, or its
+    order); opens its menu."""
 
-    def __init__(self, parent=None):
+    def __init__(self, options=VIEWS, label: str = "View", spoken: str = "Library view", parent=None):
         super().__init__(parent)
-        self.view = "grid"
+        self.options, self.label, self.spoken = options, label, spoken
+        self.view = options[0][0]
         self.open = False
         self.setFixedSize(32, 32)
         self.setCursor(Qt.CursorShape.PointingHandCursor)
         self.setAttribute(Qt.WidgetAttribute.WA_Hover)
         self.setFocusPolicy(Qt.FocusPolicy.StrongFocus)
-        self.set_view("grid")
+        self.set_view("grid" if options is VIEWS else self.view)
 
     def set_view(self, view: str):
         self.view = view
-        name = next(n for k, n, _ in VIEWS if k == view)
-        self.setToolTip(f"View: {name}")
-        self.setAccessibleName(f"Library view: {name}")
+        name = next(n for k, n, _ in self.options if k == view)
+        self.setToolTip(f"{self.label}: {name}")
+        self.setAccessibleName(f"{self.spoken}: {name}")
         self.update()
 
     def set_open(self, open: bool):
@@ -571,13 +609,13 @@ class ViewButton(QAbstractButton):
             p.setPen(QPen(q("blue"), 2))
             p.setBrush(Qt.BrushStyle.NoBrush)
             p.drawRoundedRect(r.adjusted(1, 1, -1, -1), 3, 3)
-        icon = next(i for k, _, i in VIEWS if k == self.view)
+        icon = next(i for k, _, i in self.options if k == self.view)
         fg = QColor("white") if self.open else q("text") if hover else q("text2")
         icons.draw(p, icon, QRectF(r.center().x() - 8, r.center().y() - 8, 16, 16), fg)
 
 
 class HomeBar(QWidget):
-    """Home, full width, with the library view button beside it."""
+    """Home, full width, with the sort and library view buttons beside it."""
 
     def __init__(self, parent=None):
         super().__init__(parent)
@@ -585,20 +623,28 @@ class HomeBar(QWidget):
         lay.setContentsMargins(0, 0, 0, 0)
         lay.setSpacing(6)
         self.home = HomeButton()
+        self.sort = ViewButton(SORTS, "Sort", "Sort games")
         self.view = ViewButton()
         lay.addWidget(self.home, 1)
+        lay.addWidget(self.sort)
         lay.addWidget(self.view)
+        self.sort_menu = SortMenu(self)
+        self.sort_menu.closed.connect(lambda: self.sort.set_open(False))
+        self.sort.clicked.connect(lambda: self._open(self.sort, self.sort_menu))
         self.menu = ViewMenu(self)
         self.menu.closed.connect(lambda: self.view.set_open(False))
         self.view.clicked.connect(self.open_menu)
 
     def open_menu(self):
-        if self.menu.isVisible():
-            self.menu.close()
+        self._open(self.view, self.menu)
+
+    def _open(self, button: ViewButton, menu: PopupMenu):
+        if menu.isVisible():
+            menu.close()
             return
-        self.menu.set_mode(self.view.view)
-        self.view.set_open(True)
-        self.menu.popup_at(self.view.mapToGlobal(QPoint(self.view.width(), self.view.height() + 6)))
+        menu.set_mode(button.view)
+        button.set_open(True)
+        menu.popup_at(button.mapToGlobal(QPoint(button.width(), button.height() + 6)))
 
 
 class GameList(QWidget):
@@ -661,7 +707,9 @@ class GameList(QWidget):
         cur = self.current_index()
         self.list.blockSignals(True)
         self.list.clear()
-        for i, sc in enumerate(self.win.sfile.shortcuts):
+        scs = self.win.sfile.shortcuts
+        for i in sorted_indices(self.win, self.win.library_sort):
+            sc = scs[i]
             it = QListWidgetItem(sc.name)  # text is read by screen readers; the delegate paints
             it.setData(ROLE_INDEX, i)
             it.setToolTip(sc.name)
@@ -669,6 +717,10 @@ class GameList(QWidget):
         self.select(cur if cur is not None else -1)
         self.list.blockSignals(False)
         self.update_counts()
+
+    def order(self) -> list[int]:
+        """The shortcut indexes of the rows, top to bottom."""
+        return [self.list.item(row).data(ROLE_INDEX) for row in range(self.list.count())]
 
     def refresh_spoken(self):
         n = len(self.win.sfile.shortcuts)
@@ -1307,12 +1359,17 @@ class StartPage(QWidget):
 
     def rebuild(self):
         self.wall.clear()
-        for i, sc in enumerate(self.win.sfile.shortcuts):
+        scs = self.win.sfile.shortcuts
+        for i in sorted_indices(self.win, self.win.library_sort):
+            sc = scs[i]
             it = QListWidgetItem(sc.name)
             it.setData(ROLE_INDEX, i)
             it.setToolTip(sc.name)
             self.wall.addItem(it)
         self.refresh()
+
+    def order(self) -> list[int]:
+        return [self.wall.item(row).data(ROLE_INDEX) for row in range(self.wall.count())]
 
     def toggle_piece(self, i: int):
         if self.chips[i].full and self.piece != i:

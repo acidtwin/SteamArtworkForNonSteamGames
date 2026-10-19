@@ -54,25 +54,38 @@ class Config:
     def pending_icons(self, shortcuts_path) -> dict:
         """appid -> icon path (or "" to clear) waiting until Steam closes, for
         the account whose shortcuts.vdf is `shortcuts_path`."""
-        queues = self.data.get("pending_icons")
+        return self._queue("pending_icons", shortcuts_path)
+
+    def set_pending_icon(self, shortcuts_path, appid: int, path: str | None):
+        self._set_queued("pending_icons", shortcuts_path, appid, path)
+
+    def pending_names(self, shortcuts_path) -> dict:
+        """appid -> new title waiting until Steam closes, like `pending_icons`."""
+        return self._queue("pending_names", shortcuts_path)
+
+    def set_pending_name(self, shortcuts_path, appid: int, name: str | None):
+        self._set_queued("pending_names", shortcuts_path, appid, name)
+
+    def _queue(self, what: str, shortcuts_path) -> dict:
+        queues = self.data.get(what)
         if not isinstance(queues, dict):
             return {}
         queue = queues.get(str(shortcuts_path))
         return dict(queue) if isinstance(queue, dict) else {}
 
-    def set_pending_icon(self, shortcuts_path, appid: int, path: str | None):
-        queues = self.data.get("pending_icons")
+    def _set_queued(self, what: str, shortcuts_path, appid: int, value: str | None):
+        queues = self.data.get(what)
         if not isinstance(queues, dict):
-            queues = self.data["pending_icons"] = {}
+            queues = self.data[what] = {}
         for k in [k for k, v in queues.items() if not isinstance(v, dict)]:
             del queues[k]  # the old format, not tied to an account
         queue = queues.setdefault(str(shortcuts_path), {})
-        if path is None:
+        if value is None:
             queue.pop(str(appid), None)
             if not queue:
                 del queues[str(shortcuts_path)]
         else:
-            queue[str(appid)] = path
+            queue[str(appid)] = value
         self.save()
 
     def get_applied(self, appid: int, slot: str) -> dict | None:

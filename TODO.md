@@ -2,15 +2,6 @@
 
 Ideas and jobs saved for later, once the app is more final.
 
-## Features
-
-- **Rename games left with a generic title.** Games added to Steam often keep a title like
-  "game.exe" or "launcher". Spot titles that match the .exe name or a generic word, search
-  SteamGridDB by the game's folder name instead (for example `Games/Hollow Knight/game.exe`
-  gives "Hollow Knight"), suggest "Rename to Hollow Knight?" on the match card, and write the
-  new title on Apply. Keep the shortcut's stored ID so its artwork stays linked.
-- **Sort the game list and cover wall**, for example A to Z, or games missing artwork first.
-
 ## Design ideas from the 2026-10-19 review (waiting on a decision)
 
 - **Game page buttons:** the banner header has three filled buttons and two greens. Make Get All

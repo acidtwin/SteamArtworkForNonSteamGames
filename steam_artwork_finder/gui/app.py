@@ -27,7 +27,7 @@ from .. import artwork
 from ..artwork import SLOTS, Slot, current_icon, existing, prune_replaced, remove_asset, save_asset, undo
 from ..config import Config
 from ..pending import Pending, Pick
-from ..sgdb import Asset, AuthError, Game, SGDBError, SteamGridDB, clean_name, name_variants
+from ..sgdb import Asset, AuthError, Game, SGDBError, SteamGridDB, clean_name, generic_name, name_variants, search_name
 from ..shortcuts import Shortcut
 from ..steam import (
     SteamUser,
@@ -44,7 +44,7 @@ from .chrome import ContentBar, Header, StatusBar, SteamPopover
 from .steamfolder import SteamFolderPopover
 from .dialogs import AboutDialog, ConfirmDialog, KeyPopover, MatchDialog, QuitDialog, RestoreDialog
 from .gamepage import GamePage
-from .library import GameList, StartPage
+from .library import SORTS, GameList, StartPage, sorted_indices
 from .tray import ROLE_PIX, OptionTray
 from .widgets import ArtView, Notice, Toast, label, load_pixmap
 
@@ -69,10 +69,12 @@ class _Bridge(QObject):
     wait = Signal(float)  # SteamGridDB asked us to wait this many seconds
 
 
-def is_exact(sc_name: str, game_name: str) -> bool:
-    """The SteamGridDB name is the shortcut's name, give or take launcher tags."""
+def is_exact(sc_name: str, game_name: str, exe: str = "") -> bool:
+    """The SteamGridDB name is the shortcut's name, give or take launcher tags (or, for a
+    generic name like "game.exe", the name of the folder the game is in)."""
     want = clean_name(game_name).casefold()
-    return any(v.casefold() == want for v in name_variants(sc_name))
+    term = search_name(sc_name, exe)
+    return any(v.casefold() == want for v in name_variants(sc_name) + name_variants(term))
 
 
 class MainWindow(QMainWindow):
@@ -84,6 +86,9 @@ class MainWindow(QMainWindow):
         self.resize(1280, 800)  # Steam Deck screen; main() maximises on screens that small
         self.home = Path.home()
         self.config = Config()
+        self.library_sort = self.config.data.get("library_sort", "az")
+        if self.library_sort not in {k for k, _, _ in SORTS}:
+            self.library_sort = "az"
         self.sgdb = SteamGridDB(self.config.api_key)
         self.users: list[SteamUser] = []
         self.user: SteamUser | None = None
@@ -157,6 +162,8 @@ class MainWindow(QMainWindow):
         bar = self.game_list.homebar
         bar.home.clicked.connect(self.go_home)
         bar.menu.chosen.connect(self.set_library_view)
+        bar.sort_menu.chosen.connect(self.set_library_sort)
+        bar.sort.set_view(self.library_sort)
         view = self.config.data.get("library_view", "grid")
         bar.view.set_view(view)
         self.start.set_view(view)
@@ -424,6 +431,58 @@ class MainWindow(QMainWindow):
             self.pending.drop(sc.appid, slot.key)
             self.refresh_all()
 
+    def shown_name(self, sc: Shortcut) -> str:
+        """The game's title as it will be once applied: a waiting new title, else Steam's."""
+        return self.pending.name(sc.appid) or sc.name or "(unnamed)"
+
+    def rename_suggestion(self, sc: Shortcut | None) -> str | None:
+        """For a game stuck with a title like "game.exe", the name of the SteamGridDB game it
+        is matched to, once that match is settled; None when there's nothing to suggest."""
+        if sc is None or not generic_name(sc.name, sc.exe) or self.status.get(sc.appid) == "check":
+            return None
+        if str(sc.appid) in self.pending_names():
+            return None  # already renamed, waiting for Steam to close
+        m = self.config.get_match(sc.appid)
+        name = clean_name(m["name"]) if m else ""
+        return name if name and name != sc.name else None
+
+    def stage_rename(self):
+        sc = self.current_shortcut()
+        name = self.rename_suggestion(sc)
+        if name and self.busy != "apply":
+            self.pending.set_name(sc.appid, name)
+            self.page.update_match()
+            self.refresh_all()
+
+    def unstage_rename(self):
+        sc = self.current_shortcut()
+        if sc and self.busy != "apply":
+            self.pending.set_name(sc.appid, None)
+            self.page.update_match()
+            self.refresh_all()
+
+    def _rename(self, jobs, defer: bool, sfile):
+        """Retitle each (shortcut, new name) in `sfile`; with Steam open, queue it for when
+        Steam closes instead (Steam writes its own list back on exit). Returns the undo
+        records (appid, old name, new name, queued) and errors."""
+        done, errors = [], []
+        for sc, name in jobs:
+            old = sc.name
+            try:
+                if defer:
+                    self.config.set_pending_name(sfile.path, sc.appid, name)
+                elif artwork.set_name(sfile, sc, name):
+                    self._after_reload(sc.appid)
+            except Exception as e:
+                errors.append(f"Renaming {old}: {e}")
+                continue
+            self.pending.set_name(sc.appid, None)
+            done.append((sc.appid, old, name, defer))
+        if any(not queued for *_, queued in done):
+            cur = self.current_shortcut()
+            self._after_reload(cur.appid if cur else -1)  # new titles: the lists show and sort by them
+        return done, errors
+
     def _unstaged_missing(self, sc: Shortcut) -> list[Slot]:
         return [SLOTS[k] for k, have in zip(ORDER, self.coverage(sc))
                 if not have and self.pending.get(sc.appid, k) is None]
@@ -582,6 +641,10 @@ class MainWindow(QMainWindow):
         """The current account's icons waiting for Steam to close."""
         return self.config.pending_icons(self.user.shortcuts_path) if self.user else {}
 
+    def pending_names(self) -> dict:
+        """The current account's new titles waiting for Steam to close."""
+        return self.config.pending_names(self.user.shortcuts_path) if self.user else {}
+
     def _poll_steam(self):
         """The 5 s tick: check Steam in a worker (inside a Flatpak it asks the host,
         which can take seconds), then update the status bar with that one answer."""
@@ -625,17 +688,22 @@ class MainWindow(QMainWindow):
             ordered = sorted(picks.items(), key=lambda kp: ORDER.index(kp[0]))
             names = [SLOTS[k].label.lower() for k, _ in ordered]
             clears = {p.clears for _, p in ordered}
-            if clears == {False}:
+            if not ordered:
+                what = ""
+            elif clears == {False}:
                 what = "new " + _join(names)
             elif clears == {True}:
                 what = _join(names) + " removed"
             else:
                 what = _join([f"{n} removed" if p.clears else f"new {n}" for n, (_, p) in zip(names, ordered)])
+            new_name = self.pending.name(appid)
+            if new_name:
+                what = (what + ", " if what else "") + f"renamed to “{new_name}”"
             cover = self.pick_pixmap(sc, "grid")
             if cover is None and not (picks.get("grid") and picks["grid"].clears):
                 path = self.cover_path(sc)
                 cover = load_pixmap(path) if path else None
-            games.append((sc.name or "(unnamed)", what[:1].upper() + what[1:], len(picks), cover))
+            games.append((sc.name or "(unnamed)", what[:1].upper() + what[1:], self.pending.count(appid), cover))
         dlg = QuitDialog(self, games)
         try:
             if not dlg.exec():
@@ -654,7 +722,7 @@ class MainWindow(QMainWindow):
     def steam_state(self, running: bool | None = None) -> str:
         if running is None:
             running = self.steam_is_running()
-        if running and (self.restart_needed or self.pending_icons()):
+        if running and (self.restart_needed or self.pending_icons() or self.pending_names()):
             return "restart"
         return "running" if running else "closed"
 
@@ -674,7 +742,8 @@ class MainWindow(QMainWindow):
         self.keypop.dismiss()
         self.folderpop.dismiss()
         self.popover.set_auto_restart(self.auto_restart)
-        self.popover.show_for(self.steam_state(), self.statusbar.process_anchor(), len(self.pending_icons()))
+        self.popover.show_for(self.steam_state(), self.statusbar.process_anchor(),
+                             len(self.pending_icons()) + len(self.pending_names()))
 
     def restart_steam_now(self):
         root = self.steam_root
@@ -709,7 +778,8 @@ class MainWindow(QMainWindow):
             return
         spath = self.user.shortcuts_path
         pending = self.config.pending_icons(spath)
-        if not pending or self.sfile.path != spath:
+        names = self.config.pending_names(spath)
+        if not (pending or names) or self.sfile.path != spath:
             return
         if self.steam_is_running() if running is None else running:
             return
@@ -729,6 +799,21 @@ class MainWindow(QMainWindow):
                         self.toast.show_message(f"Couldn't link the icon for {sc.name}: {e}")
                         continue
             self.config.set_pending_icon(spath, int(key), None)  # linked, or the game is gone from this list
+        for key, name in names.items():
+            sc = self.sfile.find(int(key))
+            if sc is not None:
+                try:
+                    if artwork.set_name(self.sfile, sc, name):
+                        reloaded = True
+                    linked += 1
+                except Exception as e:
+                    reloaded = True
+                    if self.sfile.find(int(key)) is not None:
+                        self.toast.show_message(f"Couldn't rename {sc.name}: {e}")
+                        continue
+            self.config.set_pending_name(spath, int(key), None)
+        if names:
+            reloaded = True  # titles changed: the lists show (and sort by) them
         if reloaded:
             self._after_reload(cur.appid if cur else -1)
         if linked or reloaded:
@@ -749,7 +834,7 @@ class MainWindow(QMainWindow):
         guesses show "Check Match" in the list without opening each game first."""
         if self._matching or self.conn != "connected" or not self.sfile:
             return
-        todo = [(sc.appid, sc.name) for sc in self.sfile.shortcuts
+        todo = [(sc.appid, search_name(sc.name, sc.exe)) for sc in self.sfile.shortcuts
                 if sc.name and not self.config.get_match(sc.appid)
                 and sc.appid not in self.guesses and sc.appid not in self.status]
         if not todo:
@@ -813,7 +898,7 @@ class MainWindow(QMainWindow):
         on_page = sc is not None and self.stage.currentWidget() is self.page
         self.cbar.setVisible(not on_page)  # the game page's banner header has its own title and buttons
         if on_page:
-            self.page.card.set_game(sc.name or "(unnamed)")
+            self.page.card.set_game(self.shown_name(sc))
             self.page.card.set_actions(bool(self._unstaged_missing(sc)), self.pending.count(sc.appid), bool(self.busy))
         else:
             self.cbar.show_library(len(games) if self.users else None)
@@ -841,6 +926,7 @@ class MainWindow(QMainWindow):
         if not self.sfile or not self.sfile.shortcuts:
             self.update_chrome()
             return
+        self.resort()
         self.game_list.update_counts()
         self.game_list.refresh()
         self.start.refresh()
@@ -859,6 +945,27 @@ class MainWindow(QMainWindow):
         self.config.data["library_view"] = view
         self.config.save()
         self.go_home()
+
+    def set_library_sort(self, mode: str):
+        """The order the game list and cover wall show games in (a SORTS key), remembered."""
+        self.game_list.homebar.sort.set_view(mode)
+        self.library_sort = mode
+        self.config.data["library_sort"] = mode
+        self.config.save()
+        if self.sfile and self.sfile.shortcuts:
+            self.game_list.rebuild()
+            self.start.rebuild()
+            self.start.wall.scrollToTop()
+
+    def resort(self):
+        """Put the lists back in order if the artwork they sort by has changed."""
+        if self.library_sort != "missing" or not self.sfile or not self.sfile.shortcuts:
+            return
+        want = sorted_indices(self, self.library_sort)
+        if self.game_list.order() != want:
+            self.game_list.rebuild()
+        if self.start.order() != want:
+            self.start.rebuild()
 
     def go_home(self):
         if self.sfile and self.sfile.shortcuts:
@@ -915,7 +1022,7 @@ class MainWindow(QMainWindow):
                 self.load_options()
             self.refresh_all()
 
-        workers.run(self.sgdb.match, sc.name, on_done=matched,
+        workers.run(self.sgdb.match, search_name(sc.name, sc.exe), on_done=matched,
                     on_error=lambda m: (self.page.set_all_messages(m), self._key_problem(m)))
 
     def _record_match(self, sc: Shortcut, game: Game | None, candidates: int = 0, commit: bool = False):
@@ -924,7 +1031,7 @@ class MainWindow(QMainWindow):
         if game is None:
             self.status[sc.appid] = "notfound"
             return
-        exact = is_exact(sc.name, game.name)
+        exact = is_exact(sc.name, game.name, sc.exe)
         self.candidates[sc.appid] = candidates
         if self.config.get_match(sc.appid):
             pass
@@ -1026,7 +1133,8 @@ class MainWindow(QMainWindow):
         if not ConfirmDialog(self, f"Remove all artwork from {sc.name}?", "You can undo it straight after.",
                              "Remove Artwork", "trash", bad=True).exec():
             return
-        self.pending.drop(sc.appid)
+        for key in self.pending.for_game(sc.appid):
+            self.pending.drop(sc.appid, key)  # a waiting new title stays
         self.forget_files(sc.appid)  # what's on disk now
         jobs = [(sc, k, Pick(None)) for k in ORDER if self.slot_path(sc, SLOTS[k]) is not None]
         done, errors = self._write(jobs, self.steam_is_running(), self.user.grid_dir, self.sfile)
@@ -1071,14 +1179,14 @@ class MainWindow(QMainWindow):
             done.append((change, before, defer))
         return done, errors
 
-    def _after_write(self, done, errors, message: str):
+    def _after_write(self, done, errors, message: str, renamed=()):
         self.refresh_all()
         if self.current >= 0:
             self.page.show_game()
         if errors:
             self.last_errors = errors
             self._summary_notice(f"{plural(len(errors), 'piece')} couldn't be saved.")
-        if not done:
+        if not done and not renamed:
             return
 
         spath = self.sfile.path if self.sfile else None
@@ -1113,6 +1221,22 @@ class MainWindow(QMainWindow):
                 self.config.set_applied(change.shortcut.appid, change.slot.key, before)
                 if change.reloaded:
                     self._after_reload(change.shortcut.appid)
+            for appid, old, new, queued in reversed(renamed):
+                sc = sfile.find(appid)
+                try:
+                    if sc is not None and sc.name == new:  # written (maybe once Steam closed)
+                        if running:
+                            self.config.set_pending_name(sfile.path, appid, old)
+                        else:
+                            artwork.set_name(sfile, sc, old)
+                    elif queued:
+                        self.config.set_pending_name(sfile.path, appid, None)
+                except Exception as e:
+                    self.toast.show_message(f"Couldn't undo: {e}")
+                    return
+            if renamed:
+                cur = self.current_shortcut()
+                self._after_reload(cur.appid if cur else -1)
             self.refresh_all()
             if self.current >= 0:
                 self.page.show_game()
@@ -1130,7 +1254,9 @@ class MainWindow(QMainWindow):
             return False
         jobs = [(self.sfile.find(a), k, p) for a in appids for k, p in self.pending.for_game(a).items()]
         jobs = [j for j in jobs if j[0] is not None]
-        if not jobs:
+        renames = [(self.sfile.find(a), self.pending.name(a)) for a in appids if self.pending.name(a)]
+        renames = [r for r in renames if r[0] is not None]
+        if not jobs and not renames:
             return False
         # The account the picks were made for, even if another is opened before the writes.
         root, grid_dir, sfile = self.steam_root, self.user.grid_dir, self.sfile
@@ -1138,7 +1264,7 @@ class MainWindow(QMainWindow):
         todo = [p for _, _, p in jobs if not p.clears and p.data is None]
         self._set_busy("apply", f"Downloading artwork  1 of {len(todo)}" if todo else
                        "Closing Steam…" if restart else
-                       f"Applying artwork for {plural(len({j[0].appid for j in jobs}), 'game')}…")
+                       f"Applying changes to {plural(len({j[0].appid for j in jobs} | {r[0].appid for r in renames}), 'game')}…")
 
         def work(progress):
             # Download first, so Steam is only closed once the files are in hand,
@@ -1153,7 +1279,7 @@ class MainWindow(QMainWindow):
                 except SGDBError as e:
                     failures[id(pick)] = str(e)
             closed = False
-            if restart and len(failures) < len(jobs):
+            if restart and (renames or len(failures) < len(jobs)):
                 progress(("close", 0))
                 shutdown_steam(root)
                 closed = wait_until_closed(root)
@@ -1172,7 +1298,8 @@ class MainWindow(QMainWindow):
             ready = [j for j in jobs if id(j[2]) not in failures]  # failed picks stay waiting
             running = self.steam_is_running()
             written, write_errors = self._write(ready, running, grid_dir, sfile)
-            errors += write_errors
+            renamed, rename_errors = self._rename(renames, running, sfile)
+            errors += write_errors + rename_errors
             self._set_busy("")
             if restart and closed:
                 self.apply_pending_icons()
@@ -1186,7 +1313,12 @@ class MainWindow(QMainWindow):
                 note = ""
             self.update_steam_state()
             games = len({c.shortcut.appid for c, _, _ in written})
-            self._after_write(written, errors, f"Applied new artwork to {plural(games, 'game')}.{note}")
+            parts = [f"Applied new artwork to {plural(games, 'game')}."] if written else []
+            if len(renamed) == 1:
+                parts.append(f"Renamed {renamed[0][1] or '(unnamed)'} to {renamed[0][2]}.")
+            elif renamed:
+                parts.append(f"Renamed {plural(len(renamed), 'game')}.")
+            self._after_write(written, errors, " ".join(parts) + note, renamed)
             if self._close_after_apply:
                 self._close_after_apply = False
                 if not self.pending:  # some pieces failed: stay open so the user sees why
@@ -1283,7 +1415,7 @@ class MainWindow(QMainWindow):
                 if saved:
                     game, n = Game(saved["id"], saved["name"], saved.get("year", "")), 0
                 else:
-                    game, n = self.sgdb.match(sc.name)
+                    game, n = self.sgdb.match(search_name(sc.name, sc.exe))
             except AuthError:
                 raise
             except Exception as e:
@@ -1293,7 +1425,7 @@ class MainWindow(QMainWindow):
             if game is None:
                 report["notfound"].append(sc.name)
                 continue
-            if not saved and not single and not is_exact(sc.name, game.name):
+            if not saved and not single and not is_exact(sc.name, game.name, sc.exe):
                 report["unsure"] += 1  # a best guess: let the user check it before fetching art
                 continue
             got = False
@@ -1359,7 +1491,7 @@ class MainWindow(QMainWindow):
                 self.load_options()
             if single:
                 sc = jobs[0][0]
-                n = self.pending.count(sc.appid)
+                n = len(self.pending.for_game(sc.appid))
                 msg = (f"Found {plural(n, 'piece')} of artwork for {sc.name}, ready to apply." if n
                        else f"SteamGridDB has nothing new for {sc.name} yet.")
                 self.toast.show_message(msg)

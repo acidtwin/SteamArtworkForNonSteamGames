@@ -689,3 +689,86 @@ def test_details_columns_never_overlap_the_names(qapp):
         assert status_x is None and end >= NAME_X + 40  # the status column moves into the tooltip
         assert centres[0] - col / 2 >= end
     assert detail_columns(640 + STATUS_W)[2] is not None
+
+
+def test_sort_menu_orders_the_list_and_wall(qapp, window):
+    win = window
+    bar = win.game_list.homebar
+    assert win.game_list.order() == win.start.order() == [0, 1, 2]  # A to Z by default
+    bar.sort_menu.chosen.emit("za")
+    _pump(qapp, 100)
+    assert win.game_list.order() == win.start.order() == [2, 1, 0]
+    assert bar.sort.view == "za" and win.config.data["library_sort"] == "za"
+    assert win.game_list.list.item(0).text() == "Pokémon émulé"
+
+    bar.sort_menu.chosen.emit("missing")
+    win.user.grid_dir.mkdir(parents=True, exist_ok=True)
+    sc = win.sfile.shortcuts[0]  # Celeste gets a cover: it has the least missing now
+    (win.user.grid_dir / f"{sc.appid}p.png").write_bytes(PNG)
+    win.forget_files()
+    win.refresh_all()
+    assert win.game_list.order() == win.start.order() == [1, 2, 0]
+
+    win.game_list.set_filter("missing")  # sorting works on what the filter leaves
+    shown = [i for row, i in enumerate(win.game_list.order()) if not win.game_list.list.item(row).isHidden()]
+    assert shown == [1, 2, 0]
+    bar.sort_menu.chosen.emit("recent")
+    assert win.game_list.order() == [2, 1, 0]
+
+
+def test_generic_title_is_renamed_on_apply(qapp, window, steam_root, steam_state):
+    from conftest import SAMPLE_ENTRIES, make_entry, make_shortcuts
+
+    from steam_artwork_finder.shortcuts import ShortcutsFile
+
+    win = window
+    entries = [make_entry(*e) for e in SAMPLE_ENTRIES] + [
+        make_entry(-123456, "game.exe", '"/home/deck/Games/Hollow Knight/game.exe"')]
+    win.user.shortcuts_path.write_bytes(make_shortcuts(entries))
+    win.reload_shortcuts()
+    _pump(qapp, 100)
+    idx = next(i for i, s in enumerate(win.sfile.shortcuts) if s.name == "game.exe")
+    sc = win.sfile.shortcuts[idx]
+    win.config.set_match(sc.appid, 42, "Hollow Knight", "2017")
+    win.open_game(idx)
+    _pump(qapp, 100)
+    card = win.page.card
+    assert win.rename_suggestion(sc) == "Hollow Knight"
+    assert card.rename_btn.isVisible() and card.rename_btn.text() == "Rename to Hollow Knight"
+
+    card.rename_btn.click()
+    assert win.pending.name(sc.appid) == "Hollow Knight" and win.pending.count(sc.appid) == 1
+    assert card.title.text() == "Hollow Knight" and card.unrename_btn.isVisible() and not card.rename_btn.isVisible()
+    assert ShortcutsFile(win.user.shortcuts_path).find(sc.appid).name == "game.exe"  # nothing written yet
+    assert card.apply_btn.text() == "Apply (1 Change)"
+
+    steam_state["running"] = True  # Apply closes Steam, renames, then starts it again
+    win.apply_games([sc.appid])
+    _pump(qapp, 3000, until=lambda: not win.busy)
+    assert steam_state["calls"] == ["shutdown", "start"]
+    on_disk = ShortcutsFile(win.user.shortcuts_path).find(sc.appid)
+    assert on_disk is not None and on_disk.name == "Hollow Knight"  # same appid: artwork stays linked
+    assert not win.pending and win.current_shortcut().name == "Hollow Knight"
+    assert not card.rename_btn.isVisible()
+    assert any(win.game_list.list.item(r).text() == "Hollow Knight" for r in range(win.game_list.list.count()))
+
+    win.toast.undo_now()
+    assert ShortcutsFile(win.user.shortcuts_path).find(sc.appid).name == "game.exe"
+
+
+def test_rename_waits_for_steam_to_close(qapp, window, steam_state):
+    from steam_artwork_finder.shortcuts import ShortcutsFile
+
+    win = window
+    win.config.data["auto_restart_steam"] = False
+    sc = win.sfile.shortcuts[1]
+    win.pending.set_name(sc.appid, "Hollow Knight")
+    steam_state["running"] = True
+    win.apply_games([sc.appid])
+    _pump(qapp, 3000, until=lambda: not win.busy)
+    assert ShortcutsFile(win.user.shortcuts_path).find(sc.appid).name == "Hollow Knight™"  # Steam would undo it
+    assert win.pending_names() == {str(sc.appid): "Hollow Knight"} and win.steam_state() == "restart"
+    steam_state["running"] = False
+    win.update_steam_state()
+    assert ShortcutsFile(win.user.shortcuts_path).find(sc.appid).name == "Hollow Knight"
+    assert not win.pending_names()

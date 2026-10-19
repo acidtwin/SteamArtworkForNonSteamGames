@@ -309,3 +309,38 @@ def test_waiting_icons_belong_to_one_account(tmp_path):
     if sys.platform != "win32":
         assert stat.S_IMODE((tmp_path / "config.json").stat().st_mode) == 0o600
     assert not (tmp_path / "config.tmp").exists()
+
+
+def test_rename_keeps_the_appid(steam_root, tmp_path):
+    from conftest import make_shortcuts
+
+    from steam_artwork_finder import artwork, binvdf
+    from steam_artwork_finder.shortcuts import ShortcutsFile, legacy_appid
+
+    # An entry with no stored appid: Steam works its id out from exe + name.
+    body = b"\x01AppName\x00game.exe\x00\x01Exe\x00\"/g/Hollow Knight/game.exe\"\x00"
+    path = tmp_path / "shortcuts.vdf"
+    path.write_bytes(make_shortcuts([body]))
+    sf = ShortcutsFile(path)
+    sc = sf.shortcuts[0]
+    old_id = legacy_appid(sc.exe, sc.name)
+    assert sc.appid == old_id
+    artwork.set_name(sf, sc, "Hollow Knight")
+    again = ShortcutsFile(path).shortcuts[0]
+    assert again.name == "Hollow Knight" and again.appid == old_id
+    assert len(list(sf.backup_dir.glob("shortcuts-*.vdf"))) == 1
+    assert binvdf.loads(path.read_bytes())  # still a sound file
+
+
+def test_pending_counts_a_new_title():
+    from steam_artwork_finder.pending import Pending, Pick
+
+    p = Pending()
+    p.set_name(5, "Hollow Knight")
+    assert p and p.games() == [5] and p.count(5) == 1
+    p.set(5, "grid", Pick(None))
+    assert p.count(5) == 2 and p.games() == [5]
+    p.drop(5, "grid")
+    assert p.count(5) == 1
+    p.drop(5)
+    assert not p

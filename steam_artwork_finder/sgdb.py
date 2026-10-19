@@ -83,6 +83,40 @@ def looks_like_file(name: str) -> bool:
     return bool(_FILEISH.search(name.strip()))
 
 
+# Titles that say nothing about which game it is.
+_GENERIC = {
+    "launcher", "game launcher", "launch", "game", "start", "start game", "play", "play game", "run", "setup",
+    "main", "client", "app", "application", "program", "bootstrap", "loader", "unity", "godot", "shipping",
+}
+
+
+def _program(exe: str) -> str:
+    """The program's own name, without its folder or file ending ("game" for ".../game.exe")."""
+    base = re.split(r"[\\/]+", exe.strip().strip('"'))[-1]
+    return _FILEISH.sub("", base)
+
+
+def generic_name(name: str, exe: str = "") -> bool:
+    """True for a shortcut title that doesn't name the game: a file name ("game.exe"), a word
+    like "Launcher", or the program's own name when its folder says something else
+    ("hollow_knight" in Games/Hollow Knight/)."""
+    name = name.strip()
+    if not name:
+        return False
+    if looks_like_file(name) or _tidy(name).casefold() in _GENERIC:
+        return True
+    folder = _folder(exe)
+    return bool(folder) and name.casefold() == _program(exe).casefold() != folder.casefold()
+
+
+def search_name(name: str, exe: str = "") -> str:
+    """What to look a shortcut up by: its title, or for a generic title the folder the
+    program is in (else the file name without its ending)."""
+    if not generic_name(name, exe):
+        return name
+    return _folder(exe) or (_tidy(_FILEISH.sub("", name.strip())) if looks_like_file(name) else "") or name
+
+
 def _tidy(word: str) -> str:
     return clean_name(word.replace("_", " "))
 
@@ -106,8 +140,8 @@ def _folder(exe: str) -> str:
 def suggestions(name: str, exe: str = "") -> list[tuple[str, str]]:
     """Search terms worth trying for a shortcut, best first, as (term, where it came from).
 
-    A name like "SB.exe" says little, so the folder the program sits in comes
-    first, then the file name without its extension.
+    A name like "SB.exe" or "Launcher" says little, so the folder the program sits
+    in comes first, then the file name without its extension (or the name itself).
     """
     out: list[tuple[str, str]] = []
 
@@ -119,6 +153,9 @@ def suggestions(name: str, exe: str = "") -> list[tuple[str, str]]:
     if looks_like_file(name):
         add(folder, "folder")
         add(_tidy(_FILEISH.sub("", name.strip())), "file")
+    elif generic_name(name, exe):
+        add(folder, "folder")
+        add(name_variants(name)[-1] if name_variants(name) else "", "name")
     else:
         add(name_variants(name)[-1] if name_variants(name) else "", "name")
         add(folder, "folder")
