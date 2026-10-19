@@ -193,6 +193,64 @@ class CurrentArt(ArtView):
             super().keyPressEvent(e)
 
 
+class GhostStrip(QWidget):
+    """Stands in for the option strip while there are no options: faint dashed
+    outlines in the options' shape, fading out, with the message in a pill."""
+
+    def __init__(self, thumb: QSize, parent=None):
+        super().__init__(parent)
+        self.thumb = thumb
+        self.text = ""
+        self.icon = ""
+        self.setFixedHeight(thumb.height() + 6)
+        self.setMinimumWidth(120)
+        self.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
+        f = QFont(self.font())
+        f.setPointSizeF(theme.pt("body"))
+        self.setFont(f)
+
+    def setText(self, text: str, icon: str = ""):
+        self.text = text
+        self.icon = icon
+        self.setAccessibleName(text)
+        self.setToolTip(text)
+        self.update()
+
+    def paintEvent(self, _):
+        p = QPainter(self)
+        p.setRenderHint(QPainter.RenderHint.Antialiasing)
+        w = self.width()
+        tw, th = self.thumb.width(), self.thumb.height()
+        y = (self.height() - th) / 2
+        x = 0.75
+        while x < w:
+            # fade from 100% to nothing across the strip
+            a = max(0.0, 1.0 - max(0.0, x - w * 0.3) / (w * 0.7))
+            p.setBrush(QColor(42, 52, 66, round(64 * a)))
+            pen = QPen(QColor(58, 70, 86, round(255 * a)), 1.5, Qt.PenStyle.DashLine)
+            p.setPen(pen)
+            p.drawRoundedRect(QRectF(x, y + 0.75, tw - 1.5, th - 1.5), 3, 3)
+            x += tw + 10
+        if not self.text:
+            return
+        fm = QFontMetricsF(self.font())
+        pad, gap, isz = 14, 8, 16
+        avail = w - 16 - pad * 2 - ((isz + gap) if self.icon else 0) - 8
+        text = fm.elidedText(self.text, Qt.TextElideMode.ElideRight, max(40, avail))
+        pw = pad * 2 + fm.horizontalAdvance(text) + ((isz + gap) if self.icon else 0)
+        ph = max(32, fm.height() + 14)
+        pill = QRectF(16, (self.height() - ph) / 2, min(pw, w - 16), ph)
+        p.setPen(QPen(q("line"), 1))
+        p.setBrush(QColor(23, 29, 37, 235))
+        p.drawRoundedRect(pill, ph / 2, ph / 2)
+        tx = pill.x() + pad
+        if self.icon:
+            icons.draw(p, self.icon, QRect(round(tx), round(pill.center().y() - isz / 2), isz, isz), q("blue_ink"))
+            tx += isz + gap
+        p.setPen(q("text2"))
+        p.drawText(QRectF(tx, pill.y(), pill.right() - tx, ph), Qt.AlignmentFlag.AlignVCenter, text)
+
+
 class ArtworkRow(QWidget):
     choose = Signal(object, object)  # slot, Asset (unused: options stage through win.stage_pick)
     open_tray = Signal(object)  # slot
@@ -266,9 +324,7 @@ class ArtworkRow(QWidget):
         self.see_all.setAccessibleName(f"See all {slot.label.lower()} options")
         top.addWidget(self.see_all)
         right.addLayout(top)
-        self.message = label("", "empty", wrap=True)
-        self.message.setMinimumWidth(120)
-        self.message.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Preferred)
+        self.message = GhostStrip(info.thumb)
         right.addWidget(self.message)
         self.strip_host = QWidget()
         self.strip = QHBoxLayout(self.strip_host)
@@ -421,18 +477,18 @@ class ArtworkRow(QWidget):
 
     # -- options -----------------------------------------------------------
 
-    def set_message(self, text: str):
+    def set_message(self, text: str, icon: str = "info"):
         self._clear_strip()
         self.count.setText("")
         self.count.hide()
         self.see_all.hide()
         self.scroll.hide()
-        self.message.setText(text)
+        self.message.setText(text, icon)
         self.message.show()
         self._right.setStretch(0, 1)
 
     def set_loading(self):
-        self.set_message("Loading options from SteamGridDB…")
+        self.set_message("Loading options from SteamGridDB…", "")
 
     def set_assets(self, assets: list[Asset], more: bool):
         self._clear_strip()
@@ -722,4 +778,4 @@ class GamePage(QWidget):
     def show_key_prompt(self):
         self.update_match()
         for row in self.rows.values():
-            row.set_message("Options appear here once a key is added.")
+            row.set_message("Options appear here once a key is added.", "key")

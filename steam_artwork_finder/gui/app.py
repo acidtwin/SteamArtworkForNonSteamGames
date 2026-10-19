@@ -654,7 +654,7 @@ class MainWindow(QMainWindow):
                 if cur is None or cur.appid != appid:
                     return
                 if assets is None:
-                    row.set_message("Couldn't reach SteamGridDB. Check your connection and open the game again.")
+                    row.set_message("Couldn't reach SteamGridDB. Check your connection and open the game again.", "warning")
                 else:
                     more = len(assets) >= 50
                     row.set_assets(assets, more)
