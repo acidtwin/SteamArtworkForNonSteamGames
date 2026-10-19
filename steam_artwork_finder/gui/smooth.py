@@ -2,9 +2,29 @@
 
 from __future__ import annotations
 
+import time
+from pathlib import Path
+
 from PySide6.QtCore import QElapsedTimer, QEvent, QObject, Qt, QTimer
 from PySide6.QtGui import QInputDevice
 from PySide6.QtWidgets import QAbstractScrollArea, QApplication, QScrollBar
+
+
+# Temporary diagnostics: with a file named wheel-debug.on in the app's folder, wheel
+# events and glide frames are written to wheel-debug.log beside it.
+_DEBUG_DIR = Path(__file__).resolve().parents[2]
+_log_lines: list[str] | None = [] if (_DEBUG_DIR / "wheel-debug.on").exists() else None
+
+
+def _log(text: str):
+    if _log_lines is None or len(_log_lines) > 3000:
+        return
+    _log_lines.append(f"{time.perf_counter() * 1000:.1f} {text}")
+    if len(_log_lines) % 20 == 0:
+        try:
+            (_DEBUG_DIR / "wheel-debug.log").write_text("\n".join(_log_lines) + "\n")
+        except OSError:
+            pass
 
 
 class _Glide(QObject):
@@ -15,7 +35,8 @@ class _Glide(QObject):
     restarting a curve, which is what made a plain animation feel jerky. Position is
     kept in fractions of a pixel and frames run at the screen's refresh rate."""
 
-    OMEGA = 20.0  # spring stiffness, 1/s; settles in about 6/OMEGA seconds
+    OMEGA = 14.0  # spring stiffness, 1/s; settles in about 6/OMEGA seconds
+    KICK = 0.5  # a step starts moving at once at this share of the speed that wouldn't overshoot
 
     def __init__(self, bar: QScrollBar):
         super().__init__(bar)
@@ -38,6 +59,7 @@ class _Glide(QObject):
 
     def _moved(self, v: int):
         if not self._own and round(self.pos) != v:  # moved some other way: follow it
+            _log(f"moved elsewhere to {v} (pos {self.pos:.1f})")
             self.stop()
             self.pos = self.target = float(v)
             self.speed = 0.0
@@ -51,6 +73,12 @@ class _Glide(QObject):
         if target == self.target and not self.running():
             return False
         self.target = target
+        # Start moving straight away instead of easing in from rest, so every click
+        # answers at once; below OMEGA * gap a critically damped spring can't overshoot.
+        want = (target - self.pos) * self.OMEGA * self.KICK
+        if self.speed * want <= 0 or abs(self.speed) < abs(want):
+            self.speed = want
+        _log(f"push by={by:.1f} target={target:.1f} pos={self.pos:.1f} speed={self.speed:.0f}")
         if not self.running():
             screen = self.bar.screen()
             hz = screen.refreshRate() if screen is not None else 60.0
@@ -71,6 +99,7 @@ class _Glide(QObject):
             self.pos, self.speed = self.target, 0.0
             self.stop()
         v = round(self.pos)
+        _log(f"frame dt={dt * 1000:.1f} pos={self.pos:.1f} v={v}")
         if v != self.bar.value():
             self._own = True
             self.bar.setValue(v)
@@ -91,7 +120,14 @@ class SmoothScroll(QObject):
     Shift turns a vertical wheel into sideways scrolling."""
 
     def eventFilter(self, obj, e):
-        if e.type() != QEvent.Type.Wheel or from_touchpad(e):
+        if e.type() != QEvent.Type.Wheel:
+            return False
+        if _log_lines is not None:
+            dev = e.device()
+            _log(f"wheel to={type(obj).__name__}/{type(obj.parent()).__name__} angle={e.angleDelta().toTuple()} "
+                 f"pixel={e.pixelDelta().toTuple()} phase={e.phase().name} "
+                 f"device={dev.type().name if dev else None}:{dev.name() if dev else ''}")
+        if from_touchpad(e):
             return False
         area = obj.parent()
         if not isinstance(area, QAbstractScrollArea) or obj is not area.viewport():
