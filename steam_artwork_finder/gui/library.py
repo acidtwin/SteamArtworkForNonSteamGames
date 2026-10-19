@@ -1216,9 +1216,11 @@ class CoverWall(QListWidget):
     """The library: a cover grid whose columns stretch to use the whole width, or a list or details table."""
 
     menu_requested = Signal(int, QPoint)
+    GUTTER = 14  # between the covers and the scrollbar, which sits at the page's right edge
 
     def __init__(self, delegate_cls, win):
         super().__init__()
+        self.setViewportMargins(0, 0, self.GUTTER, 0)
         self.setUniformItemSizes(True)
         self.setMouseTracking(True)
         self.setSpacing(0)
@@ -1252,7 +1254,7 @@ class CoverWall(QListWidget):
         """Pick the column count that fits and share the spare width between the columns."""
         if self.view != "grid":
             return
-        avail = self.width() - 2 * self.frameWidth() - self.verticalScrollBar().sizeHint().width() - 1
+        avail = self.width() - 2 * self.frameWidth() - self.verticalScrollBar().sizeHint().width() - self.GUTTER - 1
         cols = max(1, avail // self.delegate.MIN_W)
         self.cols = cols
         size = QSize(max(self.delegate.MIN_W, avail // cols), self.delegate.tile_height(self.font()))
@@ -1285,6 +1287,9 @@ class CoverWall(QListWidget):
         self.menu_requested.emit(it.data(ROLE_INDEX), pos)
 
 
+RIGHT = 24  # the chips' right margin: in line with the covers' right edge (scrollbar + gutter)
+
+
 class StartPage(QWidget):
     picked = Signal(int)
 
@@ -1293,11 +1298,11 @@ class StartPage(QWidget):
         self.win = win
         self.piece: int | None = None  # chip that is on: index into PIECES / ORDER
         lay = QVBoxLayout(self)
-        lay.setContentsMargins(24, 18, 16, 0)
+        lay.setContentsMargins(24, 18, 0, 0)  # the wall's scrollbar runs down the right edge
         lay.setSpacing(0)
         chips = QWidget()
         self.chip_flow = FlowLayout(chips, spacing=8)
-        self.chip_flow.setContentsMargins(0, 0, 0, 0)
+        self.chip_flow.setContentsMargins(0, 0, RIGHT, 0)
         self.chips: list[Chip] = []
         for i, name in enumerate(PIECES):
             c = Chip(name)
@@ -1308,7 +1313,7 @@ class StartPage(QWidget):
         lay.addSpacing(12)
         self.note = QWidget()
         nl = QHBoxLayout(self.note)
-        nl.setContentsMargins(0, 0, 0, 4)
+        nl.setContentsMargins(0, 0, RIGHT, 4)
         nl.setSpacing(4)
         self.note_text = QLabel()
         self.note_text.setStyleSheet(f"color: {C['text2']};")
@@ -1321,7 +1326,7 @@ class StartPage(QWidget):
         lay.addSpacing(10)
         self.empty = QWidget()  # when the sidebar's search or filter (and a chip) leave no games
         el = QHBoxLayout(self.empty)
-        el.setContentsMargins(0, 6, 0, 0)
+        el.setContentsMargins(0, 6, RIGHT, 0)
         el.setSpacing(4)
         empty_text = QLabel("No games match this filter.")
         empty_text.setStyleSheet(f"color: {C['text2']};")
