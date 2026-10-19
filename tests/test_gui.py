@@ -123,3 +123,15 @@ def test_clear_waits_until_apply(qapp, window):
     win.apply_games([sc.appid])
     _pump(qapp, 3000, until=lambda: not win.busy)
     assert existing(win.user.grid_dir, sc.appid, SLOTS["hero"]) is None
+
+
+def test_games_are_matched_at_startup(qapp, window):
+    from steam_artwork_finder.sgdb import Game
+
+    win = window
+    win.config.data["api_key"] = "x"
+    win.sgdb.match = lambda name: (Game(9, name + " Remastered", "2020"), 4)  # never an exact name
+    win.set_connection("connected")
+    _pump(qapp, 3000, until=lambda: not win._matching and len(win.guesses) == 3)
+    assert set(win.status.values()) == {"check"}
+    assert not win.config.get_match(win.sfile.shortcuts[0].appid)  # guesses wait for the user

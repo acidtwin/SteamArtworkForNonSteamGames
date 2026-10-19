@@ -73,6 +73,7 @@ class MainWindow(QMainWindow):
         self.sfile = None
         self.status: dict[int, str] = {}  # appid -> "notfound" | "check" | "getting"
         self.guesses: dict[int, Game] = {}  # best guesses not yet confirmed by an action
+        self._matching = False  # the startup lookup of every game is running
         self.candidates: dict[int, int] = {}  # appid -> how many similar names SteamGridDB returned
         self.asset_cache: dict[tuple, list[Asset]] = {}
         self.pending = Pending()
@@ -418,6 +419,7 @@ class MainWindow(QMainWindow):
         self.start.rebuild()
         self.show_index(self.current)
         workers.run(prune_replaced, self.user.grid_dir)
+        self.match_all()
         self.update_steam_state()
 
     def _after_reload(self, appid: int):
@@ -510,6 +512,46 @@ class MainWindow(QMainWindow):
             state = "disconnected"
         self.conn = state
         self.statusbar.set_connection(state)
+        if state == "connected":
+            QTimer.singleShot(0, self.match_all)
+
+    def match_all(self):
+        """Look every unmatched game up on SteamGridDB in the background, so best
+        guesses show "Check Match" in the list without opening each game first."""
+        if self._matching or self.conn != "connected" or not self.sfile:
+            return
+        todo = [(sc.appid, sc.name) for sc in self.sfile.shortcuts
+                if sc.name and not self.config.get_match(sc.appid)
+                and sc.appid not in self.guesses and sc.appid not in self.status]
+        if not todo:
+            return
+        self._matching = True
+        sfile = self.sfile
+
+        def work(progress):
+            for appid, name in todo:
+                try:
+                    game, n = self.sgdb.match(name)
+                except Exception:
+                    continue  # tried again next start, or when the game is opened
+                progress((appid, game, n))
+
+        def got(result):
+            appid, game, n = result
+            if self.sfile is not sfile or self.config.get_match(appid) or appid in self.guesses:
+                return
+            sc = next((g for g in sfile.shortcuts if g.appid == appid), None)
+            if sc is None or appid in self.status:
+                return
+            self._record_match(sc, game, n)
+            if sc is self.current_shortcut() and self.stage.currentWidget() is self.page:
+                self.page.update_match()
+            self.refresh_all()
+
+        def finished(*_):
+            self._matching = False
+
+        workers.run(work, on_progress=got, on_done=finished, on_error=finished)
 
     def check_connection(self):
         if not self.config.api_key:
