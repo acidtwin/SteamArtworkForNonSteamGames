@@ -5,7 +5,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from html import escape
 
-from PySide6.QtCore import QEvent, QPointF, QRectF, QSize, Qt, Signal
+from PySide6.QtCore import QEvent, QPointF, QRect, QRectF, QSize, Qt, Signal
 from PySide6.QtGui import QColor, QFont, QFontMetricsF, QLinearGradient, QPainter, QPainterPath, QPen, QPixmap
 from PySide6.QtWidgets import (
     QBoxLayout,
@@ -505,9 +505,11 @@ class CoverThumb(QWidget):
         super().__init__(parent)
         self.setFixedSize(40, 60)
         self.pixmap: QPixmap | None = None
+        self.glyph = ""  # an icon name drawn on the plain block, e.g. "key"
 
-    def set_pixmap(self, pm: QPixmap | None):
+    def set_pixmap(self, pm: QPixmap | None, glyph: str = ""):
         self.pixmap = pm
+        self.glyph = glyph
         self.update()
 
     def paintEvent(self, _):
@@ -526,6 +528,8 @@ class CoverThumb(QWidget):
             g.setColorAt(0, q("raised"))
             g.setColorAt(1, QColor("#141a22"))
             p.fillRect(self.rect(), g)
+            if self.glyph:
+                icons.draw(p, self.glyph, QRect((self.width() - 18) // 2, (self.height() - 18) // 2, 18, 18), q("text3"))
 
 
 class MatchCard(QWidget):
@@ -533,6 +537,7 @@ class MatchCard(QWidget):
 
     confirm = Signal()
     change = Signal()
+    add_key = Signal()
 
     def __init__(self, parent=None):
         super().__init__(parent)
@@ -577,9 +582,14 @@ class MatchCard(QWidget):
         self.change_btn.setAccessibleDescription("Search SteamGridDB for the right game")
         self.change_btn.clicked.connect(self.change.emit)
         lay.addWidget(self.change_btn, 0, Qt.AlignmentFlag.AlignVCenter)
+        self.key_btn = QPushButton("Add API Key")
+        self.key_btn.setProperty("kind", "confirm")
+        self.key_btn.setAccessibleDescription("Add a free SteamGridDB API key")
+        self.key_btn.clicked.connect(self.add_key.emit)
+        lay.addWidget(self.key_btn, 0, Qt.AlignmentFlag.AlignVCenter)
 
     def set_state(self, state: str, name: str, year: str = "", candidates: int = 0):
-        """state: "exact", "check", "notfound" or "finding"."""
+        """state: "exact", "check", "notfound", "finding" or "key" (no API key yet)."""
         self.state = state
         kicker, colour, meta = {
             "exact": ("ARTWORK FROM STEAMGRIDDB", C["text3"], "Artwork comes from this game on SteamGridDB."),
@@ -588,6 +598,7 @@ class MatchCard(QWidget):
                       else "We picked the closest name we found."),
             "notfound": ("NOT FOUND ON STEAMGRIDDB", C["bad"], "Search for it by another name."),
             "finding": ("FINDING THIS GAME ON STEAMGRIDDB…", C["text3"], ""),
+            "key": ("STEAMGRIDDB API KEY NEEDED", C["blue_ink"], "Add a free key to find this game's artwork."),
         }[state]
         self.kicker.setText(kicker)
         self.kicker.setStyleSheet(f"color: {colour};")
@@ -598,7 +609,8 @@ class MatchCard(QWidget):
         self.meta.setText(meta)
         self.meta.setVisible(bool(meta))
         self.yes_btn.setVisible(state == "check")
-        self.change_btn.setVisible(state != "finding")
+        self.change_btn.setVisible(state not in ("finding", "key"))
+        self.key_btn.setVisible(state == "key")
         self.change_btn.setText("Search by Another Name" if state == "notfound" else "Change Game")
         self.setAccessibleName(f"{kicker.capitalize()}: {name}")
         self.update()
@@ -610,18 +622,20 @@ class MatchCard(QWidget):
         path = QPainterPath()
         path.addRoundedRect(r, 4, 4)
         p.fillPath(path, q("panel"))
-        check = self.state == "check"
-        if check:
+        # A match to check gets an amber edge, a missing API key a blue one.
+        edge = {"check": (QColor(WAIT), (227, 179, 65), "#4a4026"),
+                "key": (q("blue"), (26, 159, 255), "#24405c")}.get(self.state)
+        if edge:
             g = QLinearGradient(r.topLeft(), QPointF(r.left() + r.width() / 2, r.top()))
-            g.setColorAt(0, QColor(227, 179, 65, 20))
-            g.setColorAt(1, QColor(227, 179, 65, 0))
+            g.setColorAt(0, QColor(*edge[1], 22))
+            g.setColorAt(1, QColor(*edge[1], 0))
             p.fillPath(path, g)
-        p.setPen(QPen(QColor("#4a4026") if check else q("line"), 1))
+        p.setPen(QPen(QColor(edge[2]) if edge else q("line"), 1))
         p.setBrush(Qt.BrushStyle.NoBrush)
         p.drawRoundedRect(r.adjusted(0.5, 0.5, -0.5, -0.5), 4, 4)
-        if check:
+        if edge:
             p.setClipPath(path)
-            p.fillRect(QRectF(0, 0, 3, r.height()), QColor(WAIT))
+            p.fillRect(QRectF(0, 0, 3, r.height()), edge[0])
 
 
 class GamePage(QWidget):
@@ -648,26 +662,10 @@ class GamePage(QWidget):
         self.card = MatchCard()
         self.card.confirm.connect(self.confirm_match.emit)
         self.card.change.connect(self.change_match.emit)
+        self.card.add_key.connect(win.ask_api_key)
         lay.addWidget(self.card)
 
-        # Shown instead of five identical row messages when there is no API key yet.
-        self.keybar = QWidget()
-        self.keybar.setObjectName("keybar")
-        self.keybar.setAttribute(Qt.WidgetAttribute.WA_StyledBackground)
-        kb = QHBoxLayout(self.keybar)
-        kb.setContentsMargins(16, 10, 10, 10)
-        kb.addWidget(label("To see artwork options you need a free SteamGridDB API key.", "", wrap=True), 1)
-        self.key_btn = QPushButton("Add API key")
-        self.key_btn.setProperty("kind", "confirm")
-        self.key_btn.clicked.connect(win.ask_api_key)
-        kb.addWidget(self.key_btn)
-        self.keybar.hide()
         lay.addSpacing(14)
-        lay.addWidget(self.keybar)
-        self.keygap = QWidget()
-        self.keygap.setFixedHeight(14)
-        self.keygap.hide()
-        lay.addWidget(self.keygap)
 
         self.rows: dict[str, ArtworkRow] = {}
         for key in ("grid", "wide", "hero", "logo", "icon"):
@@ -697,7 +695,9 @@ class GamePage(QWidget):
         sc = self.win.current_shortcut()
         m = self.win.match_info(sc)
         status = self.win.status.get(sc.appid)
-        if status == "notfound" and not m:
+        if not self.win.config.api_key:
+            self.card.set_state("key", sc.name or "(unnamed)")
+        elif status == "notfound" and not m:
             self.card.set_state("notfound", sc.name or "(unnamed)")
         elif m:
             check = status == "check"
@@ -708,20 +708,18 @@ class GamePage(QWidget):
         self._card_cover()
 
     def _card_cover(self):
-        self.card.cover.set_pixmap(self.rows["grid"].first_thumb() if self.card.state in ("exact", "check") else None)
+        self.card.cover.set_pixmap(self.rows["grid"].first_thumb() if self.card.state in ("exact", "check") else None,
+                                   "key" if self.card.state == "key" else "")
 
     def refresh_current(self):
         for row in self.rows.values():
             row.show_current()
 
     def set_all_messages(self, text: str):
-        self.keybar.hide()
-        self.keygap.hide()
         for row in self.rows.values():
             row.set_message(text)
 
     def show_key_prompt(self):
-        self.keybar.show()
-        self.keygap.show()
+        self.update_match()
         for row in self.rows.values():
             row.set_message("Options appear here once a key is added.")

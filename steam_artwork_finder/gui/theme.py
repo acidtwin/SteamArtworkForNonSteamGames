@@ -143,7 +143,6 @@ def stylesheet() -> str:
     #faint {{ color: {c['text3']}; font-size: {pt('faint')}pt; }}
     #label {{ color: {c['text3']}; font-size: {pt('label')}pt; font-weight: 700; letter-spacing: 1px; }}
     #tagmiss {{ background: #3b2422; color: {c['bad']}; border-radius: 2px; padding: 2px 6px; font-size: {pt('label')}pt; font-weight: 700; }}
-    #keybar {{ background: {c['info_ground']}; border-radius: 3px; }}
     #summary {{ background: {c['input']}; border-radius: 3px; }}
     #notice[tone="warn"] {{ background: {c['warn_ground']}; }}
     #notice[tone="info"] {{ background: {c['info_ground']}; }}

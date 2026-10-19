@@ -64,7 +64,7 @@ def test_window_shows_games_and_pages(qapp, window):
     win.open_game(1)
     _pump(qapp)
     assert win.stage.currentWidget() is win.page
-    assert win.page.keybar.isVisible()  # no API key yet: one prompt, not five messages
+    assert win.page.card.state == "key" and win.page.card.key_btn.isVisible()  # no API key: the card asks for one
     assert win.cbar.buttons[1].text() == "Apply" and not win.cbar.buttons[1].isEnabled()
     for b in [win.page.rows["grid"].see_all] + win.cbar.buttons:
         assert b.height() >= 40, b.text()
