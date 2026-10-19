@@ -215,3 +215,20 @@ def test_quit_prompt_lists_games_and_remembers(qapp, window, monkeypatch):
     assert win.apply_on_quit and win.popover.on_quit.isChecked()
     win.popover.on_quit.setChecked(False)  # turned back off from the Steam pop-over
     assert not win.apply_on_quit
+
+
+def test_more_menu_has_sections_and_switches(qapp, window):
+    from steam_artwork_finder.gui.gamemenu import MenuRow, Section
+
+    win = window
+    win.header.more.click()
+    _pump(qapp, 100)
+    menu = win._more_menu
+    assert [s.text for s in menu.findChildren(Section)] == ["LIBRARY", "SETTINGS", "HELP"]
+    rows = {r.text(): r for r in menu.findChildren(MenuRow)}
+    assert rows["Reload Game List"].item.shortcut == "Ctrl+R"
+    quit_row = rows["Apply When I Quit"]
+    assert not quit_row.isChecked()
+    quit_row.click()
+    assert win.apply_on_quit and win.popover.on_quit.isChecked() and menu.isVisible()  # a switch keeps it open
+    menu.close()

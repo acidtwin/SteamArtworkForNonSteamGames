@@ -1,4 +1,5 @@
-"""The right-click menu for a game: a header with the game, then its actions with icons."""
+"""Menus drawn like Steam's: the right-click menu for a game (a header with the game, then its
+actions with icons) and the ⋯ menu in the top bar (sections, shortcuts and switches)."""
 
 from __future__ import annotations
 
@@ -24,6 +25,9 @@ class Item:
     enabled: bool = True
     tone: str = ""  # "go" (green icon), "bad" (red text) or ""
     badge: int = 0  # a green count on the right, e.g. changes waiting
+    shortcut: str = ""  # shown faintly on the right, e.g. "Ctrl+R"
+    toggle: bool | None = None  # a switch on the right; clicking flips it and keeps the menu open
+    external: bool = False  # opens a web page: a small arrow on the right
 
 
 class MenuRow(QAbstractButton):
@@ -32,6 +36,9 @@ class MenuRow(QAbstractButton):
         self.item = item
         self.setText(item.text)
         self.setAccessibleName(f"{item.text}, {item.badge}" if item.badge else item.text)
+        if item.toggle is not None:
+            self.setCheckable(True)
+            self.setChecked(item.toggle)
         self.setEnabled(item.enabled)
         self.setCursor(Qt.CursorShape.PointingHandCursor)
         self.setAttribute(Qt.WidgetAttribute.WA_Hover)
@@ -73,6 +80,25 @@ class MenuRow(QAbstractButton):
         p.setPen(fg)
         p.setFont(self.font())
         p.drawText(QRectF(12 + isz + 10, 0, r.width() - 40, r.height()), Qt.AlignmentFlag.AlignVCenter, self.text())
+        right = r.right() - 10
+        if self.item.toggle is not None:
+            track = QRectF(right - 30, (r.height() - 17) / 2, 30, 17)
+            p.setPen(Qt.PenStyle.NoPen)
+            p.setBrush(QColor(C["blue"]) if self.isChecked() else QColor("#4a5462"))
+            p.drawRoundedRect(track, 8.5, 8.5)
+            knob = 13
+            x = track.right() - knob - 2 if self.isChecked() else track.left() + 2
+            p.setBrush(QColor("#dcdedf") if on else QColor("#8a95a2"))
+            p.drawEllipse(QRectF(x, track.top() + 2, knob, knob))
+        elif self.item.external:
+            icons.draw(p, "external", QRect(int(right) - 13, (self.height() - 13) // 2, 13, 13), q("text3"))
+        elif self.item.shortcut:
+            f = QFont(self.font())
+            f.setPointSizeF(theme.pt("faint"))
+            p.setFont(f)
+            p.setPen(q("text3"))
+            p.drawText(QRectF(0, 0, right, r.height()), Qt.AlignmentFlag.AlignVCenter | Qt.AlignmentFlag.AlignRight,
+                       self.item.shortcut)
         if self.item.badge and on:
             f = QFont(self.font())
             f.setPointSizeF(theme.pt("tag") * 1.1)
@@ -128,30 +154,62 @@ class Header(QWidget):
         p.drawText(QRectF(x, 25, self.width() - x, 15), Qt.AlignmentFlag.AlignVCenter, self.sub)
 
 
+class Section(QWidget):
+    """A small heading over a group of rows."""
+
+    def __init__(self, text: str, parent=None):
+        super().__init__(parent)
+        self.text = text.upper()
+        self.setAccessibleName(text)
+        self.setFixedHeight(28)
+
+    def paintEvent(self, _):
+        p = QPainter(self)
+        f = QFont(self.font())
+        f.setPointSizeF(theme.pt("tag") * 1.05)
+        f.setWeight(QFont.Weight.ExtraBold)
+        f.setLetterSpacing(QFont.SpacingType.PercentageSpacing, 109)
+        p.setFont(f)
+        p.setPen(q("text3"))
+        p.drawText(QRectF(12, 0, self.width() - 12, self.height() - 3),
+                   Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignBottom, self.text)
+
+
 class GameMenu(QFrame):
-    """A popup that closes on any click outside it, like a QMenu."""
+    """A popup that closes on any click outside it, like a QMenu.
+
+    `items` holds rows, None for a line between groups, and strings for section headings.
+    With no `name` there's no game header (the ⋯ menu)."""
 
     closed = Signal()
 
-    def __init__(self, name: str, sub: str, icon: QPixmap | None, items: list[Item | None], parent=None):
+    def __init__(self, name: str | None, sub: str, icon: QPixmap | None, items: list[Item | str | None],
+                 parent=None, width: int = 268):
         super().__init__(parent, Qt.WindowType.Popup | Qt.WindowType.FramelessWindowHint
                          | Qt.WindowType.NoDropShadowWindowHint)
         self.setAttribute(Qt.WidgetAttribute.WA_TranslucentBackground)
         self.setAttribute(Qt.WidgetAttribute.WA_DeleteOnClose)
-        self.setAccessibleName(f"{name} menu")
-        self.setFixedWidth(268 + SHADOW * 2)
+        self.setAccessibleName(f"{name} menu" if name else "More")
+        self.setFixedWidth(width + SHADOW * 2)
         lay = QVBoxLayout(self)
         lay.setContentsMargins(SHADOW + 6, SHADOW + 6, SHADOW + 6, SHADOW + 6)
         lay.setSpacing(0)
-        lay.addWidget(Header(name, sub, icon, self))
-        lay.addWidget(Separator(self))
+        if name:
+            lay.addWidget(Header(name, sub, icon, self))
+            lay.addWidget(Separator(self))
         self.rows: list[MenuRow] = []
         for it in items:
             if it is None:
                 lay.addWidget(Separator(self))
                 continue
+            if isinstance(it, str):
+                lay.addWidget(Section(it, self))
+                continue
             row = MenuRow(it, self)
-            row.clicked.connect(lambda _=False, fn=it.fn: self._run(fn))
+            if it.toggle is not None:
+                row.toggled.connect(lambda on, fn=it.fn: fn(on))  # stays open, like a switch
+            else:
+                row.clicked.connect(lambda _=False, fn=it.fn: self._run(fn))
             self.rows.append(row)
             lay.addWidget(row)
 

@@ -50,6 +50,9 @@ from .widgets import ArtView, Notice, Toast, label, load_pixmap
 ORDER = ("grid", "wide", "hero", "logo", "icon")
 
 
+ISSUES_URL = "https://github.com/acidtwin/steam-artwork-for-non-steam-games/issues"
+
+
 def _join(words: list[str]) -> str:
     """"a", "a and b", "a, b and c"."""
     return words[0] if len(words) == 1 else ", ".join(words[:-1]) + " and " + words[-1]
@@ -100,7 +103,7 @@ class MainWindow(QMainWindow):
         self.header = Header()
         self.header.home_clicked.connect(self.go_home)
         self.header.user_chosen.connect(self._account_changed)
-        self._fill_more_menu(self.header.more_menu)
+        self.header.more_clicked.connect(self.show_more_menu)
         outer.addWidget(self.header)
         self.notice = Notice()
         outer.addWidget(self.notice)
@@ -174,7 +177,8 @@ class MainWindow(QMainWindow):
         self.steam_timer.start()
         for keys, fn in ((QKeySequence.StandardKey.Find, lambda: self.game_list.search.setFocus()),
                          (QKeySequence.StandardKey.Undo, self.toast.undo_now),
-                         (QKeySequence.StandardKey.Refresh, self.reload_shortcuts)):
+                         (QKeySequence.StandardKey.Refresh, self.reload_shortcuts),
+                         (QKeySequence("Ctrl+R"), self.reload_shortcuts)):
             act = QAction(self)
             act.setShortcut(keys)
             act.triggered.connect(fn)
@@ -184,21 +188,35 @@ class MainWindow(QMainWindow):
 
     # ---- layout pieces ----------------------------------------------------
 
-    def _fill_more_menu(self, menu: QMenu):
-        for text, fn in (
-            ("SteamGridDB API key…", self.ask_api_key),
-            ("Restore a backup…", self.restore_backup),
-            ("Open the artwork folder", self.open_grid_folder),
-            (None, None),
-            ("Check for changes", self.reload_shortcuts),
-            ("Choose Steam folder…", self.choose_steam_folder),
-            (None, None),
-            ("About", self.about),
-        ):
-            if text is None:
-                menu.addSeparator()
-            else:
-                menu.addAction(QAction(text, menu, triggered=fn))
+    def show_more_menu(self):
+        from .gamemenu import SHADOW, GameMenu, Item
+
+        menu = GameMenu(None, "", None, [
+            "Library",
+            Item("Reload Game List", "refresh", self.reload_shortcuts, shortcut="Ctrl+R"),
+            Item("Open Artwork Folder", "images", self.open_grid_folder, bool(self.user)),
+            Item("Restore Steam's Game List…", "history", self.restore_backup, bool(self.sfile)),
+            "Settings",
+            Item("Steam Folder…", "folder", self.show_folder_popover),
+            Item("SteamGridDB API Key…", "key", self.ask_api_key),
+            Item("Restart Steam When I Apply", "restart", self._menu_auto_restart, toggle=self.auto_restart),
+            Item("Apply When I Quit", "exit", self._menu_apply_on_quit, toggle=self.apply_on_quit),
+            "Help",
+            Item("Report a Problem", "bug", lambda: QDesktopServices.openUrl(QUrl(ISSUES_URL)), external=True),
+            Item("About", "info", self.about),
+        ], self, width=300)
+        self._more_menu = menu  # kept alive while it shows
+        menu.adjustSize()
+        b = self.header.more
+        menu.popup(b.mapToGlobal(QPoint(b.width() - menu.width() + SHADOW, b.height() + 4)))
+
+    def _menu_auto_restart(self, on: bool):
+        self._set_auto_restart(on)
+        self.popover.set_auto_restart(on)
+
+    def _menu_apply_on_quit(self, on: bool):
+        self._set_apply_on_quit(on)
+        self.popover.set_apply_on_quit(on)
 
     def _full_message(self, title, text, hint, button, fn, kind) -> QWidget:
         w = QWidget()

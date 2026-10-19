@@ -191,6 +191,7 @@ class Header(QWidget):
 
     home_clicked = Signal()
     user_chosen = Signal(int)
+    more_clicked = Signal()
 
     def __init__(self, parent=None):
         super().__init__(parent)
@@ -234,9 +235,7 @@ class Header(QWidget):
         self.more.setIconSize(QSize(22, 22))
         self.more.setToolTip("More")
         self.more.setAccessibleName("More actions")
-        self.more.setPopupMode(QToolButton.ToolButtonPopupMode.InstantPopup)
-        self.more_menu = QMenu(self.more)
-        self.more.setMenu(self.more_menu)
+        self.more.clicked.connect(self.more_clicked)
         lay.addWidget(self.more)
 
     def set_users(self, labels: list[str], current: int, avatar: QPixmap | None = None):
