@@ -369,3 +369,323 @@ def test_home_bar_switches_library_view(qapp, window):
     bar.home.click()
     _pump(qapp, 100)
     assert window.stage.currentWidget() is window.start and window.current < 0
+
+
+def _asset(n, mime="image/png"):
+    from steam_artwork_finder.sgdb import Asset
+
+    return Asset(n, f"https://x/{n}.png", f"https://x/t{n}.png", 600, 900, mime, 0, "", "someone")
+
+
+@pytest.fixture
+def steam_state(window, monkeypatch):
+    """Steam's running state, switchable by the test; launches are recorded, not made."""
+    from steam_artwork_finder.gui import app as appmod
+
+    state = {"running": False, "calls": []}
+    monkeypatch.setattr(appmod, "steam_running", lambda root=None: state["running"])
+
+    def shutdown(root=None):
+        state["calls"].append("shutdown")
+        state["running"] = False
+        return True
+
+    monkeypatch.setattr(appmod, "shutdown_steam", shutdown)
+    monkeypatch.setattr(appmod, "wait_until_closed", lambda root=None: not state["running"])
+    monkeypatch.setattr(appmod, "start_steam", lambda root=None: state["calls"].append("start") or True)
+    return state
+
+
+def test_one_bad_download_keeps_the_rest_and_downloads_before_closing_steam(qapp, window, steam_state):
+    from steam_artwork_finder.artwork import SLOTS, existing
+    from steam_artwork_finder.pending import Pick
+    from steam_artwork_finder.sgdb import SGDBError
+
+    win = window
+    a, b = win.sfile.shortcuts[0], win.sfile.shortcuts[2]
+
+    def download(url):
+        if "/t" in url:
+            return PNG  # a thumbnail for the waiting pick
+        steam_state["calls"].append("download")
+        if url.endswith("/2.png"):
+            raise SGDBError("Download failed: 404")
+        return PNG
+
+    win.sgdb.download = download
+    win._stage(a, "grid", Pick(_asset(1)))
+    win._stage(b, "grid", Pick(_asset(2)))
+    steam_state["running"] = True
+    assert win.apply_all()
+    _pump(qapp, 3000, until=lambda: not win.busy)
+    assert steam_state["calls"] == ["download", "download", "shutdown", "start"]
+    assert existing(win.user.grid_dir, a.appid, SLOTS["grid"]) is not None
+    assert existing(win.user.grid_dir, b.appid, SLOTS["grid"]) is None
+    assert win.pending.games() == [b.appid]  # only the failed pick still waits
+    assert win.last_errors == ["Pokémon émulé cover: Download failed: 404"]
+
+    # When nothing could be downloaded, Steam is left open.
+    steam_state["calls"].clear()
+    steam_state["running"] = True
+    win.apply_all()
+    _pump(qapp, 3000, until=lambda: not win.busy)
+    assert steam_state["calls"] == ["download"]
+
+
+def test_switching_and_quitting_wait_while_busy(qapp, window):
+    from steam_artwork_finder.pending import Pick
+
+    win = window
+    sfile, user = win.sfile, win.user
+    win._set_busy("apply", "Applying…")
+    assert not win.statusbar.steam.isEnabled()
+    win.reload_shortcuts()
+    win._account_changed(1)
+    assert win.sfile is sfile and win.user is user
+    assert win.toast.label.text() == "Wait until the artwork has been applied."
+
+    win._set_busy("fetch", "Getting artwork…")
+    win.pending.set(sfile.shortcuts[0].appid, "grid", Pick(None))
+    win.close()
+    assert win.isVisible() and not win._close_after_apply  # a later close still asks first
+    win._set_busy("")
+    assert win.statusbar.steam.isEnabled()
+
+
+def test_undo_with_steam_open_waits_to_put_the_icon_back(qapp, window, steam_state):
+    from steam_artwork_finder.pending import Pick
+    from steam_artwork_finder.shortcuts import ShortcutsFile
+
+    win = window
+    win.config.data["auto_restart_steam"] = False
+    sc = win.sfile.shortcuts[1]  # icon "/old/icon.png"
+    win._stage(sc, "icon", Pick(_asset(3), PNG))
+    win.apply_games([sc.appid])
+    _pump(qapp, 3000, until=lambda: not win.busy)
+    path = win.sfile.path
+    new_icon = ShortcutsFile(path).shortcuts[1].icon
+    assert new_icon.endswith("_icon.png")
+
+    steam_state["running"] = True  # the user opened Steam, then pressed Undo
+    win.toast.undo_now()
+    assert ShortcutsFile(path).shortcuts[1].icon == new_icon  # not written while Steam runs
+    assert win.pending_icons() == {str(sc.appid): "/old/icon.png"}
+    assert win.steam_state() == "restart"
+
+    steam_state["running"] = False
+    win.update_steam_state()
+    assert ShortcutsFile(path).shortcuts[1].icon == "/old/icon.png"
+    assert win.pending_icons() == {}
+
+
+def test_waiting_icons_wait_for_their_own_account(qapp, window, steam_state):
+    import os
+
+    from steam_artwork_finder.shortcuts import ShortcutsFile
+
+    win = window
+    sc = win.sfile.shortcuts[0]
+    other = win.user.shortcuts_path.parent.parent.parent / "87654321/config/shortcuts.vdf"
+    win.config.set_pending_icon(other, sc.appid, "/other/grid/icon.png")
+    win.update_steam_state()
+    assert win.config.pending_icons(other) == {str(sc.appid): "/other/grid/icon.png"}  # kept for that account
+    assert ShortcutsFile(win.sfile.path).shortcuts[0].icon == ""
+
+    # Linking reloads the list Steam rewrote on exit, and the views follow it.
+    win.open_game(2)
+    _pump(qapp)
+    win.config.set_pending_icon(win.sfile.path, sc.appid, "/mine/icon.png")
+    win.sfile.path.write_bytes(win.sfile.path.read_bytes())
+    os.utime(win.sfile.path, ns=(1, 1))
+    win.update_steam_state()
+    assert ShortcutsFile(win.sfile.path).shortcuts[0].icon == "/mine/icon.png"
+    assert win.current_shortcut().name == "Pokémon émulé"
+
+
+def test_restore_with_steam_open_starts_it_again(qapp, window, steam_state, monkeypatch):
+    from steam_artwork_finder.gui import dialogs
+
+    win = window
+    first = win.sfile.backup()
+    steam_state["running"] = True
+    monkeypatch.setattr(dialogs.RestoreDialog, "exec", lambda dlg: 1)
+    monkeypatch.setattr(dialogs.RestoreDialog, "selected", lambda dlg: first)
+    win.restore_backup()
+    _pump(qapp, 3000, until=lambda: not win.busy)
+    assert steam_state["calls"] == ["shutdown", "start"]
+
+
+def test_rate_limit_message_reaches_the_gui_thread(qapp, window):
+    import threading
+
+    win = window
+    win._set_busy("fetch", "Getting artwork…")
+    t = threading.Thread(target=lambda: win.sgdb.on_wait(12.0))
+    t.start()
+    t.join()
+    _pump(qapp, 500, until=lambda: "12 s" in win.progress_text)
+    assert win.progress_text == "SteamGridDB asked us to wait 12 s…"
+    win._set_busy("")
+
+
+def test_background_matching_stops_on_a_bad_key(qapp, window):
+    from steam_artwork_finder.sgdb import AuthError
+
+    win = window
+    win.config.data["api_key"] = "x"
+    calls = []
+
+    def match(name):
+        calls.append(name)
+        raise AuthError("SteamGridDB rejected the API key")
+
+    win.sgdb.match = match
+    win.set_connection("connected")
+    _pump(qapp, 3000, until=lambda: calls and not win._matching)
+    assert len(calls) == 1 and win.conn == "disconnected"
+
+
+def test_thumbnail_cache_replaces_a_cut_off_file(qapp, tmp_path, monkeypatch):
+    import hashlib
+
+    from steam_artwork_finder.gui import workers
+
+    from PySide6.QtCore import QBuffer
+    from PySide6.QtGui import QImage
+
+    monkeypatch.setenv("XDG_CACHE_HOME", str(tmp_path / "cache"))
+    buf = QBuffer()
+    buf.open(QBuffer.OpenModeFlag.WriteOnly)
+    img = QImage(4, 4, QImage.Format.Format_RGB32)
+    img.fill(0)
+    img.save(buf, "PNG")
+    PNG = bytes(buf.data())  # noqa: N806 - a decodable one, unlike the module's
+    url = "https://x/t.png"
+    fetched = []
+    assert workers.cached_download(url, lambda u: fetched.append(u) or PNG) == PNG
+    p = workers.cache_dir() / "thumbs" / hashlib.sha1(url.encode()).hexdigest()
+    assert p.read_bytes() == PNG and not list(p.parent.glob("*.part"))
+    assert workers.cached_download(url, lambda u: fetched.append(u) or PNG) == PNG
+    assert len(fetched) == 1
+    p.write_bytes(PNG[:20])  # the app was killed mid-download
+    assert workers.cached_download(url, lambda u: fetched.append(u) or PNG) == PNG
+    assert len(fetched) == 2 and p.read_bytes() == PNG
+
+
+def test_banner_header_fits_the_page(qapp, window):
+    from PySide6.QtCore import QPoint
+    from PySide6.QtWidgets import QLabel
+
+    win = window
+    win.config.data["api_key"] = "x"
+    win.sgdb.match = lambda name: (None, 0)
+    win.sgdb.assets = lambda *a, **k: []
+    win.open_game(0)
+    _pump(qapp)
+    page, card = win.page, win.page.card
+    win.sfile.shortcuts[0].name = "A Very Long Game Name That Goes On And On, The Definitive Edition"
+    card.set_game(win.sfile.shortcuts[0].name)
+    card.set_state("check", "The Legend of Zelda: Tears of the Kingdom", "2023", 12)
+    card.set_actions(True, 3, False)
+
+    def fits():
+        _pump(qapp, 150)
+        right = card.apply_btn.mapTo(card, QPoint(card.apply_btn.width(), 0)).x()
+        assert page.scroll.widget().width() <= page.scroll.viewport().width()
+        assert right <= card.width() and card.title.width() <= card.width()
+
+    fits()
+    assert not card.compact and card.height() == 210  # buttons beside the name, as always
+    shown = QLabel.text(card.title)
+    assert card.title.text().startswith("A Very Long") and shown.endswith("…") and card.title.toolTip()
+    win.tray.show()
+    win.split.setSizes([300, 610, 370])
+    fits()
+    assert card.compact  # the buttons moved to a row of their own
+    win.tray.hide()
+    _pump(qapp, 150)
+    assert not card.compact
+
+
+def test_artwork_files_are_looked_up_once_and_again_after_a_write(qapp, window):
+    from steam_artwork_finder.artwork import SLOTS
+    from steam_artwork_finder.pending import Pick
+
+    win = window
+    sc = win.sfile.shortcuts[0]
+    assert win.coverage(sc) == [False] * 5
+    win.user.grid_dir.mkdir(parents=True, exist_ok=True)
+    (win.user.grid_dir / f"{sc.appid}_hero.png").write_bytes(PNG)
+    assert win.coverage(sc)[2] is False  # remembered, not looked up on every paint
+    assert win.slot_path(sc, SLOTS["hero"], fresh=True) is not None
+    win._stage(sc, "grid", Pick(_asset(1), PNG))
+    win.apply_games([sc.appid])
+    _pump(qapp, 3000, until=lambda: not win.busy)
+    assert win.coverage(sc)[:3] == [True, False, True]
+    win.toast.undo_now()
+    assert win.coverage(sc)[0] is False
+    (win.user.grid_dir / f"{sc.appid}_logo.png").write_bytes(PNG)
+    win.reload_shortcuts()
+    assert win.coverage(win.sfile.shortcuts[0])[3] is True
+
+
+def test_content_bar_buttons_keep_focus_through_a_refresh(qapp, window):
+    win = window
+    win.activateWindow()
+    b = win.cbar.buttons[0]
+    b.setFocus()
+    _pump(qapp, 50)
+    win.refresh_all()
+    win.refresh_all()
+    assert win.cbar.buttons[0] is b and b.hasFocus() and b.text() == "Get Artwork (3 Games)"
+
+
+def test_popover_keeps_tab_and_esc_to_itself(qapp, window):
+    from PySide6.QtCore import QEvent, Qt
+    from PySide6.QtGui import QKeyEvent
+    from PySide6.QtWidgets import QApplication, QLineEdit
+
+    win = window
+    win.activateWindow()
+    _pump(qapp, 50)
+    win.ask_api_key()
+    _pump(qapp, 200)
+    pop = win.keypop
+    assert pop.is_open()
+    for _ in range(8):  # Tab goes round the pop-over's own controls
+        pop.focusNextPrevChild(True)
+        assert pop.isAncestorOf(QApplication.focusWidget())
+    other = QLineEdit()  # Esc in another window (a dialog) isn't the pop-over's
+    QApplication.sendEvent(other, QKeyEvent(QEvent.Type.KeyPress, Qt.Key.Key_Escape, Qt.KeyboardModifier.NoModifier))
+    assert pop.is_open()
+    QApplication.sendEvent(pop.edit, QKeyEvent(QEvent.Type.KeyPress, Qt.Key.Key_Escape, Qt.KeyboardModifier.NoModifier))
+    assert not pop.is_open()
+    assert QApplication.focusWidget() is win.statusbar.connection  # back where it was opened from
+
+
+def test_dialogs_are_deleted_when_closed(qapp, window, monkeypatch):
+    from PySide6.QtCore import QEvent
+
+    from steam_artwork_finder.gui import dialogs
+
+    win = window
+    win.config.data["api_key"] = "x"
+    win.sgdb.search = lambda term: []
+    monkeypatch.setattr(dialogs.MatchDialog, "exec", lambda dlg: 0)
+    win.open_game(0)
+    for _ in range(2):
+        win.change_match()
+    qapp.sendPostedEvents(None, QEvent.Type.DeferredDelete)  # what the event loop does when it gets back
+    assert not win.findChildren(dialogs.MatchDialog)
+
+
+def test_details_columns_never_overlap_the_names(qapp):
+    from steam_artwork_finder.gui.library import NAME_X, STATUS_W, detail_columns
+
+    end, centres, status_x, col = detail_columns(900)
+    assert status_x is not None and centres[-1] + col / 2 <= status_x and col == 64
+    for width in (380, 500, 639):
+        end, centres, status_x, col = detail_columns(width)
+        assert status_x is None and end >= NAME_X + 40  # the status column moves into the tooltip
+        assert centres[0] - col / 2 >= end
+    assert detail_columns(640 + STATUS_W)[2] is not None

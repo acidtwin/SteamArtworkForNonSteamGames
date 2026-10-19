@@ -103,7 +103,9 @@ class ShortcutsFile:
     def backup_dir(self) -> Path:
         return self.path.parent / "shortcuts-backups"
 
-    def backup(self) -> Path | None:
+    def backup(self, keep: Path | None = None) -> Path | None:
+        """Copy the current file into the backup folder, keeping the newest
+        MAX_BACKUPS (`keep` is never pruned: it is the one being restored)."""
         if not self.path.exists():
             return None
         self.backup_dir.mkdir(exist_ok=True)
@@ -114,7 +116,7 @@ class ShortcutsFile:
             dest = self.backup_dir / f"shortcuts-{stamp}-{n}.vdf"
             n += 1
         shutil.copyfile(self.path, dest)
-        for old in self._backup_files()[MAX_BACKUPS:]:
+        for old in [p for p in self._backup_files() if p != keep][MAX_BACKUPS:]:
             old.unlink(missing_ok=True)
         return dest
 
@@ -135,10 +137,11 @@ class ShortcutsFile:
 
     def restore(self, backup: Path):
         """Put a backup back, keeping a copy of the current file first."""
-        binvdf.loads(backup.read_bytes())  # refuse a broken backup
-        self.backup()
+        data = backup.read_bytes()
+        binvdf.loads(data)  # refuse a broken backup
+        self.backup(keep=backup)
         tmp = self.path.with_name(".shortcuts-restore")
-        shutil.copyfile(backup, tmp)
+        tmp.write_bytes(data)
         os.replace(tmp, self.path)
         self.reload()
 

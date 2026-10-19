@@ -3,10 +3,11 @@
 from __future__ import annotations
 
 from PySide6.QtCore import QPointF, QRectF, QSize, Qt, Signal
-from PySide6.QtGui import QFont, QFontMetrics, QPainter, QPainterPath, QPen
+from PySide6.QtGui import QFont, QFontMetrics, QPainter, QPainterPath, QPen, QPixmap
 from PySide6.QtWidgets import (
     QButtonGroup,
     QHBoxLayout,
+    QLabel,
     QListView,
     QListWidget,
     QListWidgetItem,
@@ -47,6 +48,22 @@ class OptionDelegate(QStyledItemDelegate):
     def __init__(self, tray):
         super().__init__()
         self.tray = tray
+        self._scaled: dict[tuple, QPixmap] = {}  # thumbnails scaled for the tray, so a repaint only draws
+
+    def scaled(self, pm: QPixmap, s: QSize, logo: bool, dpr: float) -> QPixmap:
+        key = (pm.cacheKey(), s.width(), s.height(), logo, dpr)
+        out = self._scaled.get(key)
+        if out is None:
+            if len(self._scaled) > 300:
+                self._scaled.clear()
+            if logo:  # logos keep their shape, with a margin
+                out = pm.scaled(s * 0.86 * dpr, Qt.AspectRatioMode.KeepAspectRatio,
+                                Qt.TransformationMode.SmoothTransformation)
+                out.setDevicePixelRatio(dpr)
+            else:
+                out = fill_rect(pm, s, dpr)
+            self._scaled[key] = out
+        return out
 
     def sizeHint(self, option, index):
         s = thumb_size(self.tray.slot.key)
@@ -67,14 +84,13 @@ class OptionDelegate(QStyledItemDelegate):
         else:
             p.fillRect(r, q("raised"))
         if pm is not None and not pm.isNull():
+            dpr = p.device().devicePixelRatioF()
+            sp = self.scaled(pm, s, logo, dpr)
             if logo:
-                dpr = p.device().devicePixelRatioF()
-                sp = pm.scaled(s * 0.86 * dpr, Qt.AspectRatioMode.KeepAspectRatio, Qt.TransformationMode.SmoothTransformation)
-                sp.setDevicePixelRatio(dpr)
                 w, h = sp.width() / dpr, sp.height() / dpr
                 p.drawPixmap(QPointF(r.x() + (s.width() - w) / 2, r.y() + (s.height() - h) / 2), sp)
             else:
-                p.drawPixmap(r.topLeft(), fill_rect(pm, s, p.device().devicePixelRatioF()))
+                p.drawPixmap(r.topLeft(), sp)
         p.setClipping(False)
         picked = bool(index.data(ROLE_PICK))
         if picked:
@@ -157,12 +173,33 @@ class OptionTray(QWidget):
         self.list.itemDoubleClicked.connect(lambda *_: self._use())
         self.list.itemActivated.connect(lambda *_: self._use())
         lay.addWidget(self.list, 1)
+        # In the list's place when SteamGridDB has nothing for this piece.
+        self.empty = QWidget()
+        el = QVBoxLayout(self.empty)
+        el.setContentsMargins(12, 0, 12, 0)
+        el.setSpacing(8)
+        el.addStretch(1)
+        self.empty_icon = QLabel()
+        self.empty_icon.setPixmap(icons.pixmap("images", 36, theme.C["text3"], self.devicePixelRatioF()))
+        el.addWidget(self.empty_icon, 0, Qt.AlignmentFlag.AlignHCenter)
+        self.empty_title = label("", "", wrap=True)
+        self.empty_title.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        self.empty_title.setStyleSheet("font-weight: 600;")
+        el.addWidget(self.empty_title)
+        self.empty_text = label("Artists add new artwork all the time, so look again later. "
+                                "You can still pick another piece above.", "muted", wrap=True)
+        self.empty_text.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        el.addWidget(self.empty_text)
+        el.addStretch(2)
+        self.empty.hide()
+        lay.addWidget(self.empty, 1)
         self.status = label("", "faint", wrap=True)
         lay.addWidget(self.status)
         self.more = QPushButton("Load more")
         self.more.clicked.connect(self._more)
         lay.addWidget(self.more)
         foot = QHBoxLayout()
+        foot.addStretch(0)  # takes the room only while Pick This is hidden, keeping Clear on the right
         self.use_btn = QPushButton("Pick This")
         self.use_btn.setProperty("kind", "confirm")
         self.use_btn.setAccessibleDescription("Picks it for this game; Apply saves it to Steam")
@@ -187,10 +224,12 @@ class OptionTray(QWidget):
         self.assets = []
         self.page = 0
         self.list.clear()
+        self._show_empty(False)
         self._chips([])
         self.more.hide()
         self.show()
         self._update_buttons()
+        self.slot_changed.emit(slot)
         self.load()
 
     def load(self):
@@ -225,11 +264,21 @@ class OptionTray(QWidget):
         self._chips(sorted({a.style for a in self.assets if a.style}))
         self._filter()
         if not self.assets:
-            self.status.setText(f"No {slot.label.lower()} for this game on SteamGridDB yet.")
+            self.empty_title.setText(f"No {slot.label.lower()} for this game on SteamGridDB yet")
+            self._show_empty(True)
+            self.status.setText("")
         else:
             info = SLOTS[slot.key]
             self.status.setText(f"{len(self.assets)} options. Hover to preview, then "
                                 f"“Pick This {info.label.title()}”. Apply saves your picks.")
+
+    def _show_empty(self, empty: bool):
+        if empty and self.list.hasFocus():
+            self.tabs.setFocus(Qt.FocusReason.OtherFocusReason)  # not on to Clear, as hiding would
+        self.list.setVisible(not empty)
+        self.empty.setVisible(empty)
+        self.status.setVisible(not empty)
+        self._update_buttons()
 
     def _more(self):
         self.page += 1
@@ -262,7 +311,6 @@ class OptionTray(QWidget):
     def _tab(self, i):
         self.preview.emit(self.slot, None)
         self.open_slot(SLOTS[ORDER[i]])
-        self.slot_changed.emit(self.slot)
 
     def _hover(self, item):
         self.preview.emit(self.slot, item.data(ROLE_PIX))
@@ -304,6 +352,10 @@ class OptionTray(QWidget):
         pick = self._pick()
         on_disk = sc is not None and self.win.slot_path(sc, self.slot) is not None
         self.remove_btn.setEnabled((on_disk or pick is not None) and not (pick is not None and pick.clears))
+        # Nothing to pick: no Pick This button, and Clear only while there's something to clear.
+        empty = self.empty.isVisibleTo(self)
+        self.use_btn.setVisible(not empty)
+        self.remove_btn.setVisible(not empty or self.remove_btn.isEnabled())
 
     def _use(self):
         it = self.list.currentItem()
@@ -315,7 +367,7 @@ class OptionTray(QWidget):
         """Same as the Clear pill: drop a new pick when nothing is on disk, else mark the piece for clearing."""
         sc = self.win.current_shortcut()
         pick = self._pick()
-        if pick is not None and not pick.clears and self.win.slot_path(sc, self.slot) is None:
+        if pick is not None and not pick.clears and self.win.slot_path(sc, self.slot, fresh=True) is None:
             self.win.unstage(self.slot)
         else:
             self.win.stage_clear(self.slot)
