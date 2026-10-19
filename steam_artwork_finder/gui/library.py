@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from PySide6.QtCore import QPoint, QRect, QRectF, QSize, Qt, QTimer, Signal
+from PySide6.QtCore import QPoint, QPointF, QRect, QRectF, QSize, Qt, QTimer, Signal
 from PySide6.QtGui import QAction, QColor, QFont, QFontMetrics, QPainter, QPainterPath, QPen, QPixmap
 from PySide6.QtWidgets import (
     QAbstractButton,
@@ -32,6 +32,8 @@ NEW_BG = "#1474c8"
 
 # key, name for the tooltip, text in the menu
 FILTERS = (("all", "All Games", "All"), ("missing", "Missing Art", "Missing Art"), ("check", "To Check", "To Check"))
+# key, name, icon: how the library shows its games
+VIEWS = (("list", "List", "view-list"), ("grid", "Grid", "view-grid"), ("details", "Details", "view-details"))
 PIECES = ("Covers", "Wide covers", "Banners", "Logos", "Icons")
 
 
@@ -319,21 +321,21 @@ class FilterRow(QAbstractButton):
                    Qt.AlignmentFlag.AlignVCenter | Qt.AlignmentFlag.AlignRight, str(self.count))
 
 
-class FilterMenu(QFrame):
-    """The popup under the filter button: "SHOW" and three radio rows."""
+class PopupMenu(QFrame):
+    """A small popup with a caps heading and radio rows (anything with a `key`)."""
 
     chosen = Signal(str)
     closed = Signal()
 
-    def __init__(self, parent=None):
+    def __init__(self, heading: str, spoken: str, rows: list, width: int, parent=None):
         super().__init__(parent, Qt.WindowType.Popup | Qt.WindowType.FramelessWindowHint)
         self.setAttribute(Qt.WidgetAttribute.WA_NoMouseReplay)  # clicking the button again just closes it
-        self.setAccessibleName("Show games")
-        self.setFixedWidth(232)
+        self.setAccessibleName(spoken)
+        self.setFixedWidth(width)
         lay = QVBoxLayout(self)
         lay.setContentsMargins(5, 5, 5, 5)
         lay.setSpacing(0)
-        head = QLabel("SHOW")
+        head = QLabel(heading)
         f = QFont(head.font())
         f.setPointSizeF(theme.pt("label"))
         f.setWeight(QFont.Weight.Bold)
@@ -342,11 +344,11 @@ class FilterMenu(QFrame):
         head.setStyleSheet(f"color: {C['text3']}; background: transparent;")
         head.setContentsMargins(12, 8, 12, 6)
         lay.addWidget(head)
-        self.rows: dict[str, FilterRow] = {}
-        for key, _tip, text in FILTERS:
-            row = FilterRow(key, text, self)
-            row.clicked.connect(lambda _=False, k=key: self._pick(k))
-            self.rows[key] = row
+        self.rows = {}
+        for row in rows:
+            row.setParent(self)
+            row.clicked.connect(lambda _=False, k=row.key: self._pick(k))
+            self.rows[row.key] = row
             lay.addWidget(row)
 
     def set_mode(self, mode: str):
@@ -357,7 +359,7 @@ class FilterMenu(QFrame):
         self.adjustSize()
         self.move(top_right.x() - self.width(), top_right.y())
         self.show()
-        next((r for r in self.rows.values() if r.isChecked()), self.rows["all"]).setFocus()
+        next((r for r in self.rows.values() if r.isChecked()), next(iter(self.rows.values()))).setFocus()
 
     def _pick(self, key: str):
         self.set_mode(key)
@@ -388,6 +390,63 @@ class FilterMenu(QFrame):
         p.fillRect(self.rect(), q("ground"))
         p.setPen(q("line"))
         p.drawRect(self.rect().adjusted(0, 0, -1, -1))
+
+
+class FilterMenu(PopupMenu):
+    """The popup under the filter button: "SHOW" and three radio rows."""
+
+    def __init__(self, parent=None):
+        super().__init__("SHOW", "Show games", [FilterRow(key, text) for key, _tip, text in FILTERS], 232, parent)
+
+
+class ViewRow(QAbstractButton):
+    """One row of the view menu: the view's picture, its name, and a tick on the one in use."""
+
+    def __init__(self, key: str, text: str, icon: str, parent=None):
+        super().__init__(parent)
+        self.key = key
+        self.icon_name = icon
+        self.setText(text)
+        self.setAccessibleName(text)
+        self.setCheckable(True)
+        self.setCursor(Qt.CursorShape.PointingHandCursor)
+        self.setAttribute(Qt.WidgetAttribute.WA_Hover)
+        self.setFocusPolicy(Qt.FocusPolicy.StrongFocus)
+        f = QFont(self.font())
+        f.setPointSizeF(theme.pt("control"))
+        f.setWeight(QFont.Weight.DemiBold)
+        self.setFont(f)
+
+    def sizeHint(self):
+        return QSize(190, max(40, self.fontMetrics().height() + 18))
+
+    def keyPressEvent(self, e):
+        self.parent().keyPressEvent(e)
+
+    def paintEvent(self, _):
+        p = QPainter(self)
+        p.setRenderHint(QPainter.RenderHint.Antialiasing)
+        r = QRectF(self.rect())
+        on = self.isChecked()
+        hot = self.underMouse() or self.hasFocus()
+        if on or hot:
+            p.setPen(Qt.PenStyle.NoPen)
+            p.setBrush(q("select") if on else q("raised"))
+            p.drawRoundedRect(r, 3, 3)
+        fg = QColor("white") if on else q("text") if hot else q("text2")
+        cy = r.center().y()
+        icons.draw(p, self.icon_name, QRectF(12, cy - 9, 18, 18), fg)
+        p.setPen(fg)
+        p.drawText(QRectF(40, 0, r.width() - 70, r.height()), Qt.AlignmentFlag.AlignVCenter, self.text())
+        if on:
+            icons.draw(p, "check", QRectF(r.width() - 28, cy - 8, 16, 16), q("blue_ink"))
+
+
+class ViewMenu(PopupMenu):
+    """The popup beside the Home bar: List, Grid or Details."""
+
+    def __init__(self, parent=None):
+        super().__init__("VIEW", "Library view", [ViewRow(key, text, icon) for key, text, icon in VIEWS], 200, parent)
 
 
 class SearchBox(QFrame):
@@ -454,6 +513,112 @@ class GameListView(QListWidget):
         self.menu_requested.emit(it.data(ROLE_INDEX), pos)
 
 
+class HomeButton(QAbstractButton):
+    """The slim Home bar: lit while the library is showing."""
+
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self.on = False
+        self.setText("Home")
+        self.setAccessibleName("Home: all games")
+        self.setToolTip("All your games")
+        self.setFixedHeight(32)
+        self.setCursor(Qt.CursorShape.PointingHandCursor)
+        self.setAttribute(Qt.WidgetAttribute.WA_Hover)
+        self.setFocusPolicy(Qt.FocusPolicy.StrongFocus)
+        f = QFont(self.font())
+        f.setPointSizeF(theme.pt("control"))
+        f.setWeight(QFont.Weight.DemiBold)
+        self.setFont(f)
+
+    def set_on(self, on: bool):
+        self.on = on
+        self.update()
+
+    def paintEvent(self, _):
+        p = QPainter(self)
+        p.setRenderHint(QPainter.RenderHint.Antialiasing)
+        r = QRectF(self.rect())
+        hover = self.underMouse() and self.isEnabled()
+        p.setPen(Qt.PenStyle.NoPen)
+        p.setBrush(q("select") if self.on else q("raised") if hover else q("input"))
+        p.drawRoundedRect(r, 3, 3)
+        if self.hasFocus():
+            p.setPen(QPen(q("blue"), 2))
+            p.setBrush(Qt.BrushStyle.NoBrush)
+            p.drawRoundedRect(r.adjusted(1, 1, -1, -1), 3, 3)
+        fg = QColor("white") if self.on else q("text") if hover else q("text2")
+        icons.draw(p, "home", QRectF(10, r.center().y() - 8, 16, 16), fg)
+        p.setPen(fg)
+        p.drawText(QRectF(34, 0, r.width() - 40, r.height()), Qt.AlignmentFlag.AlignVCenter, self.text())
+
+
+class ViewButton(QAbstractButton):
+    """The square beside the Home bar, showing the library view in use; opens the view menu."""
+
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self.view = "grid"
+        self.open = False
+        self.setFixedSize(32, 32)
+        self.setCursor(Qt.CursorShape.PointingHandCursor)
+        self.setAttribute(Qt.WidgetAttribute.WA_Hover)
+        self.setFocusPolicy(Qt.FocusPolicy.StrongFocus)
+        self.set_view("grid")
+
+    def set_view(self, view: str):
+        self.view = view
+        name = next(n for k, n, _ in VIEWS if k == view)
+        self.setToolTip(f"View: {name}")
+        self.setAccessibleName(f"Library view: {name}")
+        self.update()
+
+    def set_open(self, open: bool):
+        self.open = open
+        self.update()
+
+    def paintEvent(self, _):
+        p = QPainter(self)
+        p.setRenderHint(QPainter.RenderHint.Antialiasing)
+        r = QRectF(self.rect())
+        hover = self.underMouse() and self.isEnabled()
+        p.setPen(Qt.PenStyle.NoPen)
+        p.setBrush(q("select") if self.open else q("raised") if hover else q("input"))
+        p.drawRoundedRect(r, 3, 3)
+        if self.hasFocus() and not self.open:
+            p.setPen(QPen(q("blue"), 2))
+            p.setBrush(Qt.BrushStyle.NoBrush)
+            p.drawRoundedRect(r.adjusted(1, 1, -1, -1), 3, 3)
+        icon = next(i for k, _, i in VIEWS if k == self.view)
+        fg = QColor("white") if self.open else q("text") if hover else q("text2")
+        icons.draw(p, icon, QRectF(r.center().x() - 8, r.center().y() - 8, 16, 16), fg)
+
+
+class HomeBar(QWidget):
+    """Home, full width, with the library view button beside it."""
+
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        lay = QHBoxLayout(self)
+        lay.setContentsMargins(0, 0, 0, 0)
+        lay.setSpacing(6)
+        self.home = HomeButton()
+        self.view = ViewButton()
+        lay.addWidget(self.home, 1)
+        lay.addWidget(self.view)
+        self.menu = ViewMenu(self)
+        self.menu.closed.connect(lambda: self.view.set_open(False))
+        self.view.clicked.connect(self.open_menu)
+
+    def open_menu(self):
+        if self.menu.isVisible():
+            self.menu.close()
+            return
+        self.menu.set_mode(self.view.view)
+        self.view.set_open(True)
+        self.menu.popup_at(self.view.mapToGlobal(QPoint(self.view.width(), self.view.height() + 6)))
+
+
 class GameList(QWidget):
     """Search (with the filter button inside it), then one row per game."""
 
@@ -479,6 +644,8 @@ class GameList(QWidget):
         self.menu.chosen.connect(self.set_filter)
         self.menu.closed.connect(lambda: self.filter_button.set_state(open=False))
         lay.addWidget(self.searchbox)
+        self.homebar = HomeBar()
+        lay.addWidget(self.homebar)
 
         self.empty = QWidget()
         el = QVBoxLayout(self.empty)
@@ -561,6 +728,7 @@ class GameList(QWidget):
             if self.search.text():
                 self.search.clear()
         self.searchbox.setEnabled(not off)
+        self.homebar.setEnabled(not off)
         self.apply_filter()
 
     def open_filter_menu(self):
@@ -804,28 +972,238 @@ class Chip(QAbstractButton):
         p.drawText(QRectF(x, 0, 1000, self.height()), Qt.AlignmentFlag.AlignVCenter, b)
 
 
+def small_cover(delegate, sc, size: QSize) -> QPixmap | None:
+    """The game's cover (or its waiting pick) cropped to `size`; None if it has none or it's decoding."""
+    win, view = delegate.win, delegate.view
+    dpr = view.devicePixelRatioF()
+    pick = win.pending.get(sc.appid, "grid")
+    if pick is not None:
+        if pick.clears:
+            return None
+        pm = win.pick_pixmap(sc, "grid")
+        if pm is None or pm.isNull():
+            return None
+        key = (pm.cacheKey(), size.width(), size.height())
+        out = delegate.picks.get(key)
+        if out is None:
+            if len(delegate.picks) > 200:
+                delegate.picks.clear()
+            out = delegate.picks[key] = fill_rect(pm, size, dpr)
+        return out
+    path = win.cover_path(sc)
+    return delegate.covers.get(path, size, view.viewport().update, dpr) if path else None
+
+
+def draw_small_cover(p: QPainter, r: QRectF, pm: QPixmap | None, name: str):
+    p.save()
+    clip = QPainterPath()
+    clip.addRoundedRect(r, 2, 2)
+    p.setClipPath(clip)
+    if pm is not None and not pm.isNull():
+        p.drawPixmap(r.topLeft(), pm)
+    else:
+        p.fillRect(r, q("raised"))
+        p.setPen(q("text3"))
+        f = QFont(p.font())
+        f.setWeight(QFont.Weight.Bold)
+        p.setFont(f)
+        p.drawText(r, Qt.AlignmentFlag.AlignCenter, initials(name)[:1])
+    p.restore()
+
+
+def draw_hover(p: QPainter, view, option, r: QRectF, fill: bool):
+    """Row hover and keyboard focus, the same in the list and details views."""
+    hover = bool(option.state & QStyle.StateFlag.State_MouseOver)
+    focus = bool(option.state & QStyle.StateFlag.State_HasFocus) and view.hasFocus()
+    if fill or hover:
+        p.setPen(Qt.PenStyle.NoPen)
+        p.setBrush(q("raised") if hover else q("panel"))
+        p.drawRoundedRect(r, 3, 3)
+    if focus:
+        p.setPen(QPen(q("blue"), 1.5))
+        p.setBrush(Qt.BrushStyle.NoBrush)
+        p.drawRoundedRect(r.adjusted(0.75, 0.75, -0.75, -0.75), 3, 3)
+
+
+class ListDelegate(QStyledItemDelegate):
+    """List view: one wide row per game, with its cover, name and artwork dots."""
+
+    COVER = QSize(34, 51)
+
+    def __init__(self, win, view):
+        super().__init__()
+        self.win, self.view = win, view
+        self.covers = ScaledCache()
+        self.picks: dict = {}
+
+    def sizeHint(self, option, index):
+        return QSize(300, self.COVER.height() + 14)
+
+    def paint(self, p: QPainter, option, index):
+        p.save()
+        p.setRenderHint(QPainter.RenderHint.Antialiasing)
+        p.setRenderHint(QPainter.RenderHint.SmoothPixmapTransform)
+        r = QRectF(option.rect).adjusted(0, 2, -8, -2)
+        draw_hover(p, self.view, option, r, True)
+        idx = index.data(ROLE_INDEX)
+        sc = self.win.sfile.shortcuts[idx]
+        cv = QRectF(r.x() + 8, r.center().y() - self.COVER.height() / 2, self.COVER.width(), self.COVER.height())
+        draw_small_cover(p, cv, small_cover(self, sc, self.COVER), sc.name)
+        f = QFont(option.font)
+        f.setPointSizeF(theme.pt("control"))
+        f.setWeight(QFont.Weight.DemiBold)
+        p.setFont(f)
+        p.setPen(q("text"))
+        meta_x = r.right() - 190
+        tx = cv.right() + 14
+        name = QFontMetrics(f).elidedText(sc.name or "(unnamed)", Qt.TextElideMode.ElideRight, int(meta_x - tx - 12))
+        p.drawText(QRectF(tx, r.y(), meta_x - tx, r.height()), Qt.AlignmentFlag.AlignVCenter, name)
+        mf = QFont(option.font)
+        mf.setPointSizeF(theme.pt("label"))
+        mh = QFontMetrics(mf).height()
+        draw_meta(p, self.win, idx, meta_x, r.center().y() - mh / 2, option.font, "label", 7, 3)
+        p.restore()
+
+
+DETAIL_COLS = ("Cover", "Wide", "Banner", "Logo", "Icon")
+DETAIL_W, STATUS_W = 64, 130
+
+
+def detail_columns(width: float) -> tuple[float, list[float], float]:
+    """x of the name column's end, the centre of each piece column, and the status column's x."""
+    status_x = width - STATUS_W - 8
+    first = status_x - DETAIL_W * len(DETAIL_COLS)
+    return first, [first + DETAIL_W * (i + 0.5) for i in range(len(DETAIL_COLS))], status_x
+
+
+def detail_status(win, idx: int) -> tuple[str, QColor]:
+    sc = win.sfile.shortcuts[idx]
+    tag = win.status.get(sc.appid)
+    if tag in TAGS:
+        return TAGS[tag][0], QColor(TAGS[tag][2])
+    if is_ready(win, idx):
+        return "Ready to apply", q("blue_ink")
+    return ("Complete", q("text2")) if all(win.coverage(sc)) else ("Missing art", q("text3"))
+
+
+class DetailsDelegate(QStyledItemDelegate):
+    """Details view: a table of which pieces each game has."""
+
+    COVER = QSize(22, 33)
+
+    def __init__(self, win, view):
+        super().__init__()
+        self.win, self.view = win, view
+        self.covers = ScaledCache()
+        self.picks: dict = {}
+
+    def sizeHint(self, option, index):
+        return QSize(300, 42)
+
+    def paint(self, p: QPainter, option, index):
+        p.save()
+        p.setRenderHint(QPainter.RenderHint.Antialiasing)
+        p.setRenderHint(QPainter.RenderHint.SmoothPixmapTransform)
+        r = QRectF(option.rect).adjusted(0, 0, -8, 0)
+        draw_hover(p, self.view, option, r.adjusted(0, 1, 0, -1), False)
+        p.setPen(QPen(q("line"), 1))
+        p.drawLine(QPointF(r.left() + 4, r.bottom() + 0.5), QPointF(r.right() - 4, r.bottom() + 0.5))
+        idx = index.data(ROLE_INDEX)
+        sc = self.win.sfile.shortcuts[idx]
+        cv = QRectF(r.x() + 8, r.center().y() - self.COVER.height() / 2, self.COVER.width(), self.COVER.height())
+        draw_small_cover(p, cv, small_cover(self, sc, self.COVER), sc.name)
+        name_end, centres, status_x = detail_columns(r.width())
+        f = QFont(option.font)
+        f.setPointSizeF(theme.pt("control"))
+        f.setWeight(QFont.Weight.DemiBold)
+        p.setFont(f)
+        p.setPen(q("text"))
+        tx = cv.right() + 12
+        name = QFontMetrics(f).elidedText(sc.name or "(unnamed)", Qt.TextElideMode.ElideRight, int(name_end - tx - 12))
+        p.drawText(QRectF(tx, r.y(), name_end - tx, r.height()), Qt.AlignmentFlag.AlignVCenter, name)
+        cy = r.center().y()
+        for have, x in zip(self.win.coverage(sc), centres):
+            if have:
+                icons.draw(p, "check", QRectF(r.x() + x - 8, cy - 8, 16, 16), q("ok"))
+            else:
+                p.setPen(QPen(q("text3"), 1.5))
+                p.drawLine(QPointF(r.x() + x - 4, cy), QPointF(r.x() + x + 4, cy))
+        text, colour = detail_status(self.win, idx)
+        sf = QFont(option.font)
+        sf.setPointSizeF(theme.pt("faint"))
+        p.setFont(sf)
+        p.setPen(colour)
+        p.drawText(QRectF(r.x() + status_x, r.y(), STATUS_W, r.height()), Qt.AlignmentFlag.AlignVCenter, text)
+        p.restore()
+
+
+class DetailsHeader(QWidget):
+    """Column names over the details view, lined up with its rows."""
+
+    def __init__(self, view, parent=None):
+        super().__init__(parent)
+        self.view = view
+        self.setFixedHeight(30)
+
+    def paintEvent(self, _):
+        p = QPainter(self)
+        f = QFont(self.font())
+        f.setPointSizeF(theme.pt("label"))
+        f.setWeight(QFont.Weight.Bold)
+        f.setLetterSpacing(QFont.SpacingType.PercentageSpacing, 108)
+        p.setFont(f)
+        p.setPen(q("text3"))
+        x0 = self.view.viewport().x() + self.view.x() - self.x()
+        width = self.view.viewport().width() - 8
+        name_end, centres, status_x = detail_columns(width)
+        h = self.height()
+        p.drawText(QRectF(x0 + 8 + DetailsDelegate.COVER.width() + 12, 0, 200, h), Qt.AlignmentFlag.AlignVCenter, "NAME")
+        for label, x in zip(DETAIL_COLS, centres):
+            p.drawText(QRectF(x0 + x - DETAIL_W / 2, 0, DETAIL_W, h), Qt.AlignmentFlag.AlignCenter, label.upper())
+        p.drawText(QRectF(x0 + status_x, 0, STATUS_W, h), Qt.AlignmentFlag.AlignVCenter, "STATUS")
+        p.setPen(QPen(q("line"), 1))
+        p.drawLine(QPointF(x0 + 4, h - 0.5), QPointF(x0 + width - 4, h - 0.5))
+
+
 class CoverWall(QListWidget):
-    """Icon-mode list whose columns stretch to use the whole width."""
+    """The library: a cover grid whose columns stretch to use the whole width, or a list or details table."""
 
     menu_requested = Signal(int, QPoint)
 
     def __init__(self, delegate_cls, win):
         super().__init__()
-        self.setViewMode(QListView.ViewMode.IconMode)
-        self.setResizeMode(QListView.ResizeMode.Adjust)
-        self.setMovement(QListView.Movement.Static)
         self.setUniformItemSizes(True)
         self.setMouseTracking(True)
         self.setSpacing(0)
-        self.setVerticalScrollMode(QListView.ScrollMode.ScrollPerPixel)
-        self.verticalScrollBar().setSingleStep(24)
         self.setAccessibleName("Cover wall")
         self.delegate = delegate_cls(win, self)
-        self.setItemDelegate(self.delegate)
-        self.fit()
+        self.delegates = {"grid": self.delegate, "list": ListDelegate(win, self), "details": DetailsDelegate(win, self)}
+        self.view = ""
+        self.set_view("grid")
+
+    def set_view(self, view: str):
+        """"grid", "list" or "details"."""
+        if view == self.view:
+            return
+        self.view = view
+        grid = view == "grid"
+        self.setViewMode(QListView.ViewMode.IconMode if grid else QListView.ViewMode.ListMode)
+        self.setResizeMode(QListView.ResizeMode.Adjust)
+        self.setMovement(QListView.Movement.Static)
+        self.setVerticalScrollMode(QListView.ScrollMode.ScrollPerPixel)
+        self.verticalScrollBar().setSingleStep(24)
+        self.setItemDelegate(self.delegates[view])
+        self.setAccessibleName({"grid": "Cover wall", "list": "Game list", "details": "Games and their artwork"}[view])
+        if grid:
+            self.fit()
+        else:
+            self.setGridSize(QSize())
+        self.scrollToTop()
 
     def fit(self):
         """Pick the column count that fits and share the spare width between the columns."""
+        if self.view != "grid":
+            return
         avail = self.width() - 2 * self.frameWidth() - self.verticalScrollBar().sizeHint().width() - 1
         cols = max(1, avail // self.delegate.MIN_W)
         size = QSize(max(self.delegate.MIN_W, avail // cols), self.delegate.tile_height(self.font()))
@@ -890,7 +1268,14 @@ class StartPage(QWidget):
         self.wall.itemClicked.connect(lambda it: self.picked.emit(it.data(ROLE_INDEX)))
         self.wall.itemActivated.connect(lambda it: self.picked.emit(it.data(ROLE_INDEX)))
         self.wall.menu_requested.connect(lambda i, pos: self.win.show_game_menu(i, pos))
+        self.header = DetailsHeader(self.wall)
+        self.header.hide()
+        lay.addWidget(self.header)
         lay.addWidget(self.wall, 1)
+
+    def set_view(self, view: str):
+        self.wall.set_view(view)
+        self.header.setVisible(view == "details")
 
     def rebuild(self):
         self.wall.clear()

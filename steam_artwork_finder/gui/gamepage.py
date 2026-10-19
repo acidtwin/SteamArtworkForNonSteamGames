@@ -595,6 +595,8 @@ class CoverThumb(QWidget):
 
 BANNER_H = 210
 # Colour sweeps for a game with no banner yet (dark, deep, bright, light), picked by name.
+GET, GET_HOVER = "#1f7a55", "#258d63"  # Get All Artwork: a cooler green than Apply
+
 BLANK_BANNERS = (
     ("#0e1030", "#3a3f9a", "#b06ad2", "#ffc8e6"),  # violet to pink
     ("#0b1d2e", "#145a8a", "#1a9fff", "#9fe3ff"),  # Steam blue
@@ -689,8 +691,8 @@ class MatchCard(QWidget):
         self.key_btn.clicked.connect(self.add_key.emit)
         acts.addWidget(self.key_btn)
         self.get_btn = QPushButton("Get All Artwork")
-        self.get_btn.setObjectName("bannerghost")
-        self.get_btn.setIcon(icons.icon("download", 15, C["text"]))
+        self.get_btn.setObjectName("bannerget")
+        self.get_btn.setIcon(icons.icon("download", 15, "white"))
         self.get_btn.clicked.connect(self.get_all.emit)
         acts.addWidget(self.get_btn)
         self.apply_btn = QPushButton("Apply")
@@ -707,6 +709,9 @@ class MatchCard(QWidget):
             #bannerghost {{ background: rgba(23,26,33,.72); color: {C['text']}; }}
             #bannerghost:hover {{ background: rgba(61,76,94,.9); }}
             #bannerghost:disabled {{ background: rgba(23,26,33,.5); color: {C['text3']}; }}
+            #bannerget {{ background: {GET}; color: white; }}
+            #bannerget:hover {{ background: {GET_HOVER}; }}
+            #bannerget:disabled {{ background: rgba(23,26,33,.5); color: {C['text3']}; }}
             #bannerlink {{ min-height: 24px; padding: 0 4px; }}
         """)
 

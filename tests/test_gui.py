@@ -343,3 +343,22 @@ def test_wheel_scrolling_glides(qapp):
         area.close()
     finally:
         qapp.removeEventFilter(f)
+
+
+def test_home_bar_switches_library_view(qapp, window):
+    bar = window.game_list.homebar
+    assert bar.home.on and window.start.wall.view == "grid"
+    window.open_game(0)
+    _pump(qapp, 100)
+    assert not bar.home.on
+    bar.menu.chosen.emit("details")  # as if picked from the view menu
+    _pump(qapp, 100)
+    assert bar.home.on and window.stage.currentWidget() is window.start
+    assert window.start.wall.view == "details" and window.start.header.isVisible()
+    assert bar.view.view == "details" and window.config.data["library_view"] == "details"
+    bar.menu.chosen.emit("list")
+    assert window.start.wall.view == "list" and not window.start.header.isVisible()
+    window.open_game(1)
+    bar.home.click()
+    _pump(qapp, 100)
+    assert window.stage.currentWidget() is window.start and window.current < 0

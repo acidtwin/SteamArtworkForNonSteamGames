@@ -135,6 +135,12 @@ class MainWindow(QMainWindow):
             "then click Check Again below.", "Check Again", self.reload_shortcuts, "")
         self.start = StartPage(self)
         self.start.picked.connect(self.open_game)
+        bar = self.game_list.homebar
+        bar.home.clicked.connect(self.go_home)
+        bar.menu.chosen.connect(self.set_library_view)
+        view = self.config.data.get("library_view", "grid")
+        bar.view.set_view(view)
+        self.start.set_view(view)
         self.page = GamePage(self)
         self.page.fill.connect(self.fill_current)
         self.page.change_match.connect(self.change_match)
@@ -717,6 +723,14 @@ class MainWindow(QMainWindow):
 
     # ---- navigation -------------------------------------------------------
 
+    def set_library_view(self, view: str):
+        """"list", "grid" or "details", remembered for next time; shows the library."""
+        self.game_list.homebar.view.set_view(view)
+        self.start.set_view(view)
+        self.config.data["library_view"] = view
+        self.config.save()
+        self.go_home()
+
     def go_home(self):
         if self.sfile and self.sfile.shortcuts:
             self.game_list.select(-1)
@@ -728,6 +742,7 @@ class MainWindow(QMainWindow):
 
     def show_index(self, idx: int):
         self.current = idx
+        self.game_list.homebar.home.set_on(idx < 0)
         if not self.sfile or not self.sfile.shortcuts:
             return
         if idx < 0:
