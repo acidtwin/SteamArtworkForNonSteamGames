@@ -3,7 +3,9 @@
 from __future__ import annotations
 
 import os
+import subprocess
 import sys
+import time
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -197,8 +199,6 @@ def _pid_is_steam(pid: int) -> bool:
         pass
     if in_flatpak():
         # Host processes are invisible inside the sandbox; ask the host if allowed.
-        import subprocess
-
         try:
             r = subprocess.run(
                 ["flatpak-spawn", "--host", "cat", f"/proc/{pid}/comm"],
@@ -208,3 +208,70 @@ def _pid_is_steam(pid: int) -> bool:
         except (OSError, subprocess.SubprocessError):
             return False
     return False
+
+
+def avatar_path(root: Path, account_id: str) -> Path | None:
+    """Steam's cached avatar for a user, if it has one."""
+    try:
+        sid = int(account_id) + STEAMID64_BASE
+    except (TypeError, ValueError):
+        return None
+    p = Path(root) / "config" / "avatarcache" / f"{sid}.png"
+    return p if p.is_file() else None
+
+
+def _windows_steam_exe() -> str | None:
+    try:
+        import winreg
+
+        with winreg.OpenKey(winreg.HKEY_CURRENT_USER, r"Software\Valve\Steam") as k:
+            return winreg.QueryValueEx(k, "SteamExe")[0]
+    except OSError:
+        return None
+
+
+def _steam_command(root: Path | None, *args: str) -> list[str]:
+    """The command line that runs the Steam client for `root` with `args`."""
+    if sys.platform == "win32":
+        exe = _windows_steam_exe()
+        if not exe and root and (Path(root) / "steam.exe").exists():
+            exe = str(Path(root) / "steam.exe")
+        return [exe or "steam.exe", *args]
+    if sys.platform == "darwin":
+        if "-shutdown" in args:
+            return ["osascript", "-e", 'quit app "Steam"']
+        return ["open", "-a", "Steam", *(["--args", *args] if args else [])]
+    flatpak = root is not None and ".var/app/com.valvesoftware.Steam" in Path(root).as_posix()
+    cmd = ["flatpak", "run", "com.valvesoftware.Steam"] if flatpak else ["steam"]
+    if in_flatpak():
+        cmd = ["flatpak-spawn", "--host", *cmd]
+    return [*cmd, *args]
+
+
+def _spawn(cmd: list[str]) -> bool:
+    try:
+        subprocess.Popen(cmd, start_new_session=True, stdin=subprocess.DEVNULL,
+                         stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+        return True
+    except OSError:
+        return False
+
+
+def shutdown_steam(root: Path | None = None) -> bool:
+    """Ask Steam to quit. True if the request was sent (not that Steam has closed yet)."""
+    return _spawn(_steam_command(root, "-shutdown"))
+
+
+def start_steam(root: Path | None = None) -> bool:
+    """Start Steam in the background. True if it was launched."""
+    return _spawn(_steam_command(root))
+
+
+def wait_until_closed(root: Path | None = None, timeout: float = 40.0, poll: float = 0.5) -> bool:
+    """Block until Steam is no longer running; False if it is still running after `timeout`."""
+    end = time.monotonic() + timeout
+    while steam_running(root):
+        if time.monotonic() >= end:
+            return False
+        time.sleep(poll)
+    return True

@@ -346,7 +346,7 @@ class Toast(QFrame):
         self.action.setVisible(undo is not None)
         self.adjustSize()
         par = self.parentWidget()
-        self.move((par.width() - self.width()) // 2, par.height() - self.height() - 28)
+        self.move((par.width() - self.width()) // 2, par.height() - self.height() - 52)  # above the status bar
         self.raise_()
         self.show()
         self.timer.start(ms)

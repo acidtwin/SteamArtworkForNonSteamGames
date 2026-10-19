@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from pathlib import Path
+
 from PySide6.QtGui import QColor, QFontMetrics, QGuiApplication, QPalette
 
 C = {
@@ -26,6 +28,10 @@ C = {
     "info_ground": "#1f3346",
     "bad": "#ef7b6c",
     "input": "#14181e",
+    "bar": "#202935",
+    "ok": "#90ba3c",
+    "wait": "#e3b341",
+    "off": "#ef5b4c",
 }
 
 
@@ -59,6 +65,7 @@ def text_width(text: str) -> int:
 
 def stylesheet() -> str:
     c = C
+    tick = (Path(__file__).parent / "icons" / "tick.svg").as_posix()
     return f"""
     QWidget {{ color: {c['text']}; }}
     QMainWindow, #header, QDialog, QMenu {{ background: {c['ground']}; }}
@@ -102,7 +109,7 @@ def stylesheet() -> str:
     QComboBox QAbstractItemView {{ background: {c['raised']}; selection-background-color: {c['select']}; }}
     QCheckBox {{ color: {c['text2']}; spacing: 8px; min-height: 40px; }}
     QCheckBox::indicator {{ width: 22px; height: 22px; border-radius: 3px; background: {c['raised']}; border: 1px solid {c['line']}; }}
-    QCheckBox::indicator:checked {{ background: {c['action']}; border-color: {c['action']}; }}
+    QCheckBox::indicator:checked {{ background: {c['action']}; border-color: {c['action']}; image: url("{tick}"); }}
 
     QMenu {{ border: 1px solid {c['line']}; padding: 4px; }}
     QMenu::item {{ padding: 8px 18px; border-radius: 3px; }}
@@ -143,6 +150,10 @@ def stylesheet() -> str:
     #toast QLabel {{ color: {c['ground']}; font-weight: 600; }}
     #toast QPushButton {{ background: transparent; color: #0f5aa0; min-height: 40px; }}
     #rowline {{ background: {c['line']}; max-height: 1px; }}
+    #spop {{ background: {c['ground']}; border: 1px solid {c['line']}; border-radius: 4px; }}
+    #spop QPushButton {{ min-height: 36px; padding: 0 12px; }}
+    #spopcheck {{ color: {c['text']}; spacing: 10px; }}
+    #spopcheck::indicator {{ width: 18px; height: 18px; }}
     #empty {{ background: {c['raised']}; border-radius: 3px; color: {c['text2']}; padding: 12px; }}
     """
 

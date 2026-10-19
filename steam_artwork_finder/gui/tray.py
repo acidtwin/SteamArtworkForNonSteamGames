@@ -22,12 +22,15 @@ from PySide6.QtWidgets import (
 from ..artwork import SLOTS
 from . import icons, theme
 from .theme import q
+from .gamepage import draw_new_tag
 from .widgets import FlowLayout, draw_badge, draw_checker, fill_rect, label
 
 ORDER = ("grid", "wide", "hero", "logo", "icon")
 ROLE_ASSET = Qt.ItemDataRole.UserRole
 ROLE_PIX = Qt.ItemDataRole.UserRole + 1
 ROLE_INUSE = Qt.ItemDataRole.UserRole + 2
+ROLE_PICK = Qt.ItemDataRole.UserRole + 3  # the waiting (not applied) pick
+ROLE_NAME = Qt.ItemDataRole.UserRole + 4  # what a screen reader says, before "picked" / "in use"
 
 
 def thumb_size(slot_key: str) -> QSize:
@@ -70,12 +73,15 @@ class OptionDelegate(QStyledItemDelegate):
             else:
                 p.drawPixmap(r.topLeft(), fill_rect(pm, s))
         p.setClipping(False)
-        if index.data(ROLE_INUSE):
+        picked = bool(index.data(ROLE_PICK))
+        if picked:
+            draw_new_tag(p, r)
+        elif index.data(ROLE_INUSE):
             draw_badge(p, r)
         sel = bool(option.state & QStyle.StateFlag.State_Selected)
         hov = bool(option.state & QStyle.StateFlag.State_MouseOver)
-        if sel or hov:
-            p.setPen(QPen(q("blue") if sel else q("text3"), 2))
+        if sel or hov or picked:
+            p.setPen(QPen(q("blue") if sel or picked else q("text3"), 2))
             p.drawRoundedRect(r.adjusted(1, 1, -1, -1), 3, 3)
         a = index.data(ROLE_ASSET)
         f = QFont(option.font)
@@ -91,8 +97,8 @@ class OptionDelegate(QStyledItemDelegate):
 
 class OptionTray(QWidget):
     closed = Signal()
-    use = Signal(object, object)  # slot, Asset
-    remove = Signal(object)  # slot
+    use = Signal(object, object)  # slot, Asset (no longer emitted: picks stage through win.stage_pick)
+    remove = Signal(object)  # slot (no longer emitted: clearing stages through win.stage_clear)
     preview = Signal(object, object)  # slot, QPixmap or None
     slot_changed = Signal(object)
 
@@ -154,12 +160,14 @@ class OptionTray(QWidget):
         self.more.clicked.connect(self._more)
         lay.addWidget(self.more)
         foot = QHBoxLayout()
-        self.use_btn = QPushButton("Use this")
+        self.use_btn = QPushButton("Pick This")
         self.use_btn.setProperty("kind", "confirm")
+        self.use_btn.setAccessibleDescription("Picks it for this game; Apply saves it to Steam")
         self.use_btn.clicked.connect(self._use)
         foot.addWidget(self.use_btn, 1)
-        self.remove_btn = QPushButton("Remove")
-        self.remove_btn.clicked.connect(lambda: self.remove.emit(self.slot))
+        self.remove_btn = QPushButton("Clear")
+        self.remove_btn.setAccessibleDescription("Removes this piece when you apply")
+        self.remove_btn.clicked.connect(self._clear)
         foot.addWidget(self.remove_btn)
         lay.addLayout(foot)
         self.assets = []
@@ -171,7 +179,7 @@ class OptionTray(QWidget):
         self.tabs.setCurrentIndex(ORDER.index(slot.key))
         self.tabs.blockSignals(False)
         self.title.setText(slot.label)
-        self.use_btn.setText(f"Use this {slot.label.lower()}")
+        self.use_btn.setText(f"Pick This {slot.label.title()}")
         self.list.setIconSize(thumb_size(slot.key))
         self.assets = []
         self.page = 0
@@ -199,13 +207,14 @@ class OptionTray(QWidget):
             self.status.setText("Couldn't load options from SteamGridDB.")
             return
         self.assets += assets
-        applied = self.win.config.get_applied(appid, slot.key)
-        in_use = applied.get("id") if applied and self.win.slot_path(self.win.current_shortcut(), slot) else None
+        in_use, picked = self._ids()
         for i, a in enumerate(assets):
-            it = QListWidgetItem(f"{slot.label} option {len(self.assets) - len(assets) + i + 1}, by {a.author or 'unknown'}"
-                                 + (f", {a.style}" if a.style else "") + (", in use" if a.id == in_use else ""))
+            name = (f"{slot.label} option {len(self.assets) - len(assets) + i + 1}, by {a.author or 'unknown'}"
+                    + (f", {a.style}" if a.style else ""))
+            it = QListWidgetItem(name)
+            it.setData(ROLE_NAME, name)
             it.setData(ROLE_ASSET, a)
-            it.setData(ROLE_INUSE, a.id == in_use)
+            self._mark(it, in_use, picked)
             it.setToolTip(f"{a.width} × {a.height} · {a.style or 'style unknown'} · by {a.author or 'unknown'}")
             self.list.addItem(it)
             self.win.load_thumb(a, it)
@@ -216,8 +225,8 @@ class OptionTray(QWidget):
             self.status.setText(f"No {slot.label.lower()} for this game on SteamGridDB yet.")
         else:
             info = SLOTS[slot.key]
-            self.status.setText(f"{len(self.assets)} options. Hover to preview, click to pick, then "
-                                f"“Use this {info.label.lower()}”.")
+            self.status.setText(f"{len(self.assets)} options. Hover to preview, then "
+                                f"“Pick This {info.label.title()}”. Apply saves your picks.")
 
     def _more(self):
         self.page += 1
@@ -262,24 +271,59 @@ class OptionTray(QWidget):
     def _selected(self, *_):
         self._update_buttons()
 
-    def _update_buttons(self):
-        it = self.list.currentItem()
-        self.use_btn.setEnabled(it is not None and not it.data(ROLE_INUSE))
+    def _pick(self):
         sc = self.win.current_shortcut()
-        self.remove_btn.setEnabled(sc is not None and self.win.slot_path(sc, self.slot) is not None)
+        return self.win.pending.get(sc.appid, self.slot.key) if sc else None
 
-    def _use(self):
-        it = self.list.currentItem()
-        if it is not None and not it.data(ROLE_INUSE):
-            self.use.emit(self.slot, it.data(ROLE_ASSET))
-
-    def mark_in_use(self):
+    def _ids(self):
+        """The id of the option on disk now, and of the waiting pick (None when there isn't one)."""
         sc = self.win.current_shortcut()
         applied = self.win.config.get_applied(sc.appid, self.slot.key) if sc else None
         in_use = applied.get("id") if applied and self.win.slot_path(sc, self.slot) else None
+        pick = self._pick()
+        picked = pick.asset.id if pick is not None and not pick.clears else None
+        return in_use, picked
+
+    def _mark(self, it: QListWidgetItem, in_use, picked):
+        a = it.data(ROLE_ASSET)
+        it.setData(ROLE_INUSE, a.id == in_use and picked is None and not self._clearing())
+        it.setData(ROLE_PICK, a.id == picked)
+        it.setText(it.data(ROLE_NAME) + (", picked" if a.id == picked else ", in use" if it.data(ROLE_INUSE) else ""))
+
+    def _clearing(self) -> bool:
+        pick = self._pick()
+        return pick is not None and pick.clears
+
+    def _update_buttons(self):
+        it = self.list.currentItem()
+        self.use_btn.setEnabled(it is not None and not it.data(ROLE_INUSE) and not it.data(ROLE_PICK))
+        sc = self.win.current_shortcut()
+        pick = self._pick()
+        on_disk = sc is not None and self.win.slot_path(sc, self.slot) is not None
+        self.remove_btn.setEnabled((on_disk or pick is not None) and not (pick is not None and pick.clears))
+
+    def _use(self):
+        it = self.list.currentItem()
+        if it is not None and not it.data(ROLE_INUSE) and not it.data(ROLE_PICK):
+            self.win.stage_pick(self.slot, it.data(ROLE_ASSET))
+            self.mark_in_use()
+
+    def _clear(self):
+        """Same as the Clear pill: drop a new pick when nothing is on disk, else mark the piece for clearing."""
+        sc = self.win.current_shortcut()
+        pick = self._pick()
+        if pick is not None and not pick.clears and self.win.slot_path(sc, self.slot) is None:
+            self.win.unstage(self.slot)
+        else:
+            self.win.stage_clear(self.slot)
+        self.mark_in_use()
+
+    def mark_in_use(self):
+        """Re-mark the in-use option and the waiting pick, after any change."""
+        in_use, picked = self._ids()
         for i in range(self.list.count()):
-            it = self.list.item(i)
-            it.setData(ROLE_INUSE, it.data(ROLE_ASSET).id == in_use)
+            self._mark(self.list.item(i), in_use, picked)
+        self.list.viewport().update()
         self._update_buttons()
 
     def close_tray(self):

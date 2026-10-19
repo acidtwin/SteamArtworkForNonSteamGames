@@ -147,12 +147,16 @@ class SteamGridDB:
         return out
 
     def best_match(self, name: str) -> Game | None:
-        """The exact-name result if there is one, else the top result.
+        """The exact-name result if there is one, else the top result."""
+        return self.match(name)[0]
+
+    def match(self, name: str) -> tuple[Game | None, int]:
+        """The best match for `name` and how many results its search term returned.
 
         Launcher tags ("- GOG", "(Ryujinx)") are stripped step by step until
         something is found, so shortcuts named by other tools still match.
         """
-        first = None
+        first: tuple[Game | None, int] = (None, 0)
         for term in name_variants(name):
             results = self.search(term)
             if not results:
@@ -160,9 +164,9 @@ class SteamGridDB:
             want = term.casefold()
             for g in results:
                 if clean_name(g.name).casefold() == want:
-                    return g
-            if first is None:
-                first = results[0]
+                    return g, len(results)
+            if first[0] is None:
+                first = (results[0], len(results))
         return first
 
     def assets(self, kind: str, game_id: int, page: int = 0) -> list[Asset]:
