@@ -166,7 +166,11 @@ def test_steam_folder_popover_searches_and_switches(qapp, window, tmp_path, stea
     win.statusbar.steam.click()
     _pump(qapp, 100)
     assert pop.is_open() and pop.pages.currentIndex() == 0
+    assert not pop.searching and pop.found == []  # a folder is in use, so it doesn't search by itself
+    assert pop.title.text() == "Using your chosen folder"
     h0 = pop.height()
+    pop.again.click()  # Detect Again
+    assert pop.searching
     _pump(qapp, 2000, until=lambda: not pop.searching)
     assert not pop.searching
     assert [f.place.short for f in pop.found] == ["Flatpak"]  # the test's Steam lives outside the usual places
@@ -190,6 +194,35 @@ def test_steam_folder_popover_searches_and_switches(qapp, window, tmp_path, stea
     _pump(qapp, 400)
     assert not pop.isVisible()
     assert steamfolder.tilde(tmp_path / "x") == "~/x"
+
+
+def test_steam_folder_popover_searches_only_when_no_folder_in_use(qapp, window, tmp_path, steam_root):
+    import shutil
+
+    win = window
+    pop = win.folderpop
+    pop.delay = 0
+    flatpak = tmp_path / ".var/app/com.valvesoftware.Steam/.local/share/Steam"
+    shutil.copytree(steam_root, flatpak)
+    win.use_steam_root(flatpak.resolve())
+    _pump(qapp)
+    for _ in range(2):  # opening it again and again never searches while a folder is in use
+        win.show_folder_popover()
+        _pump(qapp, 100)
+        assert pop.is_open() and not pop.searching
+        assert pop.title.text() == "Using Steam (Flatpak)" and pop.found[0].games == 3
+        assert pop.dots.states[1] == "hit" and pop.dots.states[0] == ""  # the others weren't checked
+        win.show_folder_popover()
+        _pump(qapp, 400)
+
+    win.detect_steam([])  # no Steam folder in use, as on a first launch
+    _pump(qapp)
+    win.show_folder_popover()
+    assert pop.searching
+    _pump(qapp, 2000, until=lambda: not pop.searching)
+    assert win.steam_root == flatpak.resolve()  # the search found it and put it to use
+    win.show_folder_popover()
+    _pump(qapp, 400)
 
 
 def test_quit_prompt_lists_games_and_remembers(qapp, window, monkeypatch):

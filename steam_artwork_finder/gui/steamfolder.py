@@ -1,5 +1,6 @@
-"""The pop-over above "Steam Detected": it searches for Steam as it opens, shows the account
-in use, and lets you choose a folder by hand."""
+"""The pop-over above "Steam Detected": it shows the Steam folder and account in use, searches
+for Steam when asked (or by itself only while no folder is in use), and lets you choose a folder
+by hand."""
 
 from __future__ import annotations
 
@@ -328,7 +329,8 @@ class DropZone(QFrame):
 
 
 class SteamFolderPopover(Overlay):
-    """Automatic: searches as it opens, with a pulsing badge and a bar per place, then the account.
+    """Automatic: the folder in use and its account. It searches, with a pulsing badge and a bar
+    per place, on Detect Again, or as it opens only while no Steam folder is in use.
     Choose Folder: a drop zone. Both tabs are the same size, so it never jumps."""
 
     use_root = Signal(Path)  # use this Steam folder
@@ -343,6 +345,7 @@ class SteamFolderPopover(Overlay):
         self.searching = False
         self.delay = STEP_DELAY
         self._run = 0
+        self._looked: set[Path] = set()
         self.root: Path | None = None
         self.users: list[str] = []
         self.user_index = -1
@@ -445,7 +448,8 @@ class SteamFolderPopover(Overlay):
         self.show_tab(0)
         self._say_hint()
         self.open_above(anchor)
-        self.start_search()
+        if self.root is None and not self.searching:
+            self.start_search()  # nothing in use yet, so look; a folder in use is left alone
 
     # ---- the search -------------------------------------------------------------
 
@@ -497,7 +501,7 @@ class SteamFolderPopover(Overlay):
                            f"text-decoration:none'><b>Choose Folder</b></a>")
             return
         self.pulse.set_state("ok")
-        hit = next((f for f in self.found if f.root == self.root), None)
+        hit = next((f for f in self.found if f.root == self.root), None) or self._locate(self.root)
         self.title.setText(f"Using {hit.place.name}" if hit else "Using your chosen folder")
         games = hit.games if hit else None
         tail = f" · {games} game{'' if games == 1 else 's'}" if games is not None else ""
@@ -508,6 +512,21 @@ class SteamFolderPopover(Overlay):
                              max(80, room - fm.horizontalAdvance(tail + " · Change") - 8))
         self._sub_html(f"<span style='color:{C['text2']}'>{path}{tail}</span>{link}")
         self.sub.setToolTip(str(self.root))
+
+    def _locate(self, root: Path) -> Found | None:
+        """Which place the folder in use is in, without searching the others."""
+        if root in self._looked:
+            return None  # not in any of the usual places; no need to look again
+        self._looked.add(root)
+        for i, place in enumerate(self.places):
+            if root in find_steam_roots(place.candidates):
+                if len(self.dots.labels) != len(self.places):
+                    self.dots.reset([pl.short for pl in self.places])
+                self.dots.set(i, "hit")
+                hit = Found(place, root, _games(root))
+                self.found.append(hit)
+                return hit
+        return None
 
     def _sub_text(self, text: str, colour: str):
         self.sub.setText(f"<span style='color:{colour}'>{text}</span>")
