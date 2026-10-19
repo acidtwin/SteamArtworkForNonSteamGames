@@ -166,3 +166,28 @@ def test_library_plays_animated_covers_on_screen(qapp, window):
     wall.viewport().repaint()
     assert not anim.anims
     win.config.data["show_animated"] = True
+
+
+def test_see_all_counts_and_filters_animated(qapp, window, monkeypatch):
+    from steam_artwork_finder.gui import tray as traymod
+
+    win = window
+    monkeypatch.setattr(win, "load_thumb", lambda a, target: None)
+    win.current = 0
+    t = win.tray
+    t.slot, t.page, t.assets = SLOTS["wide"], 0, []
+    t.list.clear()
+    mk = lambda i, thumb: Asset(i, f"https://x/{i}.png", thumb, 920, 430, "image/png", 0, "alternate", "a")
+    t._loaded(t.slot, 0, win.current_shortcut().appid,
+              [mk(1, "https://x/1.png"), mk(2, "https://x/2.webm"), mk(3, "https://x/3.png")])
+    assert "3 options, 1 animated." in t.status.text()
+    chip = next(b for b in t.chips.buttons() if b.property("style_key") == "animated")
+    chip.click()
+    shown = [t.list.item(i).data(traymod.ROLE_ASSET).id for i in range(t.list.count()) if not t.list.item(i).isHidden()]
+    assert shown == [2]
+
+    t.assets = []
+    t.list.clear()
+    t._loaded(t.slot, 0, win.current_shortcut().appid, [mk(1, "https://x/1.png")])
+    assert "none animated" in t.status.text()
+    assert not any(b.property("style_key") == "animated" for b in t.chips.buttons())

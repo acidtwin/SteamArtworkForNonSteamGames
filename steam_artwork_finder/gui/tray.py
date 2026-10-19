@@ -265,7 +265,7 @@ class OptionTray(QWidget):
             self.list.addItem(it)
             self.win.load_thumb(a, it)
         self.more.setVisible(len(assets) >= 50)
-        self._chips(sorted({a.style for a in self.assets if a.style}))
+        self._chips(sorted({a.style for a in self.assets if a.style}), any(a.animated for a in self.assets))
         self._filter()
         if not self.assets:
             self.empty_title.setText(f"No {slot.label.lower()} for this game on SteamGridDB yet")
@@ -273,8 +273,16 @@ class OptionTray(QWidget):
             self.status.setText("")
         else:
             info = SLOTS[slot.key]
-            self.status.setText(f"{len(self.assets)} options. Hover to preview, then "
+            self.status.setText(f"{len(self.assets)} options{self._animated_count()}. Hover to preview, then "
                                 f"“Pick This {info.label.title()}”. Apply saves your picks.")
+
+    def _animated_count(self) -> str:
+        """", 3 animated" (or ", none animated") where SteamGridDB was asked for animated options."""
+        if not (self.slot.animates and self.win.show_animated):
+            return ""
+        n = sum(a.animated for a in self.assets)
+        so_far = " so far" if self.more.isVisibleTo(self) else ""
+        return f", {n} animated{so_far}" if n else f", none animated{so_far}"
 
     def _show_empty(self, empty: bool):
         if empty and self.list.hasFocus():
@@ -289,11 +297,11 @@ class OptionTray(QWidget):
         self.more.hide()
         self.load()
 
-    def _chips(self, styles: list[str]):
+    def _chips(self, styles: list[str], animated: bool = False):
         for b in self.chips.buttons():
             self.chips.removeButton(b)
             b.deleteLater()
-        for name in ["all"] + styles:
+        for name in ["all"] + (["animated"] if animated else []) + styles:
             b = QPushButton(name.replace("_", " ").capitalize() if name != "all" else "All")
             b.setProperty("kind", "chip")
             b.setProperty("style_key", name)
@@ -302,7 +310,7 @@ class OptionTray(QWidget):
             b.setCursor(Qt.CursorShape.PointingHandCursor)
             self.chips.addButton(b)
             self.chip_row.addWidget(b)
-        self.chip_host.setVisible(len(styles) > 1)
+        self.chip_host.setVisible(len(styles) > 1 or animated)
         self.chip_row.invalidate()
 
     def _filter(self):
@@ -310,7 +318,10 @@ class OptionTray(QWidget):
         want = b.property("style_key") if b else "all"
         for i in range(self.list.count()):
             a = self.list.item(i).data(ROLE_ASSET)
-            self.list.item(i).setHidden(want != "all" and a.style != want)
+            if want == "animated":
+                self.list.item(i).setHidden(not a.animated)
+            else:
+                self.list.item(i).setHidden(want != "all" and a.style != want)
 
     def _tab(self, i):
         self.preview.emit(self.slot, None, None)
