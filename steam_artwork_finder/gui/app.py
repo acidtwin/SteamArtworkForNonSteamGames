@@ -40,6 +40,7 @@ from ..steam import (
     wait_until_closed,
 )
 from . import icons, theme, workers
+from .fallback import GENERATED, SOURCES, icon_asset, square_icon
 from .chrome import ContentBar, Header, StatusBar, SteamPopover
 from .steamfolder import SteamFolderPopover
 from .dialogs import AboutDialog, ConfirmDialog, KeyPopover, MatchDialog, QuitDialog, RestoreDialog
@@ -427,9 +428,12 @@ class MainWindow(QMainWindow):
             self.pending.drop(sc.appid, slot.key)
             self.refresh_all()
 
-    def _unstaged_missing(self, sc: Shortcut) -> list[Slot]:
+    def _unstaged_missing(self, sc: Shortcut, recheck: bool = False) -> list[Slot]:
+        """The pieces a game has no artwork for, nor a waiting pick. Pieces SteamGridDB had
+        nothing for lately are left out (the game has all there is), unless `recheck`."""
+        none = set() if recheck else self.config.no_art(sc.appid)
         return [SLOTS[k] for k, have in zip(ORDER, self.coverage(sc))
-                if not have and self.pending.get(sc.appid, k) is None]
+                if not have and self.pending.get(sc.appid, k) is None and k not in none]
 
     # ---- Steam & shortcuts -------------------------------------------------
 
@@ -874,7 +878,8 @@ class MainWindow(QMainWindow):
             self.page.card.set_actions(bool(self._unstaged_missing(sc)), self.pending.count(sc.appid), bool(self.busy))
         else:
             self.cbar.show_library(len(games) if self.users else None)
-            need = sum(1 for g in games if self._unstaged_missing(g) and self.status.get(g.appid) != "notfound")
+            needy = [g for g in games if self._unstaged_missing(g) and self.status.get(g.appid) != "notfound"]
+            need = len(needy)
             ready = len(self.pending.games())
             specs = []
             if games and (need or not ready):
@@ -882,7 +887,12 @@ class MainWindow(QMainWindow):
                               "ghost" if ready else "go", bool(need) and not self.busy, self.fill_everything))
             if ready:
                 specs.append((f"Apply ({plural(ready, 'Game')})", "go", not self.busy, self.apply_all))
-            self.cbar.set_buttons(specs)
+            buttons = self.cbar.set_buttons(specs)
+            if specs and specs[0][3] == self.fill_everything:
+                names = [g.name or "(unnamed)" for g in needy]
+                buttons[0].setToolTip("Missing artwork:\n" + "\n".join(names[:20])
+                                      + (f"\n…and {len(names) - 20} more" if len(names) > 20 else "")
+                                      if names else "Every game has all the artwork SteamGridDB has")
         self._show_status()
 
     def refresh_soon(self):
@@ -1003,6 +1013,7 @@ class MainWindow(QMainWindow):
                 if assets is None:
                     row.set_message("Couldn't reach SteamGridDB. Check your connection.", "warning")
                 else:
+                    self.config.set_no_art(appid, key, not assets)
                     more = len(assets) >= 50
                     row.set_assets(assets, more)
                     if key == "grid":
@@ -1117,7 +1128,11 @@ class MainWindow(QMainWindow):
                 self.commit_match(sc)
                 if self.status.get(sc.appid) == "check":
                     self.status.pop(sc.appid, None)
-                self.config.set_applied(sc.appid, key, {"id": pick.asset.id, "author": pick.asset.author})
+                if pick.asset.style == GENERATED:  # made from the game's other artwork
+                    self.config.set_applied(sc.appid, key, {"id": pick.asset.id, "author": "",
+                                                            "made_from": pick.asset.author})
+                else:
+                    self.config.set_applied(sc.appid, key, {"id": pick.asset.id, "author": pick.asset.author})
             self.pending.drop(sc.appid, key)
             self.pick_pix.pop((sc.appid, key), None)
             if change.reloaded:
@@ -1356,6 +1371,7 @@ class MainWindow(QMainWindow):
                     assets = self.sgdb.assets(slot.key, game.id)
                     if not assets:
                         report["gaps"] += 1
+                        progress(("empty", sc, slot))
                         continue
                     data = self.sgdb.download(assets[0].url)
                     progress(("asset", sc, slot, data, assets[0]))
@@ -1367,10 +1383,30 @@ class MainWindow(QMainWindow):
             report["found"] += got
         return report
 
+    def _fallback_icon(self, sc: Shortcut) -> bool:
+        """Stage an icon made from the game's cover (or banner, wide cover, logo), waiting or
+        in use, for a game SteamGridDB has no icon for. True if one was made."""
+        if self.pending.get(sc.appid, "icon") is not None or self.slot_path(sc, SLOTS["icon"]):
+            return False
+        for key, name in SOURCES:
+            pick = self.pending.get(sc.appid, key)
+            data = pick.data if pick is not None and not pick.clears else None
+            if data is None and pick is None:
+                path = self.slot_path(sc, SLOTS[key])
+                try:
+                    data = path.read_bytes() if path else None
+                except OSError:
+                    data = None
+            icon = square_icon(data, contain=key == "logo") if data else None
+            if icon:
+                self._stage(sc, "icon", Pick(icon_asset(name), icon))
+                return True
+        return False
+
     def _run_fill(self, shortcuts: list[Shortcut], single: bool = False):
         if self.busy or not self.ensure_key():
             return
-        jobs = [(sc, self._unstaged_missing(sc), self.match_info(sc), single) for sc in shortcuts]
+        jobs = [(sc, self._unstaged_missing(sc, recheck=single), self.match_info(sc), single) for sc in shortcuts]
         skipped = sum(1 for j in jobs if j[1] and self.status.get(j[0].appid) == "notfound" and not single)
         jobs = [j for j in jobs if j[1] and (single or self.status.get(j[0].appid) != "notfound")]
         if not jobs:
@@ -1398,8 +1434,12 @@ class MainWindow(QMainWindow):
                 self.refresh_soon()
             elif kind == "asset":
                 _, sc, slot, data, asset = ev
+                self.config.set_no_art(sc.appid, slot.key, False)
                 self._stage(sc, slot.key, Pick(asset, data))
                 self.refresh_soon()
+            elif kind == "empty":
+                _, sc, slot = ev
+                self.config.set_no_art(sc.appid, slot.key, True)  # not counted as missing for a while
 
         def done(report):
             self._set_busy("")
@@ -1409,6 +1449,11 @@ class MainWindow(QMainWindow):
                 if self.status.get(sc.appid) == "getting":
                     self.status.pop(sc.appid, None)
             self.refresh_all()
+            # Games SteamGridDB has no icon for get one made from their other artwork.
+            made = [sc for sc, *_ in jobs if "icon" in self.config.no_art(sc.appid) and self._fallback_icon(sc)]
+            report["gaps"] -= sum(1 for sc, slots, *_ in jobs if sc in made and SLOTS["icon"] in slots)
+            if made:
+                self.refresh_all()
             if self.current >= 0:
                 self.load_options()
             if single:
@@ -1431,6 +1476,8 @@ class MainWindow(QMainWindow):
                 parts.append(f"{plural(report['gaps'], 'piece')} had no options yet.")
             if report["errors"]:
                 parts.append(f"{len(report['errors'])} couldn't be downloaded.")
+            if made:
+                parts.append(f"{plural(len(made), 'icon')} made from other artwork.")
             if skipped:
                 parts.append(f"{skipped} skipped (not found before).")
             if report["errors"] or report["unsure"] or report["notfound"]:
@@ -1444,6 +1491,8 @@ class MainWindow(QMainWindow):
                 line.insert(0, "Stopped")
             if report["gaps"]:
                 line.append(f"{plural(report['gaps'], 'piece')} had no options yet")
+            if made:
+                line.append(f"{plural(len(made), 'icon')} made from other artwork")
             if skipped:
                 line.append(f"{skipped} skipped (not found before)")
             self.show_note("done" if found else "info", " · ".join(line), hold=8000 if found else None)

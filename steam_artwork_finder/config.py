@@ -75,6 +75,27 @@ class Config:
             queue[str(appid)] = path
         self.save()
 
+    NO_ART_DAYS = 7  # how long "SteamGridDB has none" is believed before Get Artwork looks again
+
+    def no_art(self, appid: int) -> set[str]:
+        """The pieces SteamGridDB had no options for when last asked, within NO_ART_DAYS."""
+        import time
+
+        seen = self.data.get("no_art", {}).get(str(appid), {})
+        return {k for k, t in seen.items() if time.time() - t < self.NO_ART_DAYS * 86400}
+
+    def set_no_art(self, appid: int, slot: str, none: bool):
+        import time
+
+        per_game = self.data.setdefault("no_art", {}).setdefault(str(appid), {})
+        if none:
+            per_game[slot] = time.time()
+        elif per_game.pop(slot, None) is None:
+            return
+        if not per_game:
+            self.data["no_art"].pop(str(appid), None)
+        self.save()
+
     def get_applied(self, appid: int, slot: str) -> dict | None:
         return self.data.get("applied", {}).get(str(appid), {}).get(slot)
 

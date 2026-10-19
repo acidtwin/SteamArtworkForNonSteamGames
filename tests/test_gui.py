@@ -773,3 +773,45 @@ def test_details_columns_never_overlap_the_names(qapp):
         assert status_x is None and end >= NAME_X + 40  # the status column moves into the tooltip
         assert centres[0] - col / 2 >= end
     assert detail_columns(640 + STATUS_W)[2] is not None
+
+
+def test_artwork_steamgriddb_lacks_is_remembered_and_an_icon_is_made(qapp, window, tmp_path):
+    from PySide6.QtGui import QImage
+
+    from steam_artwork_finder.gui.fallback import GENERATED
+
+    win = window
+    win.config.data["api_key"] = "x"
+    for sc in win.sfile.shortcuts:
+        win.config.set_match(sc.appid, 9, sc.name)
+    cover = QImage(60, 90, QImage.Format.Format_RGB32)
+    cover.fill(0x3366CC)
+    cover.save(str(tmp_path / "cover.png"))
+    png = (tmp_path / "cover.png").read_bytes()
+    win.sgdb.assets = lambda kind, game_id, page=0: [_asset(1)] if kind == "grid" else []
+    win.sgdb.download = lambda url: png
+    win.refresh_all()
+    tip = win.cbar.buttons[0].toolTip()
+    assert all(sc.name in tip for sc in win.sfile.shortcuts)  # the button says which games
+
+    win.fill_everything()
+    _pump(qapp, 3000, until=lambda: not win.busy)
+    sc = win.sfile.shortcuts[0]
+    icon = win.pending.get(sc.appid, "icon")
+    assert icon.asset.style == GENERATED and icon.asset.author == "cover"
+    made = QImage.fromData(icon.data)
+    assert (made.width(), made.height()) == (256, 256)
+    assert win.config.no_art(sc.appid) == {"wide", "hero", "logo", "icon"}
+    assert "icons made from other artwork" in win.statusbar.message.accessibleName()
+
+    win.show_index(0)
+    _pump(qapp, 200)
+    assert win.page.rows["icon"].caption.text() == "Made from the cover · not applied yet"
+
+    win.pending.clear()
+    win.refresh_all()
+    # SteamGridDB only has covers, so only the cover is still to get; a recheck asks for all again.
+    assert [s.key for s in win._unstaged_missing(sc)] == ["grid"]
+    assert len(win._unstaged_missing(sc, recheck=True)) == 5
+    win.config.set_no_art(sc.appid, "hero", False)  # e.g. the game page found banners after all
+    assert "hero" not in win.config.no_art(sc.appid)
