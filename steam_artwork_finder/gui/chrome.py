@@ -236,6 +236,7 @@ class Header(QWidget):
         self.more.setToolTip("More")
         self.more.setAccessibleName("More actions")
         self.more.clicked.connect(self.more_clicked)
+        self.more.clicked.connect(lambda: theme.hold_open(self.more))  # after the menu has opened
         lay.addWidget(self.more)
 
     def set_users(self, labels: list[str], current: int, avatar: QPixmap | None = None):
@@ -433,7 +434,8 @@ class ContentBar(QWidget):
                 b = QToolButton()
                 b.setIcon(icons.icon("more", 20, C["text"]))
                 b.setIconSize(QSize(20, 20))
-                b.clicked.connect(lambda _=False, b=b: b._cb and b._cb(b.mapToGlobal(QPoint(0, b.height()))))
+                b.clicked.connect(lambda _=False, b=b: b._cb and (b._cb(b.mapToGlobal(QPoint(0, b.height()))),
+                                                                  theme.hold_open(b)))
             else:
                 b = QPushButton()
                 if kind == "go":

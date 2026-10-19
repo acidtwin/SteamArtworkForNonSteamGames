@@ -233,7 +233,10 @@ def test_more_menu_has_sections_and_switches(qapp, window):
     assert not quit_row.isChecked()
     quit_row.click()
     assert win.apply_on_quit and win.popover.on_quit.isChecked() and menu.isVisible()  # a switch keeps it open
+    assert win.header.more.property("open")  # drawn pressed while its menu shows
     menu.close()
+    _pump(qapp, 50)
+    assert not win.header.more.property("open")
 
 
 def test_restore_window_says_what_changes(qapp, window, monkeypatch):

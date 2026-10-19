@@ -143,6 +143,24 @@ def kbd_focus(w: QWidget) -> bool:
     return w.hasFocus() and bool(w.property("kbd"))
 
 
+def _set_open(btn: QWidget, on: bool):
+    try:
+        btn.setProperty("open", on)
+        btn.style().unpolish(btn)
+        btn.style().polish(btn)
+    except RuntimeError:  # the button was deleted while its menu showed
+        pass
+
+
+def hold_open(btn: QWidget):
+    """Draw `btn` pressed for as long as the popup menu it just opened stays open."""
+    pop = QApplication.activePopupWidget()
+    if pop is None or not hasattr(pop, "closed"):
+        return
+    _set_open(btn, True)
+    pop.closed.connect(lambda: _set_open(btn, False))
+
+
 def stylesheet() -> str:
     c = C
     tick = (Path(__file__).parent / "icons" / "tick.svg").as_posix()
@@ -182,6 +200,7 @@ def stylesheet() -> str:
     QPushButton[kind="chip"]:checked {{ background: {c['text']}; color: {c['ground']}; }}
     QToolButton {{ background: transparent; border: none; border-radius: 3px; min-width: 40px; min-height: 40px; }}
     QToolButton:hover {{ background: {c['raised']}; }}
+    QToolButton:pressed, QToolButton[open="true"] {{ background: {c['select']}; border: 1px solid {c['text3']}; }}
     QToolButton::menu-indicator {{ image: none; }}
 
     QLineEdit {{

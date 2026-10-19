@@ -268,21 +268,26 @@ class FilterButton(QToolButton):
         r = QRectF(self.rect())
         enabled = self.isEnabled()
         hover = enabled and self.underMouse()
-        if enabled and (self.open or hover):
+        held = enabled and (self.open or self.isDown())  # pressed, or its menu is showing
+        if held or hover:
             p.setPen(Qt.PenStyle.NoPen)
             p.setBrush(q("select"))
             p.drawRoundedRect(r, 3, 3)
-        if theme.kbd_focus(self) and not self.open:
+        if theme.kbd_focus(self) and not held:
             p.setPen(QPen(q("blue"), 2))
             p.setBrush(Qt.BrushStyle.NoBrush)
             p.drawRoundedRect(r.adjusted(1, 1, -1, -1), 3, 3)
+        elif held:
+            p.setPen(QPen(q("text3"), 1))
+            p.setBrush(Qt.BrushStyle.NoBrush)
+            p.drawRoundedRect(r.adjusted(0.5, 0.5, -0.5, -0.5), 3, 3)
         elif self.on and enabled:
             p.setPen(QPen(q("blue_ink"), 1))
             p.setBrush(Qt.BrushStyle.NoBrush)
             p.drawRoundedRect(r.adjusted(0.5, 0.5, -0.5, -0.5), 3, 3)
         if not enabled:
             color = q("text2")  # the search box fades the whole row
-        elif self.open:
+        elif held:
             color = QColor("white")
         elif self.on:
             color = q("blue_ink")
@@ -564,15 +569,20 @@ class ViewButton(QAbstractButton):
         p.setRenderHint(QPainter.RenderHint.Antialiasing)
         r = QRectF(self.rect())
         hover = self.underMouse() and self.isEnabled()
+        held = self.open or self.isDown()  # pressed, or its menu is showing
         p.setPen(Qt.PenStyle.NoPen)
-        p.setBrush(q("select") if self.open else q("raised") if hover else q("input"))
+        p.setBrush(q("select") if held else q("raised") if hover else q("input"))
         p.drawRoundedRect(r, 3, 3)
-        if theme.kbd_focus(self) and not self.open:
+        if theme.kbd_focus(self) and not held:
             p.setPen(QPen(q("blue"), 2))
             p.setBrush(Qt.BrushStyle.NoBrush)
             p.drawRoundedRect(r.adjusted(1, 1, -1, -1), 3, 3)
+        elif held:
+            p.setPen(QPen(q("text3"), 1))
+            p.setBrush(Qt.BrushStyle.NoBrush)
+            p.drawRoundedRect(r.adjusted(0.5, 0.5, -0.5, -0.5), 3, 3)
         icon = next(i for k, _, i in VIEWS if k == self.view)
-        fg = QColor("white") if self.open else q("text") if hover else q("text2")
+        fg = QColor("white") if held else q("text") if hover else q("text2")
         icons.draw(p, icon, QRectF(r.center().x() - 8, r.center().y() - 8, 16, 16), fg)
 
 
