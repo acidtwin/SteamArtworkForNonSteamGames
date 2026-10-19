@@ -1288,6 +1288,12 @@ class MainWindow(QMainWindow):
         super().closeEvent(e)
 
 
+def focus_start(win: MainWindow):
+    """Start on the library with the cover wall focused. Focusing the game list instead
+    would make Qt select its first game, which opens that game's page."""
+    win.start.wall.setFocus()
+
+
 def main() -> int:
     app = QApplication(sys.argv)
     app.setApplicationName(APP_NAME)
@@ -1307,5 +1313,5 @@ def main() -> int:
         if screen is not None:
             win.resize(min(1280, screen.width() - 80), min(800, screen.height() - 80))
         win.show()
-    win.game_list.list.setFocus()
+    focus_start(win)
     return app.exec()

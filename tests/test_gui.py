@@ -260,3 +260,13 @@ def test_restore_window_says_what_changes(qapp, window, monkeypatch):
     assert dialogs.friendly_time(now - 14 * 60, now) == ("Today, 06:30", "14 minutes ago")
     assert dialogs.friendly_time(now - 9 * 3600, now)[0] == "Yesterday, 21:44"
     assert ShortcutsFile(first).shortcuts[0].name != "Renamed"
+
+
+def test_app_opens_on_the_library(qapp, window):
+    from steam_artwork_finder.gui.app import focus_start
+
+    win = window
+    focus_start(win)
+    win.activateWindow()
+    _pump(qapp, 600)
+    assert win.stage.currentWidget() is win.start and win.current == -1
