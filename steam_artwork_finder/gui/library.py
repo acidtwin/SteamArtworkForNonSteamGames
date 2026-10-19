@@ -2,8 +2,11 @@
 
 from __future__ import annotations
 
-from PySide6.QtCore import QRect, QRectF, QSize, Qt, Signal
+from pathlib import Path
+
+from PySide6.QtCore import QByteArray, QRect, QRectF, QSize, Qt, Signal
 from PySide6.QtGui import QColor, QFont, QFontMetrics, QPainter, QPainterPath, QPixmap
+from PySide6.QtSvg import QSvgRenderer
 from PySide6.QtWidgets import (
     QButtonGroup,
     QHBoxLayout,
@@ -22,6 +25,15 @@ from .theme import C, q
 from .widgets import draw_dashed_empty, draw_dots, fill_rect, label, load_pixmap
 
 ROLE_INDEX = Qt.ItemDataRole.UserRole  # index into the shortcut list, or -1 for "All games"
+
+_ALL_GAMES_SVG = (Path(__file__).with_name("icons") / "all-games.svg").read_text(encoding="utf-8")
+
+
+def draw_all_games_icon(p: QPainter, rect: QRect, color: QColor) -> None:
+    """The shelf icon for the "All games" row, in the given colour."""
+    svg = _ALL_GAMES_SVG.replace("currentColor", color.name())
+    QSvgRenderer(QByteArray(svg.encode())).render(p, QRectF(rect))
+
 
 _PALETTE = ["#2d5a8c", "#6b3f8c", "#3f7e1d", "#8c5a2d", "#8c2d3f", "#2d7e7a", "#5a5a8c", "#7e6b1d"]
 
@@ -114,8 +126,7 @@ class GameRowDelegate(QStyledItemDelegate):
         p.setPen(QColor("white") if selected else q("text"))
         tx = icon_rect.right() + 12
         if idx == -1:
-            p.setPen(q("text2"))
-            p.drawRoundedRect(QRectF(icon_rect).adjusted(4, 6, -4, -6), 2, 2)
+            draw_all_games_icon(p, icon_rect, QColor("white") if selected else q("text2"))
             p.setPen(QColor("white") if selected else q("text"))
             p.drawText(QRect(tx, r.y(), r.width() - tx, r.height()), Qt.AlignmentFlag.AlignVCenter, "All games")
             p.restore()

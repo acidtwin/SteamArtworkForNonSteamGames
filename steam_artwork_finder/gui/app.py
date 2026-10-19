@@ -734,7 +734,7 @@ def main() -> int:
     app.setStyle("Fusion")
     app.setPalette(theme.palette())
     app.setStyleSheet(theme.stylesheet())
-    app.setWindowIcon(QIcon.fromTheme("applications-games"))
+    app.setWindowIcon(QIcon(str(Path(__file__).with_name("icons") / "app.svg")))
     win = MainWindow()
     win.show()
     win.game_list.list.setFocus()
