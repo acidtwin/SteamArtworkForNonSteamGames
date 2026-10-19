@@ -305,3 +305,41 @@ def test_match_window_suggests_and_previews(qapp):
     _pump(qapp, 600, until=lambda: dlg.status.text().startswith("No"))
     assert dlg.edit.text() == "SB" and dlg.selected() is None and not dlg.ok.isEnabled()
     dlg.close()
+
+
+def test_wheel_scrolling_glides(qapp):
+    from PySide6.QtCore import QPoint, QPointF, Qt
+    from PySide6.QtGui import QWheelEvent
+    from PySide6.QtWidgets import QApplication, QScrollArea, QWidget
+
+    from steam_artwork_finder.gui import smooth
+
+    f = smooth.install(qapp)
+    try:
+        area = QScrollArea()
+        inner = QWidget()
+        inner.setFixedSize(200, 3000)
+        area.setWidget(inner)
+        area.resize(220, 300)
+        area.show()
+        bar = area.verticalScrollBar()
+
+        def wheel(dy, pixels=0):
+            ev = QWheelEvent(QPointF(50, 50), QPointF(area.viewport().mapToGlobal(QPoint(50, 50))), QPoint(0, pixels),
+                             QPoint(0, dy), Qt.MouseButton.NoButton, Qt.KeyboardModifier.NoModifier,
+                             Qt.ScrollPhase.NoScrollPhase, False)
+            QApplication.sendEvent(area.viewport(), ev)
+
+        wheel(-120)
+        _pump(qapp, 40)
+        mid = bar.value()
+        _pump(qapp, 400)
+        step = QApplication.wheelScrollLines() * bar.singleStep()
+        assert 0 < mid < step and bar.value() == step  # it glides there, it doesn't jump
+        wheel(-120)
+        wheel(-120)
+        _pump(qapp, 400)
+        assert bar.value() == 3 * step  # quick notches add up
+        area.close()
+    finally:
+        qapp.removeEventFilter(f)

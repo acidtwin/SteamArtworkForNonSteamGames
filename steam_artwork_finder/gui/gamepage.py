@@ -3,6 +3,8 @@ labelled row per piece of artwork with its options beside it."""
 
 from __future__ import annotations
 
+import math
+import zlib
 from dataclasses import dataclass
 from html import escape
 
@@ -592,6 +594,17 @@ class CoverThumb(QWidget):
 
 
 BANNER_H = 210
+# Colour sweeps for a game with no banner yet (dark, deep, bright, light), picked by name.
+BLANK_BANNERS = (
+    ("#0e1030", "#3a3f9a", "#b06ad2", "#ffc8e6"),  # violet to pink
+    ("#0b1d2e", "#145a8a", "#1a9fff", "#9fe3ff"),  # Steam blue
+    ("#1a0e12", "#7a1a4a", "#ff5a3c", "#ffb43c"),  # ember
+    ("#08201c", "#0e5a4a", "#3cd28c", "#d6ffb0"),  # jade
+    ("#1c0e2a", "#5a1f8a", "#ff5ab0", "#ffd0a0"),  # sunset
+    ("#101a2a", "#2a4a7a", "#6a7cff", "#e0c8ff"),  # dusk
+    ("#201406", "#7a4a0e", "#e3a33c", "#fff0b0"),  # gold
+    ("#0a1a24", "#0e4a5a", "#2ab8c8", "#ffb0c8"),  # lagoon
+)
 
 
 class MatchCard(QWidget):
@@ -701,6 +714,7 @@ class MatchCard(QWidget):
         """The game's own name, as it shows in Steam."""
         self.title.setText(name)
         self.title.setAccessibleName(name)
+        self.update()  # a game with no banner gets its own colours
 
     def set_actions(self, can_get: bool, changes: int, busy: bool):
         self.get_btn.setEnabled(can_get and not busy)
@@ -768,9 +782,13 @@ class MatchCard(QWidget):
             p.drawPixmap(0, 0, art)
             p.setOpacity(1.0)
         else:
-            g = QLinearGradient(r.topLeft(), r.bottomRight())
-            g.setColorAt(0, QColor("#2a3f5a"))
-            g.setColorAt(1, q("ground"))
+            # No artwork yet: a bright sweep of colour, the same one for a game every time.
+            sweep = BLANK_BANNERS[zlib.crc32(self.title.text().encode()) % len(BLANK_BANNERS)]
+            a = 110 * math.pi / 180  # CSS-style 110deg, like the mockup
+            dx, dy = math.sin(a) * r.width() / 2, -math.cos(a) * r.height() / 2
+            g = QLinearGradient(r.center() - QPointF(dx, dy), r.center() + QPointF(dx, dy))
+            for at, colour in zip((0, 0.4, 0.75, 1), sweep):
+                g.setColorAt(at, QColor(colour))
             p.fillRect(r, g)
         side = QLinearGradient(r.topLeft(), QPointF(r.width() * 0.65, 0))
         side.setColorAt(0, QColor(0, 0, 0, 120))

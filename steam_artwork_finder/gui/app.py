@@ -1305,6 +1305,9 @@ def main() -> int:
     app.setPalette(theme.palette())
     app.setStyleSheet(theme.stylesheet())
     app.setWindowIcon(icons.app_icon())
+    from . import smooth
+
+    smooth.install(app)
     win = MainWindow()
     screen = app.primaryScreen().availableGeometry() if app.primaryScreen() else None
     if screen is not None and (screen.width() <= 1280 or screen.height() <= 800):
