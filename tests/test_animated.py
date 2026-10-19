@@ -2,6 +2,7 @@ import struct
 import zlib
 
 import pytest
+from PySide6.QtCore import Qt
 
 from steam_artwork_finder.artwork import SLOTS, is_animated, save_asset
 from steam_artwork_finder.sgdb import Asset, SteamGridDB
@@ -191,3 +192,28 @@ def test_see_all_counts_and_filters_animated(qapp, window, monkeypatch):
     t._loaded(t.slot, 0, win.current_shortcut().appid, [mk(1, "https://x/1.png")])
     assert "none animated" in t.status.text()
     assert not any(b.property("style_key") == "animated" for b in t.chips.buttons())
+
+
+def test_see_all_slides_over_the_page_without_squeezing_it(qapp, window, monkeypatch):
+    from steam_artwork_finder.artwork import SLOTS as S
+
+    win = window
+    win.open_game(0)
+    _pump(qapp, 200)
+    monkeypatch.setattr(win, "current_game", lambda: object())
+    monkeypatch.setattr(win.tray, "load", lambda: None)
+    before = win.page.width()
+    win.open_tray(S["grid"])
+    _pump(qapp, 400)
+    t = win.tray
+    assert t.is_open() and win.page.width() == before  # lies over the page
+    stage = win.stage.geometry()
+    assert t.geometry().right() == stage.right() and t.geometry().top() == stage.top()
+    assert not t._fx.isEnabled()  # no effect once it has settled
+    # a click elsewhere in the window closes it, sliding out
+    from PySide6.QtCore import QPoint
+    from PySide6.QtTest import QTest
+    QTest.mouseClick(win.header, Qt.MouseButton.LeftButton, pos=QPoint(400, 10))
+    assert not t.is_open()
+    _pump(qapp, 400)
+    assert not t.isVisible() and win.page.width() == before

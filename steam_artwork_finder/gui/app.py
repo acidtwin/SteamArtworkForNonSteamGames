@@ -181,12 +181,11 @@ class MainWindow(QMainWindow):
         self.split.addWidget(col)
 
         self.tray = OptionTray(self)
-        self.tray.hide()
+        self.tray.place_over(self.stage)  # slides in over the page rather than squeezing it
         self.tray.preview.connect(self._tray_preview)
         self.tray.slot_changed.connect(self._show_row)
-        self.split.addWidget(self.tray)
         self.split.setStretchFactor(1, 1)
-        self.split.setSizes([300, 980, 0])
+        self.split.setSizes([300, 980])
         outer.addWidget(self.split, 1)
 
         self.popover = SteamPopover(self)
@@ -383,7 +382,7 @@ class MainWindow(QMainWindow):
         sc, game = self.current_shortcut(), self.current_game()
         if sc is not None and game is not None and self.stage.currentWidget() is self.page:
             self._load_rows(sc, game)
-            if self.tray.isVisible():
+            if self.tray.is_open():
                 self.tray.open_slot(self.tray.slot)
 
     def _load_animated(self, asset: Asset, target):
@@ -928,7 +927,7 @@ class MainWindow(QMainWindow):
         self.start.refresh()
         if self.current >= 0:
             self.page.refresh_current()
-            if self.tray.isVisible():
+            if self.tray.is_open():
                 self.tray.mark_in_use()
         self.update_chrome()
 
@@ -973,7 +972,7 @@ class MainWindow(QMainWindow):
         self.page.scroll.verticalScrollBar().setValue(0)
         self.page.show_game()
         self.load_options()
-        if self.tray.isVisible():
+        if self.tray.is_open():
             self.tray.open_slot(self.tray.slot)
         self.update_chrome()
 
@@ -1051,8 +1050,7 @@ class MainWindow(QMainWindow):
         self.tray.list.setFocus()
 
     def _show_row(self, slot: Slot):
-        """Bring the page's row for the tray's piece into view, so its preview is seen (once the
-        page has laid itself out narrower for the tray)."""
+        """Bring the page's row for the tray's piece into view, so its preview is seen."""
         def show():
             row = self.page.rows.get(slot.key)
             if row is not None and self.stage.currentWidget() is self.page:
@@ -1107,7 +1105,7 @@ class MainWindow(QMainWindow):
             del self.asset_cache[key]
         if self.current_shortcut() is sc:
             self.load_options()
-            if self.tray.isVisible():
+            if self.tray.is_open():
                 self.tray.open_slot(self.tray.slot)
         self.toast.show_message(f"Refreshed the SteamGridDB options for {sc.name}.")
 
@@ -1355,7 +1353,7 @@ class MainWindow(QMainWindow):
             self.page.update_match()
             self.load_options()
             self.refresh_all()
-            if self.tray.isVisible():
+            if self.tray.is_open():
                 self.tray.open_slot(self.tray.slot)
 
     # ---- getting artwork in bulk ---------------------------------------------
@@ -1582,7 +1580,7 @@ class MainWindow(QMainWindow):
         AboutDialog(self, APP_NAME, __version__).exec()
 
     def keyPressEvent(self, e):
-        if e.key() == Qt.Key.Key_Escape and self.tray.isVisible():
+        if e.key() == Qt.Key.Key_Escape and self.tray.is_open():
             self.tray.close_tray()
         else:
             super().keyPressEvent(e)

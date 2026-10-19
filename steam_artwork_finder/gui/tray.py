@@ -1,11 +1,13 @@
-"""The option tray: every SteamGridDB option for one piece, beside the game page."""
+"""The option tray: every SteamGridDB option for one piece, sliding in over the game page."""
 
 from __future__ import annotations
 
-from PySide6.QtCore import QPointF, QRectF, QSize, Qt, Signal
-from PySide6.QtGui import QFont, QFontMetrics, QPainter, QPainterPath, QPen, QPixmap
+from PySide6.QtCore import QEasingCurve, QEvent, QPointF, QRectF, QSize, Qt, QVariantAnimation, Signal
+from PySide6.QtGui import QColor, QFont, QFontMetrics, QLinearGradient, QPainter, QPainterPath, QPen, QPixmap
 from PySide6.QtWidgets import (
+    QApplication,
     QButtonGroup,
+    QGraphicsOpacityEffect,
     QHBoxLayout,
     QLabel,
     QListView,
@@ -117,6 +119,26 @@ class OptionDelegate(QStyledItemDelegate):
         p.restore()
 
 
+SLIDE_IN, SLIDE_OUT = 180, 140  # ms, with the fade (the app's other fades take 120 to 140)
+SHADOW_W = 18
+
+
+class _Shadow(QWidget):
+    """A soft shadow down the tray's left edge, so it reads as lying over the page."""
+
+    def __init__(self, parent):
+        super().__init__(parent)
+        self.setAttribute(Qt.WidgetAttribute.WA_TransparentForMouseEvents)
+        self.strength = 0.0
+
+    def paintEvent(self, _):
+        p = QPainter(self)
+        g = QLinearGradient(self.width(), 0, 0, 0)
+        g.setColorAt(0, QColor(0, 0, 0, round(110 * self.strength)))
+        g.setColorAt(1, QColor(0, 0, 0, 0))
+        p.fillRect(self.rect(), g)
+
+
 class OptionTray(QWidget):
     closed = Signal()
     use = Signal(object, object)  # slot, Asset (no longer emitted: picks stage through win.stage_pick)
@@ -130,6 +152,16 @@ class OptionTray(QWidget):
         self.slot = SLOTS["grid"]
         self.setObjectName("tray")
         self.setAttribute(Qt.WidgetAttribute.WA_StyledBackground)
+        self.area: QWidget | None = None  # the part of the window it lies over (set by place_over)
+        self._shadow: _Shadow | None = None
+        self._fx = QGraphicsOpacityEffect(self, opacity=1.0)
+        self._fx.setEnabled(False)  # only while sliding: an effect makes every repaint go through it
+        self.setGraphicsEffect(self._fx)
+        self._t = 1.0  # 0 = out of sight on the right, 1 = in place
+        self._anim = QVariantAnimation(self)
+        self._anim.valueChanged.connect(self._step)
+        self._anim.finished.connect(self._settled)
+        self._leaving = False
         # Wide enough for the five tabs in a row at the user's font size.
         self.setFixedWidth(max(370, theme.text_width("Cover Wide cover Banner Logo Icon") + 180))
         lay = QVBoxLayout(self)
@@ -230,7 +262,7 @@ class OptionTray(QWidget):
         self._show_empty(False)
         self._chips([])
         self.more.hide()
-        self.show()
+        self._appear()
         self._update_buttons()
         self.slot_changed.emit(slot)
         self.load()
@@ -397,9 +429,111 @@ class OptionTray(QWidget):
         self._update_buttons()
 
     def close_tray(self):
+        if self._leaving or not self.isVisible():
+            return
         self.preview.emit(self.slot, None, None)
-        self.hide()
+        self._disappear()
         self.closed.emit()
+
+    # -- lying over the page ------------------------------------------------
+
+    def place_over(self, area: QWidget):
+        """Lie over the right-hand side of `area` (a sibling), sliding in and out, without
+        taking any room from it, so the page underneath keeps its layout."""
+        self.area = area
+        self.setParent(area.parentWidget())
+        self._shadow = _Shadow(area.parentWidget())
+        self._shadow.hide()
+        area.installEventFilter(self)
+        self.hide()
+
+    def is_open(self) -> bool:
+        return self.isVisible() and not self._leaving
+
+    def _place(self):
+        if self.area is None:
+            return
+        r = self.area.geometry()
+        x = r.right() + 1 - self.width() + round((1 - self._t) * (self.width() + SHADOW_W))
+        self.setGeometry(x, r.y(), self.width(), r.height())
+        if self._shadow is not None:
+            self._shadow.setGeometry(x - SHADOW_W, r.y(), SHADOW_W, r.height())
+            self._shadow.strength = self._t
+            self._shadow.update()
+
+    def _appear(self):
+        if self.area is None:
+            self.show()
+            return
+        if self.is_open():
+            self.raise_()
+            return
+        self._leaving = False
+        if not self.isVisible():
+            self._t = 0.0
+            self._place()
+            self._shadow.show()
+            self.show()
+        self._shadow.raise_()
+        self.raise_()
+        self._run(1.0, SLIDE_IN, QEasingCurve.Type.OutCubic)
+        QApplication.instance().installEventFilter(self)
+
+    def _disappear(self):
+        if self.area is None:
+            self.hide()
+            return
+        self._leaving = True
+        QApplication.instance().removeEventFilter(self)
+        self._run(0.0, SLIDE_OUT, QEasingCurve.Type.InCubic)
+
+    def _run(self, end: float, ms: int, curve):
+        self._anim.stop()
+        self._anim.setDuration(ms)
+        self._anim.setEasingCurve(curve)
+        self._anim.setStartValue(self._t)
+        self._anim.setEndValue(end)
+        self._fx.setEnabled(True)
+        self._anim.start()
+
+    def _step(self, v):
+        self._t = float(v)
+        self._fx.setOpacity(self._t)
+        self._place()
+
+    def _settled(self):
+        self._fx.setEnabled(False)
+        if self._leaving:
+            self._leaving = False
+            self.hide()
+
+    def hideEvent(self, e):
+        self._anim.stop()
+        self._fx.setEnabled(False)
+        self._leaving = False
+        if self._shadow is not None:
+            self._shadow.hide()
+        QApplication.instance().removeEventFilter(self)
+        super().hideEvent(e)
+
+    def eventFilter(self, obj, e):
+        t = e.type()
+        if obj is self.area and t in (QEvent.Type.Resize, QEvent.Type.Move):
+            self._place()
+        elif (t == QEvent.Type.MouseButtonPress and self.is_open() and isinstance(obj, QWidget)
+              and obj.window() is self.window() and not (obj is self or self.isAncestorOf(obj))
+              and not self._opens_tray(obj) and QApplication.activePopupWidget() is None):
+            self.close_tray()  # a click anywhere else closes it, and still does what it was for
+        return False
+
+    def _opens_tray(self, w: QWidget) -> bool:
+        """A piece's art or its "See all" on the page: those switch the tray to that piece instead."""
+        page = getattr(self.win, "page", None)
+        for row in getattr(page, "rows", {}).values():
+            for target in (row.art, row.see_all):
+                if w is target or target.isAncestorOf(w):
+                    return True
+        return False
 
     def keyPressEvent(self, e):
         if e.key() == Qt.Key.Key_Escape:

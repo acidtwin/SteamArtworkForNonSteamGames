@@ -598,11 +598,10 @@ def test_banner_header_fits_the_page(qapp, window):
     assert not card.compact and card.height() == 210  # buttons beside the name, as always
     shown = QLabel.text(card.title)
     assert card.title.text().startswith("A Very Long") and shown.endswith("…") and card.title.toolTip()
-    win.tray.show()
-    win.split.setSizes([300, 610, 370])
+    win.split.setSizes([670, 610])  # a narrow page (the tray no longer narrows it: it lies over it)
     fits()
     assert card.compact  # the buttons moved to a row of their own
-    win.tray.hide()
+    win.split.setSizes([300, 980])
     _pump(qapp, 150)
     assert not card.compact
 
