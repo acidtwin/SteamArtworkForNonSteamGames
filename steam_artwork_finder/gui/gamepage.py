@@ -708,7 +708,7 @@ class MatchCard(QWidget):
         self.rename_btn.clicked.connect(self.rename.emit)
         self.rename_btn.hide()
         acts.addWidget(self.rename_btn)
-        self.unrename_btn = QPushButton("Undo Rename")
+        self.unrename_btn = QPushButton("Keep Old Name")
         self.unrename_btn.setObjectName("bannerghost")
         self.unrename_btn.clicked.connect(self.unrename.emit)
         self.unrename_btn.hide()

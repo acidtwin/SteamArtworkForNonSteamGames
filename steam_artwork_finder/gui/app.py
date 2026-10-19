@@ -392,6 +392,7 @@ class MainWindow(QMainWindow):
 
     def _stage(self, sc: Shortcut, slot_key: str, pick: Pick):
         self.pending.set(sc.appid, slot_key, pick)
+        self._auto_rename(sc)
         key = (sc.appid, slot_key)
         self.pick_pix.pop(key, None)
         if pick.clears:
@@ -446,11 +447,34 @@ class MainWindow(QMainWindow):
         name = clean_name(m["name"]) if m else ""
         return name if name and name != sc.name else None
 
+    def keeps_name(self, appid: int) -> bool:
+        """The user turned the suggested new title down for this game: don't offer it by default."""
+        return str(appid) in self.config.data.get("keep_names", [])
+
+    def _set_keeps_name(self, appid: int, keep: bool):
+        names = [a for a in self.config.data.get("keep_names", []) if a != str(appid)]
+        self.config.data["keep_names"] = names + [str(appid)] if keep else names
+        self.config.save()
+
+    def rename_due(self, sc: Shortcut) -> str | None:
+        """The new title Get Artwork and Apply take along by default, if it isn't waiting already."""
+        if self.pending.name(sc.appid) is not None or self.keeps_name(sc.appid):
+            return None
+        return self.rename_suggestion(sc)
+
+    def _auto_rename(self, sc: Shortcut) -> bool:
+        """Stage the suggested title along with the game's artwork, unless it was turned down."""
+        name = self.rename_due(sc)
+        if name:
+            self.pending.set_name(sc.appid, name)
+        return bool(name)
+
     def stage_rename(self):
         sc = self.current_shortcut()
         name = self.rename_suggestion(sc)
         if name and self.busy != "apply":
             self.pending.set_name(sc.appid, name)
+            self._set_keeps_name(sc.appid, False)
             self.page.update_match()
             self.refresh_all()
 
@@ -458,6 +482,7 @@ class MainWindow(QMainWindow):
         sc = self.current_shortcut()
         if sc and self.busy != "apply":
             self.pending.set_name(sc.appid, None)
+            self._set_keeps_name(sc.appid, True)  # so Get Artwork and Apply leave the title alone
             self.page.update_match()
             self.refresh_all()
 
@@ -902,7 +927,8 @@ class MainWindow(QMainWindow):
             self.page.card.set_actions(bool(self._unstaged_missing(sc)), self.pending.count(sc.appid), bool(self.busy))
         else:
             self.cbar.show_library(len(games) if self.users else None)
-            need = sum(1 for g in games if self._unstaged_missing(g) and self.status.get(g.appid) != "notfound")
+            need = sum(1 for g in games if (self._unstaged_missing(g) and self.status.get(g.appid) != "notfound")
+                       or self.rename_due(g))
             ready = len(self.pending.games())
             specs = []
             if games and (need or not ready):
@@ -1224,6 +1250,7 @@ class MainWindow(QMainWindow):
             for appid, old, new, queued in reversed(renamed):
                 sc = sfile.find(appid)
                 try:
+                    self._set_keeps_name(appid, True)  # turned down: Get Artwork won't offer it again
                     if sc is not None and sc.name == new:  # written (maybe once Steam closed)
                         if running:
                             self.config.set_pending_name(sfile.path, appid, old)
@@ -1254,6 +1281,10 @@ class MainWindow(QMainWindow):
             return False
         jobs = [(self.sfile.find(a), k, p) for a in appids for k, p in self.pending.for_game(a).items()]
         jobs = [j for j in jobs if j[0] is not None]
+        for a in appids:
+            sc = self.sfile.find(a)
+            if sc is not None:
+                self._auto_rename(sc)
         renames = [(self.sfile.find(a), self.pending.name(a)) for a in appids if self.pending.name(a)]
         renames = [r for r in renames if r[0] is not None]
         if not jobs and not renames:
@@ -1298,7 +1329,13 @@ class MainWindow(QMainWindow):
             ready = [j for j in jobs if id(j[2]) not in failures]  # failed picks stay waiting
             running = self.steam_is_running()
             written, write_errors = self._write(ready, running, grid_dir, sfile)
-            renamed, rename_errors = self._rename(renames, running, sfile)
+            # Writing a game's artwork settles its match, so its proper name can come along now too.
+            later = []
+            for a in appids:
+                sc = sfile.find(a)
+                if sc is not None and (self._auto_rename(sc) or self.pending.name(a)):
+                    later.append((sc, self.pending.name(a)))
+            renamed, rename_errors = self._rename(later, running, sfile)
             errors += write_errors + rename_errors
             self._set_busy("")
             if restart and closed:
@@ -1450,12 +1487,14 @@ class MainWindow(QMainWindow):
             return
         jobs = [(sc, self._unstaged_missing(sc), self.match_info(sc), single) for sc in shortcuts]
         skipped = sum(1 for j in jobs if j[1] and self.status.get(j[0].appid) == "notfound" and not single)
-        jobs = [j for j in jobs if j[1] and (single or self.status.get(j[0].appid) != "notfound")]
+        jobs = [j for j in jobs if j[1] and (single or self.status.get(j[0].appid) != "notfound")
+                or self.rename_due(j[0])]  # nothing missing, but a title like "game.exe" to fix
         if not jobs:
             self.toast.show_message("Nothing to fill in." if not skipped else
                                     f"Nothing to fill in: {plural(skipped, 'game')} not found on SteamGridDB.")
             return
         total = len(jobs)
+        renamed = []  # games given their SteamGridDB name along the way
         self._stop_fill = False
         self._set_busy("fetch", f"Getting artwork  1 of {plural(total, 'game')}")
 
@@ -1471,6 +1510,8 @@ class MainWindow(QMainWindow):
                 self.status.pop(sc.appid, None)
                 if not saved:
                     self._record_match(sc, game, n, commit=single)
+                if self._auto_rename(sc):
+                    renamed.append(sc)
                 if self.current_shortcut() is sc:
                     self.page.update_match()
                 self.refresh_soon()
@@ -1494,10 +1535,15 @@ class MainWindow(QMainWindow):
                 n = len(self.pending.for_game(sc.appid))
                 msg = (f"Found {plural(n, 'piece')} of artwork for {sc.name}, ready to apply." if n
                        else f"SteamGridDB has nothing new for {sc.name} yet.")
+                if renamed:
+                    msg += f" It will be renamed {self.pending.name(sc.appid)}."
                 self.toast.show_message(msg)
                 if not report["errors"]:
                     return
             parts = [f"Found artwork for {plural(report['found'], 'game')}, ready to apply."]
+            if renamed:
+                parts.append(f"{plural(len(renamed), 'game')} will get {'its' if len(renamed) == 1 else 'their'} "
+                             "proper name.")
             if report.get("stopped"):
                 parts.insert(0, "Stopped.")
             if report["unsure"]:

@@ -772,3 +772,38 @@ def test_rename_waits_for_steam_to_close(qapp, window, steam_state):
     win.update_steam_state()
     assert ShortcutsFile(win.user.shortcuts_path).find(sc.appid).name == "Hollow Knight"
     assert not win.pending_names()
+
+
+def test_get_artwork_and_apply_rename_by_default(qapp, window, steam_state):
+    from conftest import SAMPLE_ENTRIES, make_entry, make_shortcuts
+
+    from steam_artwork_finder.sgdb import Game
+    from steam_artwork_finder.shortcuts import ShortcutsFile
+
+    win = window
+    entries = [make_entry(*e) for e in SAMPLE_ENTRIES] + [
+        make_entry(-123456, "game.exe", '"/home/deck/Games/Hollow Knight/game.exe"'),
+        make_entry(-654321, "Launcher", '"/home/deck/Games/Hades/Launcher.exe"')]
+    win.user.shortcuts_path.write_bytes(make_shortcuts(entries))
+    win.reload_shortcuts()
+    win.config.data["api_key"] = "x"
+    searched = []
+    win.sgdb.match = lambda name: searched.append(name) or (Game(len(searched), name, "2020"), 1)
+    win.sgdb.assets = lambda kind, gid, page=0: [_asset(gid * 10 + len(kind))]
+    win.sgdb.download = lambda url: PNG
+    hk, hades = (next(s for s in win.sfile.shortcuts if s.name == n) for n in ("game.exe", "Launcher"))
+    win.config.set_match(hades.appid, 77, "Hades", "2020")
+    win._set_keeps_name(hades.appid, True)  # the user said Keep Old Name for this one
+    _pump(qapp, 100)
+
+    win.fill_everything()
+    _pump(qapp, 5000, until=lambda: not win.busy)
+    assert "Hollow Knight" in searched  # looked up by its folder
+    assert win.pending.name(hk.appid) == "Hollow Knight"
+    assert win.pending.name(hades.appid) is None
+    win.apply_all()
+    _pump(qapp, 5000, until=lambda: not win.busy)
+    on_disk = ShortcutsFile(win.user.shortcuts_path)
+    assert on_disk.find(hk.appid).name == "Hollow Knight"
+    assert on_disk.find(hades.appid).name == "Launcher"  # kept, as asked
+    assert {s.name for s in on_disk.shortcuts} >= {"Celeste", "Hollow Knight™", "Pokémon émulé"}  # real titles stay
