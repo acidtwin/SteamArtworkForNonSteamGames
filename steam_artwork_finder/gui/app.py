@@ -548,10 +548,14 @@ class MainWindow(QMainWindow):
             parts.append(f"{len(before - after)} removed")
         self.show_note("done", "Game list reloaded · " + ", ".join(parts))
 
-    def show_note(self, kind: str, text: str):
-        """A status bar message for a few seconds, unless work is running."""
+    def show_note(self, kind: str, text: str, hold: int | None = 5000):
+        """A status bar message that fades out after `hold` ms (None: stays until the next
+        piece of work starts), unless work is running."""
         self._note = (kind, text)
-        self._note_timer.start()
+        if hold:
+            self._note_timer.start(hold)
+        else:
+            self._note_timer.stop()
         self._show_status()
 
     def _clear_note(self):
@@ -1429,7 +1433,20 @@ class MainWindow(QMainWindow):
                 parts.append(f"{len(report['errors'])} couldn't be downloaded.")
             if skipped:
                 parts.append(f"{skipped} skipped (not found before).")
-            self._summary_notice(" ".join(parts))
+            if report["errors"] or report["unsure"] or report["notfound"]:
+                return self._summary_notice(" ".join(parts))  # stays up, with a way to act on it
+            # Nothing to act on: a short line in the status bar, and the lit Apply button stays.
+            self.notice.hide()
+            found = report["found"]
+            line = [f"Found artwork for {plural(found, 'game')}, ready to apply" if found
+                    else "No new artwork found"]
+            if report.get("stopped"):
+                line.insert(0, "Stopped")
+            if report["gaps"]:
+                line.append(f"{plural(report['gaps'], 'piece')} had no options yet")
+            if skipped:
+                line.append(f"{skipped} skipped (not found before)")
+            self.show_note("done" if found else "info", " · ".join(line), hold=8000 if found else None)
 
         def failed(msg):
             self._set_busy("")
@@ -1467,6 +1484,9 @@ class MainWindow(QMainWindow):
 
     def _set_busy(self, busy: str, text: str = ""):
         self.busy = busy
+        if busy:
+            self._note = None  # the last run's result is old news once new work starts
+            self._note_timer.stop()
         self.progress_text = text
         self.statusbar.set_stoppable(busy == "fetch")
         # Only what would change the account or the game list mid-run; the app mark stays as it is.

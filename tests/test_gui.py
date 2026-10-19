@@ -165,6 +165,31 @@ def test_status_bar_shows_matching_and_reloads(qapp, window, monkeypatch):
     assert win.statusbar.message.text() == "" and not win.statusbar._msg_fx.isEnabled()
 
 
+def test_get_artwork_result_goes_to_the_status_bar(qapp, window, monkeypatch):
+    win = window
+    win.config.data["api_key"] = "x"
+    report = {"found": 2, "notfound": [], "gaps": 4, "errors": [], "unsure": 0, "stopped": False}
+    monkeypatch.setattr(win, "_fetch_missing", lambda jobs, progress: dict(report))
+    win.fill_everything()
+    _pump(qapp, 3000, until=lambda: not win.busy)
+    assert win.notice.isHidden()  # no banner when there's nothing to act on
+    assert win.statusbar.message.accessibleName() == \
+        "Found artwork for 2 games, ready to apply · 4 pieces had no options yet"
+    assert win._note_timer.interval() == 8000
+
+    report.update(found=0, gaps=0)
+    win.fill_everything()
+    assert win._note is None  # new work clears the old result
+    _pump(qapp, 3000, until=lambda: not win.busy)
+    assert win.statusbar.message.accessibleName() == "No new artwork found"
+    assert not win._note_timer.isActive()  # stays until the next piece of work
+
+    report.update(notfound=["Celeste"])
+    win.fill_everything()
+    _pump(qapp, 3000, until=lambda: not win.busy)
+    assert not win.notice.isHidden()  # something to act on keeps the banner
+
+
 def test_game_menu_opens_the_game(qapp, window):
     from PySide6.QtCore import QPoint
 
