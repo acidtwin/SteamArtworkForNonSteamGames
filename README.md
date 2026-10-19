@@ -2,6 +2,8 @@
 
 A small desktop app that gives your **non-Steam games** proper artwork in Steam. It finds Steam on its own, lists every non-Steam shortcut you've added, and pulls all five artwork types from [SteamGridDB](https://www.steamgriddb.com) in one click. You can then swap any piece you don't like from a visual picker.
 
+I made it because the two tools most people use for this on Linux felt clunky and hard to figure out. This one aims to be simpler and nicer to look at.
+
 Linux first, including Steam Deck desktop mode: the window fits the Deck's 1280×800 screen and the buttons are sized for touch. Windows support is built in but not yet packaged or tested on real hardware.
 
 ![Start page](docs/screenshot.png)
@@ -123,7 +125,7 @@ Arrow keys move through the game list, Tab reaches every piece and option, Enter
 
 ## Credits
 
-Designed, directed and tested by Acid Design. Built with the help of [Claude Code](https://claude.com/claude-code), which wrote the code to that direction.
+Made by Acid Design, who owns the project, designed it, directed the build and tested it. Built with the help of [Claude Code](https://claude.com/claude-code), which wrote the code to that direction.
 
 Artwork comes from [SteamGridDB](https://www.steamgriddb.com) and its community of artists. This project isn't affiliated with Valve or SteamGridDB.
 
