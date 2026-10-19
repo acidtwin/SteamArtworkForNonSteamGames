@@ -6,7 +6,6 @@ import time
 from pathlib import Path
 
 from PySide6.QtCore import QElapsedTimer, QEvent, QObject, Qt, QTimer
-from PySide6.QtGui import QInputDevice
 from PySide6.QtWidgets import QAbstractScrollArea, QApplication, QScrollBar
 
 
@@ -107,12 +106,12 @@ class _Glide(QObject):
 
 
 def from_touchpad(e) -> bool:
-    """Touchpads already scroll smoothly: they send gesture phases, or say what they are.
-    Mouse wheels can carry a pixel delta too (KDE on Wayland does), so that alone isn't enough."""
-    if e.phase() != Qt.ScrollPhase.NoScrollPhase:
-        return True
-    dev = e.device()
-    return dev is not None and dev.type() == QInputDevice.DeviceType.TouchPad
+    """Touchpads already scroll smoothly and send gesture phases while the fingers move.
+
+    The device type can't be trusted: on KDE's Wayland session Qt reports an ordinary
+    mouse wheel as a device named "touchpad" (each click arrives as angle 120, pixels 15,
+    with no phase), and a pixel delta alone doesn't tell them apart either."""
+    return e.phase() != Qt.ScrollPhase.NoScrollPhase
 
 
 class SmoothScroll(QObject):

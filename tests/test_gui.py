@@ -324,10 +324,9 @@ def test_wheel_scrolling_glides(qapp):
         area.show()
         bar = area.verticalScrollBar()
 
-        def wheel(dy, pixels=0):
+        def wheel(dy, pixels=0, phase=Qt.ScrollPhase.NoScrollPhase):
             ev = QWheelEvent(QPointF(50, 50), QPointF(area.viewport().mapToGlobal(QPoint(50, 50))), QPoint(0, pixels),
-                             QPoint(0, dy), Qt.MouseButton.NoButton, Qt.KeyboardModifier.NoModifier,
-                             Qt.ScrollPhase.NoScrollPhase, False)
+                             QPoint(0, dy), Qt.MouseButton.NoButton, Qt.KeyboardModifier.NoModifier, phase, False)
             QApplication.sendEvent(area.viewport(), ev)
 
         wheel(-120)
@@ -345,6 +344,9 @@ def test_wheel_scrolling_glides(qapp):
         assert 3 * step < bar.value() < 4 * step
         _pump(qapp, 800)
         assert bar.value() == 4 * step
+        before = bar.value()
+        wheel(-120, pixels=-40, phase=Qt.ScrollPhase.ScrollUpdate)  # a touchpad gesture: left to Qt, no glide
+        assert bar.findChild(smooth._Glide).running() is False and bar.value() != before
         area.close()
     finally:
         qapp.removeEventFilter(f)
