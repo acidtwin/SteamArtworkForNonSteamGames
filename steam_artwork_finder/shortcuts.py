@@ -45,19 +45,39 @@ class Shortcut:
         self.icon = path
 
 
+class ShortcutsChanged(Exception):
+    """The file on disk changed since it was loaded (Steam rewrote it)."""
+
+
 class ShortcutsFile:
     def __init__(self, path: Path):
         self.path = Path(path)
         self.root = binvdf.VDFMap()
         self.shortcuts: list[Shortcut] = []
         self._backed_up = False
+        self._stamp = None
         if self.path.exists():
             self.reload()
+
+    def _disk_stamp(self):
+        try:
+            st = self.path.stat()
+        except OSError:
+            return None
+        return (st.st_mtime_ns, st.st_size)
 
     def reload(self):
         self.root = binvdf.loads(self.path.read_bytes())
         self.shortcuts = self._extract()
         self._backed_up = False
+        self._stamp = self._disk_stamp()
+
+    def changed_on_disk(self) -> bool:
+        """True if Steam or another tool rewrote the file since it was loaded."""
+        return self._disk_stamp() != self._stamp
+
+    def find(self, appid: int) -> Shortcut | None:
+        return next((s for s in self.shortcuts if s.appid == appid), None)
 
     def _extract(self) -> list[Shortcut]:
         container = None
@@ -118,12 +138,19 @@ class ShortcutsFile:
         binvdf.loads(backup.read_bytes())  # refuse a broken backup
         self.backup()
         tmp = self.path.with_name(".shortcuts-restore")
-        shutil.copy2(backup, tmp)
+        shutil.copyfile(backup, tmp)
         os.replace(tmp, self.path)
         self.reload()
 
     def save(self):
-        """Back up, write atomically, then re-read to prove the file is sound."""
+        """Back up, write atomically, then re-read to prove the file is sound.
+
+        Raises ShortcutsChanged, writing nothing, if the file on disk is no
+        longer the one that was loaded: the caller must reload and redo its
+        change on the fresh list rather than overwrite Steam's newer copy.
+        """
+        if self.changed_on_disk():
+            raise ShortcutsChanged("Steam's shortcut list changed on disk since it was loaded")
         if not self._backed_up:
             self.backup()
             self._backed_up = True
@@ -145,6 +172,7 @@ class ShortcutsFile:
             raise
         if self.path.read_bytes() != data:
             raise OSError("shortcuts.vdf did not read back as written")
+        self._stamp = self._disk_stamp()
 
 
 def _shortcut_maps(root) -> list:

@@ -5,8 +5,8 @@ from __future__ import annotations
 import sys
 from pathlib import Path
 
-from PySide6.QtCore import QTimer, QUrl, Qt
-from PySide6.QtGui import QAction, QDesktopServices, QIcon, QPixmap
+from PySide6.QtCore import QSize, QTimer, QUrl, Qt
+from PySide6.QtGui import QAction, QDesktopServices, QKeySequence, QPixmap
 from PySide6.QtWidgets import (
     QApplication,
     QComboBox,
@@ -27,28 +27,28 @@ from PySide6.QtWidgets import (
 )
 
 from .. import APP_NAME, __version__
-from ..artwork import SLOTS, Slot, current_icon, existing, remove_asset, save_asset, undo
+from .. import artwork
+from ..artwork import SLOTS, Slot, current_icon, existing, prune_replaced, remove_asset, save_asset, undo
 from ..config import Config
 from ..sgdb import Asset, AuthError, Game, SteamGridDB, clean_name
-from ..shortcuts import Shortcut, ShortcutsFile
+from ..shortcuts import Shortcut, ShortcutsChanged, ShortcutsFile
 from ..steam import SteamUser, find_steam_roots, list_users, steam_running
-from . import theme, workers
+from . import icons, theme, workers
 from .dialogs import ApiKeyDialog, MatchDialog, RestoreDialog
 from .gamepage import GamePage
 from .library import GameList, StartPage
 from .tray import ROLE_PIX, OptionTray
-from .widgets import ArtView, Notice, Toast, label, load_pixmap
+from .widgets import ArtView, IconLabel, Notice, Toast, label, load_pixmap
 
 ORDER = ("grid", "wide", "hero", "logo", "icon")
-APP_ICON = Path(__file__).with_name("icons") / "app.svg"
 
 
 class MainWindow(QMainWindow):
     def __init__(self):
         super().__init__()
         self.setWindowTitle(APP_NAME)
-        self.setWindowIcon(QIcon(str(APP_ICON)))
-        self.resize(1280, 800)  # Steam Deck screen
+        self.setWindowIcon(icons.app_icon())
+        self.resize(1280, 800)  # Steam Deck screen; main() maximises on screens that small
         self.home = Path.home()
         self.config = Config()
         self.sgdb = SteamGridDB(self.config.api_key)
@@ -56,7 +56,9 @@ class MainWindow(QMainWindow):
         self.user: SteamUser | None = None
         self.sfile: ShortcutsFile | None = None
         self.status: dict[int, str] = {}  # appid -> "notfound" | "check" | "getting"
+        self.guesses: dict[int, Game] = {}  # best guesses not yet confirmed by an action
         self.asset_cache: dict[tuple, list[Asset]] = {}
+        self.last_errors: list[str] = []
         self.current = -1
         self.busy = False
         self.cancel_fetch = False
@@ -113,6 +115,13 @@ class MainWindow(QMainWindow):
         self.toast = Toast(central)
         self.steam_timer = QTimer(self, interval=5000, timeout=self.update_notice)
         self.steam_timer.start()
+        for keys, fn in ((QKeySequence.StandardKey.Find, lambda: self.game_list.search.setFocus()),
+                         (QKeySequence.StandardKey.Undo, self.toast.undo_now),
+                         (QKeySequence.StandardKey.Refresh, self.reload_shortcuts)):
+            act = QAction(self)
+            act.setShortcut(keys)
+            act.triggered.connect(fn)
+            self.addAction(act)
         self.detect_steam()
 
     # ---- layout pieces ----------------------------------------------------
@@ -124,8 +133,7 @@ class MainWindow(QMainWindow):
         lay = QHBoxLayout(bar)
         lay.setContentsMargins(24, 10, 16, 10)
         lay.setSpacing(14)
-        mark = QLabel()
-        mark.setPixmap(QIcon(str(APP_ICON)).pixmap(32, 32))
+        mark = IconLabel("app", 32)
         lay.addWidget(mark)
         lay.addWidget(label(APP_NAME, "appname"))
         lay.addSpacing(10)
@@ -138,7 +146,12 @@ class MainWindow(QMainWindow):
         self.summary.setTextFormat(Qt.TextFormat.RichText)
         lay.addWidget(self.summary, 3)
         lay.addStretch(1)
-        self.done_note = label("✓  Every game has all its artwork", "muted")
+        self.done_note = QWidget()
+        dn = QHBoxLayout(self.done_note)
+        dn.setContentsMargins(0, 0, 0, 0)
+        dn.setSpacing(8)
+        dn.addWidget(IconLabel("check", 18, theme.C["blue_ink"]))
+        dn.addWidget(label("Every game has all its artwork", "muted"), 1)
         lay.addWidget(self.done_note, 2)
         self.progress_label = label("", "muted")
         self.progress_label.setAlignment(Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter)
@@ -151,8 +164,10 @@ class MainWindow(QMainWindow):
         self.fill_btn.clicked.connect(self.fill_everything)
         lay.addWidget(self.fill_btn)
         more = QToolButton()
-        more.setText("⋯")
+        more.setIcon(icons.icon("more", 22, theme.C["text"]))
+        more.setIconSize(QSize(22, 22))
         more.setToolTip("More")
+        more.setAccessibleName("More actions")
         more.setPopupMode(QToolButton.ToolButtonPopupMode.InstantPopup)
         menu = QMenu(more)
         for text, fn in (
@@ -171,10 +186,11 @@ class MainWindow(QMainWindow):
                 menu.addAction(QAction(text, menu, triggered=fn))
         more.setMenu(menu)
         lay.addWidget(more)
-        for w in (self.summary, self.done_note, self.progress_label):
+        for w in (self.summary, self.progress_label):
             # Let these shrink rather than force the window wider than the Deck's screen.
             w.setSizePolicy(QSizePolicy.Policy.Ignored, QSizePolicy.Policy.Preferred)
             w.setMinimumWidth(60)
+        self.done_note.setSizePolicy(QSizePolicy.Policy.Ignored, QSizePolicy.Policy.Preferred)
         self.summary.setMinimumWidth(120)
         for w in (self.done_note, self.progress_label, self.cancel_btn, self.fill_btn, self.account, self.account_label):
             w.hide()
@@ -228,10 +244,24 @@ class MainWindow(QMainWindow):
             return self.sfile.shortcuts[self.current]
         return None
 
+    def match_info(self, sc: Shortcut) -> dict | None:
+        """The saved match, or the unconfirmed best guess, as {id, name, year}."""
+        m = self.config.get_match(sc.appid)
+        if m:
+            return m
+        g = self.guesses.get(sc.appid)
+        return {"id": g.id, "name": g.name, "year": g.year} if g else None
+
     def current_game(self) -> Game | None:
         sc = self.current_shortcut()
-        m = self.config.get_match(sc.appid) if sc else None
-        return Game(m["id"], m["name"]) if m else None
+        m = self.match_info(sc) if sc else None
+        return Game(m["id"], m["name"], m.get("year", "")) if m else None
+
+    def commit_match(self, sc: Shortcut):
+        """Make a best guess permanent (the user acted on it)."""
+        g = self.guesses.pop(sc.appid, None)
+        if g and not self.config.get_match(sc.appid):
+            self.config.set_match(sc.appid, g.id, g.name, g.year)
 
     def load_thumb(self, asset: Asset, target):
         def done(data):
@@ -276,6 +306,9 @@ class MainWindow(QMainWindow):
         self.account.setVisible(many)
         self.account_label.setVisible(len(self.users) == 1)
         if not self.users:
+            self.user = None
+            self.sfile = None
+            self.current = -1
             self.pages.setCurrentIndex(0)
             self.update_header()
             return
@@ -319,6 +352,40 @@ class MainWindow(QMainWindow):
         self.game_list.rebuild()
         self.start.rebuild()
         self.update_header()
+        workers.run(prune_replaced, self.user.grid_dir)
+        self.apply_pending_icons()
+
+    def _after_reload(self, appid: int):
+        """The shortcut list was re-read from disk mid-change: rebuild what indexes into it."""
+        self.current = next((i for i, s in enumerate(self.sfile.shortcuts) if s.appid == appid), -1)
+        self.game_list.rebuild()
+        self.start.rebuild()
+        self.toast.show_message("Steam had changed the game list; it was re-read and your change kept.")
+
+    # ---- icons while Steam is running ---------------------------------------
+
+    def steam_is_running(self) -> bool:
+        return bool(self.user and steam_running(self.user.userdata.parent.parent))
+
+    def apply_pending_icons(self):
+        """Link icons that were saved while Steam was running, now that it has closed."""
+        pending = dict(self.config.pending_icons)
+        if not pending or not self.sfile or self.steam_is_running():
+            return
+        linked = 0
+        for key, path in pending.items():
+            sc = self.sfile.find(int(key))
+            if sc is not None:
+                try:
+                    artwork.set_icon(self.sfile, sc, path)
+                    linked += 1
+                except Exception as e:
+                    self.toast.show_message(f"Couldn't link the icon for {sc.name}: {e}")
+                    continue
+            self.config.set_pending_icon(int(key), None)
+        if linked:
+            self.refresh_all()
+            self.toast.show_message(f"{linked} icon{'s' if linked != 1 else ''} linked now that Steam has closed.")
 
     def update_header(self):
         if not self.sfile or not self.sfile.shortcuts:
@@ -335,15 +402,18 @@ class MainWindow(QMainWindow):
         self.done_note.setVisible(need == 0)
 
     def update_notice(self):
+        running = self.steam_is_running()
+        if not running:
+            self.apply_pending_icons()
         if self.notice_kind == "summary":
             return
-        if self.user and steam_running(self.user.userdata.parent.parent):
-            if self.notice_kind != "steam":
+        if running:
+            n = len(self.config.pending_icons)
+            text = ("Steam is running. New artwork shows up after Steam restarts. Icons are saved now "
+                    "and linked to their games when Steam closes" + (f" ({n} waiting)." if n else "."))
+            if self.notice_kind != "steam" or self.notice.text.text() != text:
                 self.notice_kind = "steam"
-                self.notice.show_message(
-                    "warn",
-                    "Steam is running. New artwork shows up after Steam restarts. To change icons, "
-                    "quit Steam first, or Steam may undo the change when it closes.")
+                self.notice.show_message("warn", text)
         elif self.notice_kind == "steam":
             self.notice_kind = None
             self.notice.hide()
@@ -357,6 +427,9 @@ class MainWindow(QMainWindow):
             self.update_notice()
 
         actions = [("Dismiss", dismiss)]
+        if self.last_errors:
+            actions.insert(0, ("Show details", lambda: QMessageBox.information(
+                self, APP_NAME, "These couldn't be downloaded:\n\n" + "\n".join(self.last_errors[:40]))))
         if any(v in ("notfound", "check") for v in self.status.values()):
             actions.insert(0, ("Show games to check", lambda: (self.game_list.filter_buttons["check"].click())))
         self.notice.show_message("info", text, actions)
@@ -395,7 +468,7 @@ class MainWindow(QMainWindow):
         if not sc:
             return
         if not self.config.api_key:
-            self.page.set_all_messages("Add your free SteamGridDB API key (⋯ menu) to see artwork options.")
+            self.page.show_key_prompt()
             return
         game = self.current_game()
         if game:
@@ -417,13 +490,19 @@ class MainWindow(QMainWindow):
         workers.run(self.sgdb.best_match, sc.name, on_done=matched,
                     on_error=lambda m: (self.page.set_all_messages(m), self._key_problem(m)))
 
-    def _record_match(self, sc: Shortcut, game: Game | None):
+    def _record_match(self, sc: Shortcut, game: Game | None, commit: bool = False):
+        """Remember what SteamGridDB matched. Exact matches are saved; a best guess is
+        kept in memory and tagged "Check match" until the user acts on it (or `commit`)."""
         if game is None:
             self.status[sc.appid] = "notfound"
             return
-        if not self.config.get_match(sc.appid):
-            self.config.set_match(sc.appid, game.id, game.name)
         exact = clean_name(game.name).casefold() == clean_name(sc.name).casefold()
+        if self.config.get_match(sc.appid):
+            pass
+        elif exact or commit:
+            self.config.set_match(sc.appid, game.id, game.name, game.year)
+        else:
+            self.guesses[sc.appid] = game
         if exact:
             self.status.pop(sc.appid, None)
         else:
@@ -470,7 +549,10 @@ class MainWindow(QMainWindow):
 
     def apply_option(self, slot: Slot, asset: Asset):
         sc = self.current_shortcut()
-        if not sc or self.busy:
+        if not sc:
+            return
+        if self.busy:
+            self.toast.show_message("Wait for the current download to finish, or cancel it.")
             return
         self.toast.show_message(f"Saving {slot.label.lower()}…", ms=20000)
 
@@ -482,12 +564,21 @@ class MainWindow(QMainWindow):
 
     def _save(self, sc: Shortcut, slot: Slot, data: bytes, asset: Asset, toast: bool):
         before = self.config.get_applied(sc.appid, slot.key)
+        # Steam rewrites shortcuts.vdf when it exits, so while it runs the icon file is
+        # saved but the link into the list waits (see apply_pending_icons).
+        defer = slot.key == "icon" and self.steam_is_running()
         try:
-            change = save_asset(self.user.grid_dir, sc, slot, data, asset.mime, self.sfile)
+            change = save_asset(self.user.grid_dir, sc, slot, data, asset.mime, None if defer else self.sfile)
         except Exception as e:
             self.toast.show_message(f"Couldn't save the {slot.label.lower()}: {e}")
             return
+        if defer:
+            self.config.set_pending_icon(sc.appid, str(change.new_file))
+            self.update_notice()
+        self.commit_match(sc)
         self.config.set_applied(sc.appid, slot.key, {"id": asset.id, "author": asset.author})
+        if change.reloaded:
+            self._after_reload(sc.appid)
         self.refresh_all()
         if toast:
             def revert():
@@ -496,28 +587,49 @@ class MainWindow(QMainWindow):
                 except Exception as e:
                     self.toast.show_message(f"Couldn't undo: {e}")
                     return
+                if defer:
+                    self.config.set_pending_icon(sc.appid, None)
+                    self.update_notice()
                 self.config.set_applied(sc.appid, slot.key, before)
+                if change.reloaded:
+                    self._after_reload(sc.appid)
                 self.refresh_all()
                 self.toast.show_message(f"{slot.label} put back.")
 
-            self.toast.show_message(f"{slot.label} updated for {sc.name}.", undo=revert)
+            note = " It links to the game when Steam closes." if defer else ""
+            self.toast.show_message(f"{slot.label} updated for {sc.name}.{note}", undo=revert)
 
     def remove_art(self, slot: Slot):
         sc = self.current_shortcut()
         if not sc:
             return
         before = self.config.get_applied(sc.appid, slot.key)
+        defer = slot.key == "icon" and self.steam_is_running()
         try:
-            change = remove_asset(self.user.grid_dir, sc, slot, self.sfile)
+            change = remove_asset(self.user.grid_dir, sc, slot, None if defer else self.sfile)
         except Exception as e:
             self.toast.show_message(f"Couldn't remove it: {e}")
             return
+        if defer:
+            self.config.set_pending_icon(sc.appid, "")
+            self.update_notice()
         self.config.set_applied(sc.appid, slot.key, None)
+        if change.reloaded:
+            self._after_reload(sc.appid)
         self.refresh_all()
 
         def revert():
-            undo(change, self.sfile)
+            try:
+                undo(change, self.sfile)
+            except Exception as e:
+                self.toast.show_message(f"Couldn't undo: {e}")
+                return
+            if defer:
+                self.config.set_pending_icon(sc.appid, None)
+                self.update_notice()
             self.config.set_applied(sc.appid, slot.key, before)
+            if change.reloaded:
+                self._after_reload(sc.appid)
             self.refresh_all()
 
         self.toast.show_message(f"{slot.label} removed.", undo=revert)
@@ -549,7 +661,8 @@ class MainWindow(QMainWindow):
         dlg = MatchDialog(self, self.sgdb, sc.name)
         if dlg.exec() and dlg.selected():
             g = dlg.selected()
-            self.config.set_match(sc.appid, g.id, g.name)
+            self.config.set_match(sc.appid, g.id, g.name, g.year)
+            self.guesses.pop(sc.appid, None)
             self.status.pop(sc.appid, None)
             self.page.update_match()
             self.load_options()
@@ -602,11 +715,14 @@ class MainWindow(QMainWindow):
     def _run_fill(self, shortcuts: list[Shortcut]):
         if self.busy or not self.ensure_key():
             return
-        jobs = [(sc, self._missing_slots(sc), self.config.get_match(sc.appid)) for sc in shortcuts]
+        jobs = [(sc, self._missing_slots(sc), self.match_info(sc)) for sc in shortcuts]
+        skipped = sum(1 for j in jobs if j[1] and self.status.get(j[0].appid) == "notfound")
         jobs = [j for j in jobs if j[1] and self.status.get(j[0].appid) != "notfound"]
         if not jobs:
-            self.toast.show_message("Nothing to fill in. Click any artwork to swap it.")
+            self.toast.show_message("Nothing to fill in. Click any artwork to swap it." if not skipped else
+                                    f"Nothing to fill in: {skipped} game{'s' if skipped != 1 else ''} not found on SteamGridDB.")
             return
+        self.sgdb.on_wait = lambda secs: self.progress_label.setText(f"SteamGridDB asked us to wait {int(secs)} s…")
         self._set_busy(True)
         total = len(jobs)
 
@@ -620,8 +736,10 @@ class MainWindow(QMainWindow):
             elif kind == "match":
                 _, sc, game, saved = ev
                 self.status.pop(sc.appid, None)
-                if not saved:
-                    self._record_match(sc, game)
+                if saved:
+                    self.commit_match(sc)
+                else:
+                    self._record_match(sc, game, commit=True)
                 if self.current_shortcut() is sc:
                     self.page.update_match()
                 self.game_list.refresh()
@@ -631,6 +749,7 @@ class MainWindow(QMainWindow):
 
         def done(report):
             self._set_busy(False)
+            self.last_errors = list(report["errors"])
             for sc, *_ in jobs:
                 if self.status.get(sc.appid) == "getting":
                     self.status.pop(sc.appid, None)
@@ -647,6 +766,11 @@ class MainWindow(QMainWindow):
                 parts.append(f"{report['gaps']} piece{'s' if report['gaps'] != 1 else ''} had no options yet.")
             if report["errors"]:
                 parts.append(f"{len(report['errors'])} couldn't be downloaded.")
+            if skipped:
+                parts.append(f"{skipped} skipped (not found before).")
+            pend = len(self.config.pending_icons)
+            if pend:
+                parts.append(f"{pend} icon{'s' if pend != 1 else ''} will be linked when Steam closes.")
             if self.cancel_fetch:
                 parts.insert(0, "Stopped.")
             parts.append("Restart Steam to see the new artwork.")
@@ -696,7 +820,7 @@ class MainWindow(QMainWindow):
             return
         dlg = RestoreDialog(self, self.sfile.backups())
         if dlg.exec() and dlg.selected():
-            if self.user and steam_running(self.user.userdata.parent.parent):
+            if self.steam_is_running():
                 if QMessageBox.question(
                         self, APP_NAME, "Steam is running and may overwrite the restored list when it "
                         "closes. Restore anyway?") != QMessageBox.StandardButton.Yes:
@@ -736,8 +860,14 @@ def main() -> int:
     app.setStyle("Fusion")
     app.setPalette(theme.palette())
     app.setStyleSheet(theme.stylesheet())
-    app.setWindowIcon(QIcon(str(APP_ICON)))
+    app.setWindowIcon(icons.app_icon())
     win = MainWindow()
-    win.show()
+    screen = app.primaryScreen().availableGeometry() if app.primaryScreen() else None
+    if screen is not None and (screen.width() <= 1280 or screen.height() <= 800):
+        win.showMaximized()  # Steam Deck: the whole work area, under the panel
+    else:
+        if screen is not None:
+            win.resize(min(1280, screen.width() - 80), min(800, screen.height() - 80))
+        win.show()
     win.game_list.list.setFocus()
     return app.exec()

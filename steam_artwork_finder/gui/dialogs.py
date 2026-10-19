@@ -4,7 +4,8 @@ from __future__ import annotations
 
 import time
 
-from PySide6.QtCore import Qt
+from PySide6.QtCore import QUrl, Qt
+from PySide6.QtGui import QDesktopServices
 from PySide6.QtWidgets import (
     QDialog,
     QDialogButtonBox,
@@ -33,20 +34,26 @@ class ApiKeyDialog(QDialog):
     def __init__(self, parent, current: str):
         super().__init__(parent)
         self.setWindowTitle("SteamGridDB API key")
+        self.setMinimumWidth(480)
         lay = QVBoxLayout(self)
+        lay.setSpacing(12)
         intro = QLabel(
-            "Artwork comes from SteamGridDB. Paste your free API key below.<br>"
-            f'You can get one at <a href="{API_KEY_URL}">steamgriddb.com</a> '
-            "(sign in, then Preferences → API)."
+            "Artwork comes from SteamGridDB, which needs a free personal API key. "
+            "Sign in there, open Preferences → API, copy the key and paste it here. "
+            "It stays on this computer."
         )
-        intro.setOpenExternalLinks(True)
         intro.setWordWrap(True)
         lay.addWidget(intro)
+        open_btn = QPushButton("Open the SteamGridDB API page")
+        open_btn.clicked.connect(lambda: QDesktopServices.openUrl(QUrl(API_KEY_URL)))
+        lay.addWidget(open_btn, 0, Qt.AlignmentFlag.AlignLeft)
         self.edit = QLineEdit(current)
-        self.edit.setPlaceholderText("API key")
+        self.edit.setPlaceholderText("Paste your API key")
+        self.edit.setAccessibleName("API key")
         self.edit.setEchoMode(QLineEdit.EchoMode.PasswordEchoOnEdit)
         lay.addWidget(self.edit)
         self.status = QLabel()
+        self.status.setWordWrap(True)
         lay.addWidget(self.status)
         bb = QDialogButtonBox(QDialogButtonBox.StandardButton.Save | QDialogButtonBox.StandardButton.Cancel)
         _confirm(bb, QDialogButtonBox.StandardButton.Save)
@@ -98,6 +105,8 @@ class MatchDialog(QDialog):
         row.addWidget(btn)
         lay.addLayout(row)
         self.list = QListWidget()
+        self.list.setProperty("plain", True)
+        self.list.setAccessibleName("Search results")
         self.list.itemDoubleClicked.connect(lambda *_: self.accept())
         lay.addWidget(self.list)
         self.status = QLabel()
@@ -118,7 +127,7 @@ class MatchDialog(QDialog):
     def _show(self, games: list[Game]):
         self.status.setText("" if games else "No matches. Try a shorter name.")
         for g in games:
-            label = g.name + (f" ({g.year})" if g.year else "") + ("  ✓" if g.verified else "")
+            label = g.name + (f" ({g.year})" if g.year else "") + ("  · verified" if g.verified else "")
             it = QListWidgetItem(label)
             it.setData(Qt.ItemDataRole.UserRole, g)
             self.list.addItem(it)
@@ -147,6 +156,8 @@ class RestoreDialog(QDialog):
         intro.setWordWrap(True)
         lay.addWidget(intro)
         self.list = QListWidget()
+        self.list.setProperty("plain", True)
+        self.list.setAccessibleName("Backups")
         for path, count in backups:
             when = time.strftime("%d %b %Y, %H:%M:%S", time.localtime(path.stat().st_mtime))
             games = "unreadable" if count < 0 else f"{count} game{'s' if count != 1 else ''}"

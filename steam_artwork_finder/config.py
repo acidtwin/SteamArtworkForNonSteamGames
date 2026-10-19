@@ -47,8 +47,20 @@ class Config:
     def get_match(self, appid: int) -> dict | None:
         return self.data.get("matches", {}).get(str(appid))
 
-    def set_match(self, appid: int, game_id: int, name: str):
-        self.data.setdefault("matches", {})[str(appid)] = {"id": game_id, "name": name}
+    def set_match(self, appid: int, game_id: int, name: str, year: str = ""):
+        self.data.setdefault("matches", {})[str(appid)] = {"id": game_id, "name": name, "year": year}
+        self.save()
+
+    @property
+    def pending_icons(self) -> dict:
+        """appid -> icon path (or "" to clear), waiting until Steam closes."""
+        return self.data.setdefault("pending_icons", {})
+
+    def set_pending_icon(self, appid: int, path: str | None):
+        if path is None:
+            self.pending_icons.pop(str(appid), None)
+        else:
+            self.pending_icons[str(appid)] = path
         self.save()
 
     def get_applied(self, appid: int, slot: str) -> dict | None:

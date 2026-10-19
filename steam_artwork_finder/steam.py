@@ -174,19 +174,37 @@ def steam_running(root: Path | None = None) -> bool:
                 return int(winreg.QueryValueEx(k, "pid")[0]) != 0
         except OSError:
             return False
-    pid_files = [Path.home() / ".steam/steam.pid"]
-    if root:
-        pid_files.append(root.parent / "steam.pid")
-        pid_files.append(Path.home() / ".var/app/com.valvesoftware.Steam/.steam/steam.pid")
+    pid_files = [Path.home() / ".steam/steam.pid",
+                 Path.home() / ".var/app/com.valvesoftware.Steam/.steam/steam.pid"]
     for pf in pid_files:
         try:
             pid = int(pf.read_text().strip())
         except (OSError, ValueError):
             continue
-        cmd = Path(f"/proc/{pid}/comm")
+        if _pid_is_steam(pid):
+            return True
+    return False
+
+
+def in_flatpak() -> bool:
+    return Path("/.flatpak-info").exists()
+
+
+def _pid_is_steam(pid: int) -> bool:
+    try:
+        return "steam" in Path(f"/proc/{pid}/comm").read_text().lower()
+    except OSError:
+        pass
+    if in_flatpak():
+        # Host processes are invisible inside the sandbox; ask the host if allowed.
+        import subprocess
+
         try:
-            if "steam" in cmd.read_text().lower():
-                return True
-        except OSError:
-            continue
+            r = subprocess.run(
+                ["flatpak-spawn", "--host", "cat", f"/proc/{pid}/comm"],
+                capture_output=True, text=True, timeout=3,
+            )
+            return r.returncode == 0 and "steam" in r.stdout.lower()
+        except (OSError, subprocess.SubprocessError):
+            return False
     return False

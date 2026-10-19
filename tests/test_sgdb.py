@@ -8,6 +8,7 @@ class FakeResp:
         self.status_code, self._body = status, body
         self.ok = 200 <= status < 300
         self.content = b"img"
+        self.headers = {}
 
     def json(self):
         return self._body
@@ -60,3 +61,53 @@ def test_bad_key():
 
 def test_clean_name():
     assert clean_name("  DOOM®  Eternal™ ") == "DOOM Eternal"
+
+
+def test_name_variants_strip_launcher_tags():
+    from steam_artwork_finder.sgdb import name_variants
+
+    assert name_variants("Cyberpunk 2077 - GOG") == ["Cyberpunk 2077 - GOG", "Cyberpunk 2077"]
+    assert name_variants("Zelda: TotK (Ryujinx) [1.2]") == ["Zelda: TotK (Ryujinx) [1.2]", "Zelda: TotK (Ryujinx)", "Zelda: TotK"]
+    assert name_variants("Hades") == ["Hades"]
+
+
+def test_best_match_falls_back_to_stripped_name():
+    class S(FakeSession):
+        def get(self, url, params=None, headers=None, timeout=None):
+            self.calls.append((url, params, headers))
+            if url.endswith("/Hades"):
+                return FakeResp(200, {"success": True, "data": [{"id": 5, "name": "Hades"}]})
+            return FakeResp(200, {"success": True, "data": []})
+
+    s = S({})
+    assert SteamGridDB("k", s).best_match("Hades (Heroic)").id == 5
+    assert len(s.calls) == 2
+
+
+def test_rate_limit_waits_then_retries():
+    class Limited(FakeSession):
+        n = 0
+
+        def get(self, url, params=None, headers=None, timeout=None):
+            self.n += 1
+            if self.n == 1:
+                r = FakeResp(429, {"success": False})
+                r.headers = {"Retry-After": "2"}
+                return r
+            return FakeResp(200, {"success": True, "data": [{"id": 1, "name": "x"}]})
+
+    waits = []
+    c = SteamGridDB("k", Limited({}))
+    c.sleep = waits.append
+    assert c.search("x")[0].id == 1
+    assert waits == [2.0]
+
+
+def test_sessions_are_per_thread():
+    import threading
+
+    c = SteamGridDB("k")
+    seen = []
+    t = threading.Thread(target=lambda: seen.append(c.http))
+    t.start(); t.join()
+    assert seen[0] is not c.http

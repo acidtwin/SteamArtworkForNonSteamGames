@@ -33,8 +33,8 @@ Sign in at [steamgriddb.com](https://www.steamgriddb.com), then go to **Preferen
 You need Python 3.10 or newer.
 
 ```bash
-git clone https://github.com/acidtwin/steam-artwork-finder.git
-cd steam-artwork-finder
+git clone https://github.com/acidtwin/steam-artwork-for-non-steam-games.git
+cd steam-artwork-for-non-steam-games
 python3 -m venv .venv
 source .venv/bin/activate        # Windows: .venv\Scripts\activate
 pip install .
@@ -63,7 +63,7 @@ install -Dm644 packaging/io.github.acidtwin.SteamArtworkForNonSteamGames.svg ~/.
 
 The ⋯ menu has your API key, **Restore a backup**, and a shortcut to the artwork folder.
 
-If Steam is running, the app shows a reminder. Cover, Wide cover, Banner and Logo images can be added while Steam is open. Icons are stored inside `shortcuts.vdf`, which Steam rewrites when it exits, so close Steam before changing icons.
+If Steam is running, the app shows a reminder. Cover, Wide cover, Banner and Logo images can be added while Steam is open. Icons are linked from inside `shortcuts.vdf`, which Steam rewrites when it exits, so while Steam is running the app saves the icon file and links it to the game as soon as Steam closes (or the next time the app starts).
 
 ## Where things are saved
 
@@ -82,10 +82,11 @@ The app's own settings (your API key and remembered game matches) live in `~/.co
 ## How it keeps your shortcuts safe
 
 - Before the first change in a session, `shortcuts.vdf` is copied to `config/shortcuts-backups/shortcuts-<date>-<time>.vdf`. The last 10 backups are kept.
+- If Steam rewrote `shortcuts.vdf` while the app was open (it does so every time it exits), the app notices before writing, re-reads the newer list and redoes only its own change on top of it. It never overwrites a list it hasn't read.
 - The new file is written to a temporary file, flushed to disk and then swapped into place, so a crash or power cut can't leave a half-written file.
 - Before writing, the app re-parses its own output and refuses to save if the number of shortcuts would change. After writing, it reads the file back to check it matches.
 - The binary VDF reader keeps every value's original type, so loading and saving an untouched file gives back exactly the same bytes. Unusual text encodings written by other tools are preserved too.
-- Artwork you replace isn't deleted. It's moved to `grid/.replaced/`.
+- Artwork you replace isn't deleted. It's moved to `grid/.replaced/` and kept for 30 days.
 
 To restore one, close Steam and use **⋯ → Restore a backup**. The list you had before is backed up too, so a restore can itself be undone.
 
@@ -108,11 +109,15 @@ The tests build synthetic `shortcuts.vdf` files, so they don't need Steam instal
 | `steam_artwork_finder/sgdb.py` | SteamGridDB API v2 client |
 | `steam_artwork_finder/artwork.py` | Artwork types, file names and saving |
 | `steam_artwork_finder/gui/` | The Qt (PySide6) window: `library.py` (game list, start page), `gamepage.py` (artwork rows), `tray.py` (See all), `theme.py` (colours from DESIGN.md) |
-| `packaging/` | Desktop entry for Linux |
+| `packaging/` | Desktop entry, icon and AppStream metainfo for Linux |
+
+## Keyboard
+
+Arrow keys move through the game list, Tab reaches every piece and option, Enter opens or applies, Esc closes the option tray. Ctrl+F jumps to the search box, Ctrl+Z undoes the last artwork change while its toast is showing, and F5 re-reads Steam's shortcut list.
 
 ## Roadmap
 
-- AppImage and Flatpak builds for Linux
+- AppImage and Flatpak builds for Linux (the Flatpak needs read/write access to `~/.local/share/Steam`, `~/.steam` and `~/.var/app/com.valvesoftware.Steam`, and `--talk-name=org.freedesktop.Flatpak` to tell whether Steam is running from inside the sandbox)
 - Windows build with PyInstaller, tested on a real install
 - Animated artwork option
 
