@@ -730,28 +730,25 @@ class MainWindow(QMainWindow):
     def show_game_menu(self, idx: int, pos: QPoint):
         if not self.sfile or not 0 <= idx < len(self.sfile.shortcuts):
             return
+        from .gamemenu import GameMenu, Item
+
         sc = self.sfile.shortcuts[idx]
-        menu = QMenu(self)
-        head = menu.addAction(sc.name or "(unnamed)")
-        head.setEnabled(False)
-        missing = bool(self._unstaged_missing(sc))
-        for text, fn, on in (
-            ("Get All Artwork", lambda: self._run_fill([sc], single=True), missing and not self.busy),
-            ("Refresh Artwork", lambda: self.refresh_options(sc), bool(self.match_info(sc))),
-            (f"Apply ({plural(self.pending.count(sc.appid), 'Change')})" if self.pending.count(sc.appid)
-             else "Apply", lambda: self.apply_games([sc.appid]), bool(self.pending.count(sc.appid)) and not self.busy),
-            (None, None, None),
-            ("Open Game Page", lambda: self.open_game(idx), True),
-            (None, None, None),
-            ("Remove All Artwork…", lambda: self.remove_all(sc), any(self.coverage(sc)) and not self.busy),
-        ):
-            if text is None:
-                menu.addSeparator()
-                continue
-            act = menu.addAction(text)
-            act.setEnabled(on)
-            act.triggered.connect(fn)
-        menu.exec(pos)
+        have = sum(self.coverage(sc))
+        n = self.pending.count(sc.appid)
+        menu = GameMenu(sc.name or "(unnamed)", "All 5 pieces" if have == 5 else f"{have} of 5 pieces",
+                        self.icon_pixmap(sc), [
+            Item("Get All Artwork", "download", lambda: self._run_fill([sc], single=True),
+                 bool(self._unstaged_missing(sc)) and not self.busy),
+            Item("Refresh Artwork", "refresh", lambda: self.refresh_options(sc), bool(self.match_info(sc))),
+            Item("Apply", "check", lambda: self.apply_games([sc.appid]), bool(n) and not self.busy, "go", n),
+            None,
+            Item("Open Game Page", "game-page", lambda: self.open_game(idx)),
+            None,
+            Item("Remove All Artwork…", "trash", lambda: self.remove_all(sc),
+                 any(self.coverage(sc)) and not self.busy, "bad"),
+        ], self)
+        self._game_menu = menu  # kept alive while it shows
+        menu.popup(pos)
 
     def refresh_options(self, sc: Shortcut):
         m = self.match_info(sc)

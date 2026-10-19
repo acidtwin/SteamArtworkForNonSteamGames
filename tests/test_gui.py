@@ -135,3 +135,16 @@ def test_games_are_matched_at_startup(qapp, window):
     _pump(qapp, 3000, until=lambda: not win._matching and len(win.guesses) == 3)
     assert set(win.status.values()) == {"check"}
     assert not win.config.get_match(win.sfile.shortcuts[0].appid)  # guesses wait for the user
+
+
+def test_game_menu_opens_the_game(qapp, window):
+    from PySide6.QtCore import QPoint
+
+    win = window
+    win.show_game_menu(2, QPoint(100, 100))
+    _pump(qapp, 200)
+    menu = win._game_menu
+    assert [r.text() for r in menu.rows][-2:] == ["Open Game Page", "Remove All Artwork…"]
+    next(r for r in menu.rows if r.text() == "Open Game Page").click()
+    _pump(qapp, 200)
+    assert win.stage.currentWidget() is win.page and win.current == 2
