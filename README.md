@@ -1,5 +1,7 @@
 # Steam Artwork for Non-Steam Games
 
+[![Tests](https://github.com/acidtwin/steam-artwork-for-non-steam-games/actions/workflows/tests.yml/badge.svg)](https://github.com/acidtwin/steam-artwork-for-non-steam-games/actions/workflows/tests.yml)
+
 A small desktop app that gives your **non-Steam games** proper artwork in Steam. It finds Steam on its own, lists every non-Steam shortcut you've added, and pulls all five artwork types from [SteamGridDB](https://www.steamgriddb.com) in one click. You can then swap any piece you don't like from a visual picker.
 
 Linux first, including Steam Deck desktop mode: the window fits the Deck's 1280×800 screen and the buttons are sized for touch. Windows support is built in but not yet packaged or tested on real hardware.
