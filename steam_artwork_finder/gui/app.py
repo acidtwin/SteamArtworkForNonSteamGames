@@ -681,14 +681,11 @@ class MainWindow(QMainWindow):
                                  if self.steam_root else "")
         games = self.sfile.shortcuts if self.sfile else []
         sc = self.current_shortcut()
-        if sc is not None and self.stage.currentWidget() is self.page:
-            self.cbar.show_game(sc.name or "(unnamed)")
-            n = self.pending.count(sc.appid)
-            self.cbar.set_buttons([
-                ("Get All Artwork", "ghost", bool(self._unstaged_missing(sc)) and not self.busy, self.fill_current),
-                (f"Apply ({plural(n, 'Change')})" if n else "Apply", "go", bool(n) and not self.busy,
-                 lambda: self.apply_games([sc.appid])),
-            ])
+        on_page = sc is not None and self.stage.currentWidget() is self.page
+        self.cbar.setVisible(not on_page)  # the game page's banner header has its own title and buttons
+        if on_page:
+            self.page.card.set_game(sc.name or "(unnamed)")
+            self.page.card.set_actions(bool(self._unstaged_missing(sc)), self.pending.count(sc.appid), bool(self.busy))
         else:
             self.cbar.show_library(len(games) if self.users else None)
             need = sum(1 for g in games if self._unstaged_missing(g) and self.status.get(g.appid) != "notfound")

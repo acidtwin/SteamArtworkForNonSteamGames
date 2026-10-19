@@ -1,4 +1,5 @@
-"""A game's page: the match card, then one labelled row per piece of artwork with its options beside it."""
+"""A game's page: a banner header (the game, its SteamGridDB match and its buttons), then one
+labelled row per piece of artwork with its options beside it."""
 
 from __future__ import annotations
 
@@ -9,6 +10,8 @@ from PySide6.QtCore import QEvent, QPointF, QRect, QRectF, QSize, Qt, Signal
 from PySide6.QtGui import QColor, QFont, QFontMetricsF, QLinearGradient, QPainter, QPainterPath, QPen, QPixmap
 from PySide6.QtWidgets import (
     QBoxLayout,
+    QGraphicsDropShadowEffect,
+    QLabel,
     QCheckBox,
     QFrame,
     QHBoxLayout,
@@ -557,9 +560,9 @@ class ArtworkRow(QWidget):
 class CoverThumb(QWidget):
     """The 40 × 60 cover on the match card: the first cover option, else a plain block."""
 
-    def __init__(self, parent=None):
+    def __init__(self, parent=None, size: QSize = QSize(40, 60)):
         super().__init__(parent)
-        self.setFixedSize(40, 60)
+        self.setFixedSize(size)
         self.pixmap: QPixmap | None = None
         self.glyph = ""  # an icon name drawn on the plain block, e.g. "key"
 
@@ -588,114 +591,205 @@ class CoverThumb(QWidget):
                 icons.draw(p, self.glyph, QRect((self.width() - 18) // 2, (self.height() - 18) // 2, 18, 18), q("text3"))
 
 
+BANNER_H = 210
+
+
 class MatchCard(QWidget):
-    """Which SteamGridDB game the artwork comes from, and the buttons to fix it."""
+    """The top of a game page, like a Steam game page: the game's banner fading into the page,
+    with its cover, its name in Steam, which SteamGridDB game the artwork comes from, and the
+    page's buttons (Get All Artwork, Apply)."""
 
     confirm = Signal()
     change = Signal()
     add_key = Signal()
+    home = Signal()
+    get_all = Signal()
+    apply = Signal()
 
     def __init__(self, parent=None):
         super().__init__(parent)
         self.state = "finding"
-        self.setAttribute(Qt.WidgetAttribute.WA_StyledBackground, False)
-        lay = QHBoxLayout(self)
-        lay.setContentsMargins(10, 10, 12, 10)
-        lay.setSpacing(14)
-        self.cover = CoverThumb()
-        lay.addWidget(self.cover, 0, Qt.AlignmentFlag.AlignVCenter)
+        self.banner: QPixmap | None = None
+        self.blurred = False
+        self._scaled: tuple | None = None
+        self.setFixedHeight(BANNER_H)
+        outer = QVBoxLayout(self)
+        outer.setContentsMargins(20, 10, 24, 16)
+        outer.setSpacing(0)
+        self.back = QPushButton("Library")
+        self.back.setObjectName("bannerback")
+        self.back.setIcon(icons.icon("back", 14, "white"))
+        self.back.setCursor(Qt.CursorShape.PointingHandCursor)
+        self.back.setToolTip("Back to all games")
+        self.back.setAccessibleName("Library: back to all games")
+        self.back.clicked.connect(self.home.emit)
+        outer.addWidget(self.back, 0, Qt.AlignmentFlag.AlignLeft)
+        outer.addStretch(1)
+
+        row = QHBoxLayout()
+        row.setSpacing(16)
+        self.cover = CoverThumb(size=QSize(72, 108))
+        shadow = QGraphicsDropShadowEffect(self, blurRadius=18, offset=QPointF(0, 6), color=QColor(0, 0, 0, 160))
+        self.cover.setGraphicsEffect(shadow)
+        row.addWidget(self.cover, 0, Qt.AlignmentFlag.AlignBottom)
         info = QVBoxLayout()
-        info.setSpacing(3)
-        info.setContentsMargins(0, 0, 0, 0)
-        self.kicker = label("")
+        info.setSpacing(4)
+        info.addStretch(1)
+        self.title = QLabel()
         f = QFont(self.font())
-        f.setPointSizeF(theme.pt("caption"))
+        f.setPointSizeF(theme.pt("title") * 0.95)
         f.setWeight(QFont.Weight.Bold)
-        f.setLetterSpacing(QFont.SpacingType.PercentageSpacing, 108)
-        self.kicker.setFont(f)
-        self.name = label("")
-        self.name.setTextFormat(Qt.TextFormat.RichText)
-        f = QFont(self.font())
-        f.setPointSizeF(theme.pt("heading") * 0.95)
-        f.setWeight(QFont.Weight.Bold)
-        self.name.setFont(f)
-        self.name.setTextInteractionFlags(Qt.TextInteractionFlag.TextSelectableByMouse)
-        self.meta = label("")
-        f = QFont(self.font())
-        f.setPointSizeF(theme.pt("faint"))
-        self.meta.setFont(f)
-        self.meta.setStyleSheet(f"color: {C['text3']};")
-        for w in (self.kicker, self.name, self.meta):
-            w.setSizePolicy(QSizePolicy.Policy.Ignored, QSizePolicy.Policy.Preferred)
-            info.addWidget(w)
-        lay.addLayout(info, 1)
+        self.title.setFont(f)
+        self.title.setStyleSheet("color: white; background: transparent;")
+        self.title.setTextInteractionFlags(Qt.TextInteractionFlag.TextSelectableByMouse)
+        self.title.setSizePolicy(QSizePolicy.Policy.Ignored, QSizePolicy.Policy.Preferred)
+        ts = QGraphicsDropShadowEffect(self, blurRadius=12, offset=QPointF(0, 2), color=QColor(0, 0, 0, 170))
+        self.title.setGraphicsEffect(ts)
+        info.addWidget(self.title)
+        sub = QHBoxLayout()
+        sub.setSpacing(2)
+        self.meta = QLabel()
+        self.meta.setTextFormat(Qt.TextFormat.RichText)
+        self.meta.setStyleSheet("background: transparent;")
+        sub.addWidget(self.meta)
+        self.change_btn = QPushButton("Change Game")
+        self.change_btn.setProperty("kind", "quiet")
+        self.change_btn.setObjectName("bannerlink")
+        self.change_btn.setCursor(Qt.CursorShape.PointingHandCursor)
+        self.change_btn.setAccessibleDescription("Search SteamGridDB for the right game")
+        self.change_btn.clicked.connect(self.change.emit)
+        sub.addWidget(self.change_btn)
+        sub.addStretch(1)
+        info.addLayout(sub)
+        row.addLayout(info, 1)
+
+        acts = QHBoxLayout()
+        acts.setSpacing(8)
         self.yes_btn = QPushButton("Yes, That's It")
         self.yes_btn.setProperty("kind", "confirm")
         self.yes_btn.setAccessibleDescription("Keep this SteamGridDB game as the match")
         self.yes_btn.clicked.connect(self.confirm.emit)
-        lay.addWidget(self.yes_btn, 0, Qt.AlignmentFlag.AlignVCenter)
-        self.change_btn = QPushButton("Change Game")
-        self.change_btn.setAccessibleDescription("Search SteamGridDB for the right game")
-        self.change_btn.clicked.connect(self.change.emit)
-        lay.addWidget(self.change_btn, 0, Qt.AlignmentFlag.AlignVCenter)
+        acts.addWidget(self.yes_btn)
         self.key_btn = QPushButton("Add API Key")
         self.key_btn.setProperty("kind", "confirm")
         self.key_btn.setAccessibleDescription("Add a free SteamGridDB API key")
         self.key_btn.clicked.connect(self.add_key.emit)
-        lay.addWidget(self.key_btn, 0, Qt.AlignmentFlag.AlignVCenter)
+        acts.addWidget(self.key_btn)
+        self.get_btn = QPushButton("Get All Artwork")
+        self.get_btn.setObjectName("bannerghost")
+        self.get_btn.setIcon(icons.icon("download", 15, C["text"]))
+        self.get_btn.clicked.connect(self.get_all.emit)
+        acts.addWidget(self.get_btn)
+        self.apply_btn = QPushButton("Apply")
+        self.apply_btn.setProperty("kind", "go")
+        self.apply_btn.clicked.connect(self.apply.emit)
+        acts.addWidget(self.apply_btn)
+        row.addLayout(acts)
+        row.setAlignment(acts, Qt.AlignmentFlag.AlignBottom)
+        outer.addLayout(row)
+        self.setStyleSheet(f"""
+            #bannerback {{ background: transparent; color: white; font-weight: 600; padding: 0 6px;
+                           min-height: 28px; text-align: left; }}
+            #bannerback:hover {{ background: rgba(0,0,0,.25); }}
+            #bannerghost {{ background: rgba(23,26,33,.72); color: {C['text']}; }}
+            #bannerghost:hover {{ background: rgba(61,76,94,.9); }}
+            #bannerghost:disabled {{ background: rgba(23,26,33,.5); color: {C['text3']}; }}
+            #bannerlink {{ min-height: 24px; padding: 0 4px; }}
+        """)
+
+    def set_game(self, name: str):
+        """The game's own name, as it shows in Steam."""
+        self.title.setText(name)
+        self.title.setAccessibleName(name)
+
+    def set_actions(self, can_get: bool, changes: int, busy: bool):
+        self.get_btn.setEnabled(can_get and not busy)
+        self.apply_btn.setText(f"Apply ({changes} Change{'' if changes == 1 else 's'})" if changes else "Apply")
+        self.apply_btn.setEnabled(bool(changes) and not busy)
+
+    def set_banner(self, pm: QPixmap | None, blurred: bool = False):
+        """The game's banner, or (blurred) its cover when it has no banner to show yet."""
+        if pm is self.banner and blurred == self.blurred:
+            return
+        self.banner, self.blurred, self._scaled = pm, blurred, None
+        self.update()
 
     def set_state(self, state: str, name: str, year: str = "", candidates: int = 0):
         """state: "exact", "check", "notfound", "finding" or "key" (no API key yet)."""
         self.state = state
-        kicker, colour, meta = {
-            "exact": ("ARTWORK FROM STEAMGRIDDB", C["text3"], "Artwork comes from this game on SteamGridDB."),
-            "check": ("CHECK THIS MATCH", WAIT,
-                      f"We found {candidates} games with a similar name and picked this one." if candidates > 1
-                      else "We picked the closest name we found."),
-            "notfound": ("NOT FOUND ON STEAMGRIDDB", C["bad"], "Search for it by another name."),
-            "finding": ("FINDING THIS GAME ON STEAMGRIDDB…", C["text3"], ""),
-            "key": ("STEAMGRIDDB API KEY NEEDED", C["blue_ink"], "Add a free key to find this game's artwork."),
+        yr = f"&nbsp;<span style='color:{C['text2']}'>{escape(str(year))}</span>" if year else ""
+        game = f"<b style='color:white'>{escape(name)}</b>{yr}"
+        text, colour = {
+            "exact": (f"Artwork from {game} on SteamGridDB&nbsp;·", C["text2"]),
+            "check": ((f"We picked {game} from {candidates} similar names. Is it right?" if candidates > 1
+                       else f"We picked {game}, the closest name we found. Is it right?") + "&nbsp;·", WAIT),
+            "notfound": ("Not found on SteamGridDB&nbsp;·", C["bad"]),
+            "finding": ("Finding this game on SteamGridDB…", C["text2"]),
+            "key": ("Add a free SteamGridDB API key to find this game's artwork.", C["blue_ink"]),
         }[state]
-        self.kicker.setText(kicker)
-        self.kicker.setStyleSheet(f"color: {colour};")
-        small = theme.pt("body")
-        yr = (f"&nbsp;&nbsp;<span style='color:{C['text3']}; font-weight:400; font-size:{small}pt'>"
-              f"{escape(str(year))}</span>") if year else ""
-        self.name.setText(f"{escape(name)}{yr}")
-        self.meta.setText(meta)
-        self.meta.setVisible(bool(meta))
+        self.meta.setText(f"<span style='color:{colour}'>{text}</span>")
         self.yes_btn.setVisible(state == "check")
-        self.change_btn.setVisible(state not in ("finding", "key"))
         self.key_btn.setVisible(state == "key")
+        self.change_btn.setVisible(state not in ("finding", "key"))
         self.change_btn.setText("Search by Another Name" if state == "notfound" else "Change Game")
-        self.setAccessibleName(f"{kicker.capitalize()}: {name}")
+        plain = {"exact": f"Artwork from {name} on SteamGridDB", "check": f"Check this match: {name}",
+                 "notfound": "Not found on SteamGridDB", "finding": "Finding this game on SteamGridDB",
+                 "key": "SteamGridDB API key needed"}[state]
+        self.setAccessibleName(plain)
         self.update()
+
+    def resizeEvent(self, e):
+        self._scaled = None
+        super().resizeEvent(e)
+
+    def _art(self) -> QPixmap | None:
+        if self.banner is None or self.banner.isNull():
+            return None
+        dpr = self.devicePixelRatioF()
+        key = (self.size(), dpr)
+        if self._scaled is None or self._scaled[0] != key:
+            if self.blurred:  # shrink then stretch: a cheap, soft blur
+                small = fill_rect(self.banner, QSize(48, max(1, round(48 * self.height() / max(1, self.width())))))
+                pm = small.scaled(self.size() * dpr, Qt.AspectRatioMode.IgnoreAspectRatio,
+                                  Qt.TransformationMode.SmoothTransformation)
+                pm.setDevicePixelRatio(dpr)
+            else:
+                pm = fill_rect(self.banner, self.size(), dpr)
+            self._scaled = (key, pm)
+        return self._scaled[1]
 
     def paintEvent(self, _):
         p = QPainter(self)
-        p.setRenderHint(QPainter.RenderHint.Antialiasing)
         r = QRectF(self.rect())
-        path = QPainterPath()
-        path.addRoundedRect(r, 4, 4)
-        p.fillPath(path, q("panel"))
-        # A match to check gets an amber edge, a missing API key a blue one.
-        edge = {"check": (QColor(WAIT), (227, 179, 65), "#4a4026"),
-                "key": (q("blue"), (26, 159, 255), "#24405c")}.get(self.state)
-        if edge:
-            g = QLinearGradient(r.topLeft(), QPointF(r.left() + r.width() / 2, r.top()))
-            g.setColorAt(0, QColor(*edge[1], 22))
-            g.setColorAt(1, QColor(*edge[1], 0))
-            p.fillPath(path, g)
-        p.setPen(QPen(QColor(edge[2]) if edge else q("line"), 1))
-        p.setBrush(Qt.BrushStyle.NoBrush)
-        p.drawRoundedRect(r.adjusted(0.5, 0.5, -0.5, -0.5), 4, 4)
-        if edge:
-            p.setClipPath(path)
-            p.fillRect(QRectF(0, 0, 3, r.height()), edge[0])
+        p.fillRect(r, q("ground"))
+        art = self._art()
+        if art is not None:
+            p.setOpacity(0.75 if self.blurred else 1.0)
+            p.drawPixmap(0, 0, art)
+            p.setOpacity(1.0)
+        else:
+            g = QLinearGradient(r.topLeft(), r.bottomRight())
+            g.setColorAt(0, QColor("#2a3f5a"))
+            g.setColorAt(1, q("ground"))
+            p.fillRect(r, g)
+        side = QLinearGradient(r.topLeft(), QPointF(r.width() * 0.65, 0))
+        side.setColorAt(0, QColor(0, 0, 0, 120))
+        side.setColorAt(1, QColor(0, 0, 0, 0))
+        p.fillRect(r, side)
+        stage = q("ground")  # the page behind the rows
+        fade = QLinearGradient(r.topLeft(), r.bottomLeft())
+        for at, alpha in ((0, 0), (0.35, 40), (0.7, 170), (1, 255)):
+            c = QColor(stage)
+            c.setAlpha(alpha)
+            fade.setColorAt(at, c)
+        p.fillRect(r, fade)
+        edge = {"check": QColor(WAIT), "key": q("blue"), "notfound": QColor(C["bad"])}.get(self.state)
+        if edge is not None:  # a thin coloured line along the top when something needs you
+            p.fillRect(QRectF(0, 0, r.width(), 3), edge)
 
 
 class GamePage(QWidget):
-    fill = Signal()  # kept for compatibility; the content bar has the buttons now
+    fill = Signal()  # kept for compatibility; the banner header has the buttons now
     change_match = Signal()
     confirm_match = Signal()
 
@@ -711,17 +805,23 @@ class GamePage(QWidget):
         outer.addWidget(self.scroll)
         body = QWidget()
         self.scroll.setWidget(body)
-        lay = QVBoxLayout(body)
-        lay.setContentsMargins(24, 14, 24, 24)
-        lay.setSpacing(0)
+        top = QVBoxLayout(body)
+        top.setContentsMargins(0, 0, 0, 0)
+        top.setSpacing(0)
 
         self.card = MatchCard()
         self.card.confirm.connect(self.confirm_match.emit)
         self.card.change.connect(self.change_match.emit)
         self.card.add_key.connect(win.ask_api_key)
-        lay.addWidget(self.card)
+        self.card.home.connect(win.go_home)
+        self.card.get_all.connect(win.fill_current)
+        self.card.apply.connect(lambda: win.apply_games([win.current_shortcut().appid]))
+        top.addWidget(self.card)
 
-        lay.addSpacing(14)
+        lay = QVBoxLayout()
+        lay.setContentsMargins(24, 6, 24, 24)
+        lay.setSpacing(0)
+        top.addLayout(lay)
 
         self.rows: dict[str, ArtworkRow] = {}
         for key in ("grid", "wide", "hero", "logo", "icon"):
@@ -734,6 +834,7 @@ class GamePage(QWidget):
             self.rows[key] = row
             lay.addWidget(row)
         self.rows["grid"].thumb_loaded.connect(self._card_cover)
+        self.rows["hero"].thumb_loaded.connect(self._banner)
         lay.addStretch(1)
 
     def resizeEvent(self, e):
@@ -761,15 +862,41 @@ class GamePage(QWidget):
                                 self.win.match_candidates(sc) if check else 0)
         else:
             self.card.set_state("finding", sc.name or "(unnamed)")
+        self.card.set_game(sc.name or "(unnamed)")
         self._card_cover()
 
     def _card_cover(self):
-        self.card.cover.set_pixmap(self.rows["grid"].first_thumb() if self.card.state in ("exact", "check") else None,
-                                   "key" if self.card.state == "key" else "")
+        """The cover beside the name: the game's cover, its waiting pick, else the first option."""
+        sc = self.win.current_shortcut()
+        pm = self._current_art(sc, "grid") if sc else None
+        if pm is None and self.card.state in ("exact", "check"):
+            pm = self.rows["grid"].first_thumb()
+        self.card.cover.set_pixmap(pm, "key" if self.card.state == "key" else "")
+        self._banner()
+
+    def _current_art(self, sc, key: str) -> QPixmap | None:
+        """What the game will have for this piece once applied: a waiting pick, else what's set now."""
+        pick = self.win.pending.get(sc.appid, key)
+        if pick is not None:
+            return None if pick.clears else self.win.pick_pixmap(sc, key)
+        path = self.win.slot_path(sc, SLOTS[key])
+        pm = load_pixmap(path) if path else None
+        return pm if pm is not None and not pm.isNull() else None
+
+    def _banner(self):
+        """The game's banner, else the first banner option, else its cover blurred."""
+        sc = self.win.current_shortcut()
+        if sc is None:
+            return
+        pm = self._current_art(sc, "hero") or self.rows["hero"].first_thumb()
+        if pm is not None:
+            return self.card.set_banner(pm)
+        self.card.set_banner(self._current_art(sc, "grid") or self.rows["grid"].first_thumb(), blurred=True)
 
     def refresh_current(self):
         for row in self.rows.values():
             row.show_current()
+        self._card_cover()
 
     def set_all_messages(self, text: str):
         for row in self.rows.values():

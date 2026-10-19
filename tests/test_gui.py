@@ -65,8 +65,10 @@ def test_window_shows_games_and_pages(qapp, window):
     _pump(qapp)
     assert win.stage.currentWidget() is win.page
     assert win.page.card.state == "key" and win.page.card.key_btn.isVisible()  # no API key: the card asks for one
-    assert win.cbar.buttons[1].text() == "Apply" and not win.cbar.buttons[1].isEnabled()
-    for b in [win.page.rows["grid"].see_all] + win.cbar.buttons:
+    card = win.page.card
+    assert not win.cbar.isVisible() and card.title.text() == "Hollow Knight™"
+    assert card.apply_btn.text() == "Apply" and not card.apply_btn.isEnabled()
+    for b in [win.page.rows["grid"].see_all, card.get_btn, card.apply_btn]:
         assert b.height() >= 40, b.text()
 
     win.game_list.set_filter("missing")
@@ -90,7 +92,7 @@ def test_picks_wait_until_apply(qapp, window):
     win.stage_pick(SLOTS["grid"], asset)
     assert win.pending.count(sc.appid) == 1
     assert existing(win.user.grid_dir, sc.appid, SLOTS["grid"]) is None  # nothing written yet
-    assert win.cbar.buttons[1].text() == "Apply (1 Change)"
+    assert win.page.card.apply_btn.text() == "Apply (1 Change)"
 
     win.go_home()
     _pump(qapp)
