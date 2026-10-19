@@ -3,9 +3,10 @@
 from __future__ import annotations
 
 from PySide6.QtCore import QEasingCurve, QEvent, QObject, Qt, QVariantAnimation
+from PySide6.QtGui import QInputDevice
 from PySide6.QtWidgets import QAbstractScrollArea, QApplication, QScrollBar
 
-DURATION = 240  # ms for one wheel step to settle
+DURATION = 320  # ms for one wheel step to settle
 
 
 class _Glide(QVariantAnimation):
@@ -34,27 +35,39 @@ class _Glide(QVariantAnimation):
         return True
 
 
+def from_touchpad(e) -> bool:
+    """Touchpads already scroll smoothly: they send gesture phases, or say what they are.
+    Mouse wheels can carry a pixel delta too (KDE on Wayland does), so that alone isn't enough."""
+    if e.phase() != Qt.ScrollPhase.NoScrollPhase:
+        return True
+    dev = e.device()
+    return dev is not None and dev.type() == QInputDevice.DeviceType.TouchPad
+
+
 class SmoothScroll(QObject):
-    """Application-wide filter. Touchpads already scroll by pixels, so only wheel
-    notches are smoothed; Shift turns a vertical wheel into sideways scrolling."""
+    """Application-wide filter that smooths mouse-wheel scrolling everywhere.
+    Shift turns a vertical wheel into sideways scrolling."""
 
     def eventFilter(self, obj, e):
-        if e.type() != QEvent.Type.Wheel or not e.pixelDelta().isNull():
+        if e.type() != QEvent.Type.Wheel or from_touchpad(e):
             return False
         area = obj.parent()
         if not isinstance(area, QAbstractScrollArea) or obj is not area.viewport():
             return False
         d = e.angleDelta()
+        if d.isNull():
+            return False
         sideways = abs(d.x()) > abs(d.y()) or e.modifiers() & Qt.KeyboardModifier.ShiftModifier
         bar = area.horizontalScrollBar() if sideways else area.verticalScrollBar()
-        notches = (d.x() or d.y() if sideways else d.y()) / 120
+        notches = (d.x() or d.y() if sideways else d.y()) / 120  # high-resolution wheels send fractions
         if not notches or bar.maximum() <= bar.minimum():
             return False  # nothing to scroll here: let an outer area have it
         glide = bar.findChild(_Glide)
         if glide is None:
             glide = _Glide(bar)
         lines = QApplication.wheelScrollLines()
-        return glide.push(round(-notches * lines * bar.singleStep()))
+        by = -notches * lines * bar.singleStep()
+        return glide.push(round(by) or (-1 if notches > 0 else 1))
 
 
 def install(app: QApplication) -> SmoothScroll:

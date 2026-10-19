@@ -340,6 +340,11 @@ def test_wheel_scrolling_glides(qapp):
         wheel(-120)
         _pump(qapp, 400)
         assert bar.value() == 3 * step  # quick notches add up
+        wheel(-120, pixels=-40)  # a mouse wheel that also reports pixels (KDE on Wayland)
+        _pump(qapp, 40)
+        assert 3 * step < bar.value() < 4 * step
+        _pump(qapp, 400)
+        assert bar.value() == 4 * step
         area.close()
     finally:
         qapp.removeEventFilter(f)
