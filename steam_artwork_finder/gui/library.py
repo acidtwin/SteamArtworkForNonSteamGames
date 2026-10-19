@@ -402,6 +402,7 @@ class SearchBox(QFrame):
             #searchbox[focus="true"] {{ border-color: {C['blue']}; }}
             #searchbox QLineEdit {{ background: transparent; border: none; min-height: 0; padding: 0 0 0 9px; }}
             #searchbox QLineEdit:disabled {{ color: {C['text3']}; }}
+            #searchbox QToolButton {{ min-width: 34px; max-width: 34px; min-height: 34px; max-height: 34px; padding: 0; }}
         """)
         lay = QHBoxLayout(self)
         lay.setContentsMargins(0, 2, 2, 2)
