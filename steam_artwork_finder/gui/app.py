@@ -40,7 +40,7 @@ from ..steam import (
 )
 from . import icons, workers
 from .chrome import ContentBar, Header, StatusBar, SteamPopover
-from .dialogs import ApiKeyDialog, MatchDialog, RestoreDialog
+from .dialogs import KeyPopover, MatchDialog, RestoreDialog
 from .gamepage import GamePage
 from .library import GameList, StartPage
 from .tray import ROLE_PIX, OptionTray
@@ -149,6 +149,10 @@ class MainWindow(QMainWindow):
         outer.addWidget(self.split, 1)
 
         self.popover = SteamPopover(self)
+        self.popover.anchor_widget = self.statusbar.process
+        self.keypop = KeyPopover(self)
+        self.keypop.anchor_widget = self.statusbar.connection
+        self.keypop.saved.connect(self._key_saved)
         self.popover.set_auto_restart(self.auto_restart)
         self.popover.auto_restart_changed.connect(self._set_auto_restart)
         self.popover.restart_clicked.connect(self.restart_steam_now)
@@ -456,6 +460,9 @@ class MainWindow(QMainWindow):
         self.statusbar.set_process(self.steam_state())
 
     def show_steam_popover(self):
+        if self.popover.is_open():
+            return self.popover.dismiss()
+        self.keypop.dismiss()
         self.popover.set_auto_restart(self.auto_restart)
         self.popover.show_for(self.steam_state(), self.statusbar.process_anchor(), len(self.config.pending_icons))
 
@@ -463,7 +470,7 @@ class MainWindow(QMainWindow):
         root = self.steam_root
         if not root or self.busy:
             return
-        self.popover.hide()
+        self.popover.dismiss()
         self._set_busy("restart", "Restarting Steam…")
 
         def work():
@@ -898,20 +905,29 @@ class MainWindow(QMainWindow):
     # ---- SteamGridDB key and matching ---------------------------------------
 
     def ensure_key(self) -> bool:
-        return bool(self.config.api_key) or self.ask_api_key()
-
-    def ask_api_key(self) -> bool:
-        dlg = ApiKeyDialog(self, self.config.api_key)
-        if dlg.exec():
-            self.config.api_key = dlg.key()
-            self.sgdb.api_key = self.config.api_key
-            self.asset_cache.clear()
-            self.set_connection("connected")
-            if self.current >= 0:
-                self.load_options()
-            self.update_chrome()
+        """True if there's a key; otherwise asks for one and returns False."""
+        if self.config.api_key:
             return True
+        self.ask_api_key()
         return False
+
+    def ask_api_key(self):
+        """Open the API key pop-over; saving it reconnects and reloads (see _key_saved)."""
+        if self.keypop.is_open() and self.sender() is self.statusbar:
+            return self.keypop.dismiss()  # a second click on the status item closes it
+        self.popover.dismiss()
+        self.keypop.open_for(self.config.api_key, self.statusbar.connection_anchor())
+
+    def _key_saved(self, key: str):
+        self.config.api_key = key
+        self.sgdb.api_key = key
+        self.asset_cache.clear()
+        self.set_connection("connected")
+        if self.current >= 0:
+            self.load_options()
+            self.page.update_match()
+        self.update_chrome()
+        self.toast.show_message("Connected to SteamGridDB.")
 
     def _key_problem(self, msg: str):
         self.set_connection("disconnected")

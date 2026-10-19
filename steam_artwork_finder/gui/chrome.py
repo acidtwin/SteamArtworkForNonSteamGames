@@ -12,7 +12,7 @@ from PySide6.QtGui import (
     QPainter, QPainterPath, QPen, QPixmap,
 )
 from PySide6.QtWidgets import (
-    QAbstractButton, QApplication, QCheckBox, QFrame, QHBoxLayout, QLabel, QMenu, QPushButton, QSizePolicy,
+    QAbstractButton, QApplication, QCheckBox, QFrame, QGraphicsOpacityEffect, QHBoxLayout, QLabel, QMenu, QPushButton, QSizePolicy,
     QToolButton, QVBoxLayout, QWidget,
 )
 
@@ -650,6 +650,10 @@ class StatusBar(QWidget):
         self.process.setToolTip(_tip(word, "Click for more about Steam"))
         self.process.setAccessibleName(f"{word}. More about Steam")
 
+    def connection_anchor(self) -> QPoint:
+        """Global top-right of the SteamGridDB item, for the API key pop-over."""
+        return self.connection.mapToGlobal(QPoint(self.connection.width(), 0))
+
     def process_anchor(self) -> QPoint:
         """Global top-centre of the Steam process item, for the pop-over."""
         return self.process.mapToGlobal(QPoint(self.process.width() // 2, 0))
@@ -696,17 +700,90 @@ POPOVER_TEXT = {
 }
 
 
-class SteamPopover(QFrame):
+class Overlay(QFrame):
+    """A pop-over drawn inside the main window, above the status bar. It fades in and
+    out, and closes on Esc or a click anywhere else in the window (not when you switch
+    to another app, so you can copy something and come back)."""
+
+    FADE_MS = 140
+
+    def __init__(self, parent):
+        super().__init__(parent)
+        self.setObjectName("spop")
+        self.setAttribute(Qt.WidgetAttribute.WA_StyledBackground)
+        self.anchor_widget: QWidget | None = None  # clicks on it toggle instead of closing
+        self._fx = QGraphicsOpacityEffect(self, opacity=0.0)
+        self.setGraphicsEffect(self._fx)
+        self._anim = QVariantAnimation(self, duration=self.FADE_MS)
+        self._anim.valueChanged.connect(lambda v: self._fx.setOpacity(float(v)))
+        self._anim.finished.connect(self._faded)
+        self._leaving = False
+        self.hide()
+
+    def open_above(self, anchor: QPoint, align_right: bool = False):
+        """Open above `anchor` (a global point), kept inside the window."""
+        host = self.parentWidget()
+        self.adjustSize()
+        w, h = self.width(), self.sizeHint().height()
+        a = host.mapFromGlobal(anchor)
+        x = a.x() - w + 24 if align_right else a.x() - w // 2
+        x = max(8, min(x, host.width() - w - 8))
+        y = max(8, a.y() - h - 8)
+        self.setGeometry(x, y, w, h)
+        self.raise_()
+        self._leaving = False
+        if not self.isVisible():
+            self._fx.setOpacity(0.0)
+            self.show()
+        self._fade(self._fx.opacity(), 1.0)
+        QApplication.instance().installEventFilter(self)
+
+    def is_open(self) -> bool:
+        return self.isVisible() and not self._leaving
+
+    def dismiss(self):
+        if not self.isVisible() or self._leaving:
+            return
+        self._leaving = True
+        QApplication.instance().removeEventFilter(self)
+        self._fade(self._fx.opacity(), 0.0)
+
+    def _fade(self, start: float, end: float):
+        self._anim.stop()
+        self._anim.setStartValue(start)
+        self._anim.setEndValue(end)
+        self._anim.start()
+
+    def _faded(self):
+        if self._leaving:
+            self._leaving = False
+            self.hide()
+
+    def eventFilter(self, obj, e):
+        t = e.type()
+        if t == QEvent.Type.MouseButtonPress and isinstance(obj, QWidget) and obj.window() is self.window():
+            inside = obj is self or self.isAncestorOf(obj)
+            on_anchor = self.anchor_widget is not None and (
+                obj is self.anchor_widget or self.anchor_widget.isAncestorOf(obj))
+            if not inside and not on_anchor:
+                self.dismiss()
+        elif t == QEvent.Type.Resize and obj is self.parentWidget():
+            self.dismiss()  # its anchor moved
+        elif t == QEvent.Type.KeyPress and e.key() == Qt.Key.Key_Escape and self.isVisible():
+            self.dismiss()
+            return True
+        return False
+
+
+class SteamPopover(Overlay):
     """The pop-up above the Steam process item: what the state means, auto-restart, Restart Now."""
 
     restart_clicked = Signal()
     auto_restart_changed = Signal(bool)
 
-    def __init__(self, parent=None):
-        super().__init__(parent, Qt.WindowType.Popup)
-        self.setObjectName("spop")
+    def __init__(self, parent):
+        super().__init__(parent)
         self.setAccessibleName("Steam")
-        self.setAttribute(Qt.WidgetAttribute.WA_StyledBackground)
         self.setFixedWidth(340)
         lay = QVBoxLayout(self)
         lay.setContentsMargins(16, 14, 16, 14)
@@ -734,7 +811,7 @@ class SteamPopover(QFrame):
         self.restart.clicked.connect(self._restart)
         row.addWidget(self.restart)
         self.close_btn = QPushButton("Close")
-        self.close_btn.clicked.connect(self.hide)
+        self.close_btn.clicked.connect(self.dismiss)
         row.addWidget(self.close_btn)
         lay.addLayout(row)
         self.state = "closed"
@@ -759,21 +836,9 @@ class SteamPopover(QFrame):
     def show_for(self, state: str, anchor: QPoint, waiting_icons: int = 0):
         """Open above `anchor` (global point), kept inside the window."""
         self.set_state(state, waiting_icons)
-        self.adjustSize()
-        w, h = self.width(), self.sizeHint().height()
-        x, y = anchor.x() - w // 2, anchor.y() - h - 8
-        host = self.parentWidget().window() if self.parentWidget() else None
-        if host is not None:
-            area = QRect(host.mapToGlobal(QPoint(0, 0)), host.size())
-        else:
-            screen = QGuiApplication.screenAt(anchor) or QGuiApplication.primaryScreen()
-            area = screen.availableGeometry()
-        x = max(area.left() + 8, min(x, area.right() - w - 8))
-        y = max(area.top() + 8, y)
-        self.move(x, y)
-        self.show()
+        self.open_above(anchor)
         (self.restart if self.restart.isVisible() else self.close_btn).setFocus()
 
     def _restart(self):
-        self.hide()
+        self.dismiss()
         self.restart_clicked.emit()
