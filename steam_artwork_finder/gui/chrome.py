@@ -12,7 +12,7 @@ from PySide6.QtGui import (
     QPainter, QPainterPath, QPen, QPixmap,
 )
 from PySide6.QtWidgets import (
-    QAbstractButton, QApplication, QCheckBox, QFrame, QGraphicsOpacityEffect, QHBoxLayout, QLabel, QMenu, QPushButton, QSizePolicy,
+    QAbstractButton, QApplication, QFrame, QGraphicsOpacityEffect, QHBoxLayout, QLabel, QMenu, QPushButton, QSizePolicy,
     QToolButton, QVBoxLayout, QWidget,
 )
 
@@ -734,9 +734,8 @@ class StatusBar(QWidget):
 # ---- Steam pop-over ----------------------------------------------------------------
 
 POPOVER_TEXT = {
-    "closed": "Steam is closed, so new artwork is saved straight away and shows the next time you open Steam.",
-    "running": "Steam is open. It only loads new artwork when it starts, and it rewrites its game list when it "
-               "closes, so icons are saved once Steam has closed.",
+    "closed": "New artwork is saved straight away and shows next time you open Steam.",
+    "running": "Steam shows new artwork after a restart. Icons are saved once it closes.",
     "restart": "New artwork is saved. Restart Steam to see it.",
 }
 
@@ -844,8 +843,51 @@ class Overlay(QFrame):
                 return True
 
 
+class SwitchRow(QAbstractButton):
+    """A setting in a pop-over: its words on the left, a switch on the right (like the ⋯ menu's).
+    Clicking anywhere on the row flips it."""
+
+    def __init__(self, text: str, parent=None):
+        super().__init__(parent)
+        self.setText(text)
+        self.setCheckable(True)
+        self.setCursor(Qt.CursorShape.PointingHandCursor)
+        self.setAttribute(Qt.WidgetAttribute.WA_Hover)
+        self.setFocusPolicy(Qt.FocusPolicy.StrongFocus)
+        self.setAccessibleName(text)
+        self.setFont(font(0.96))
+
+    def sizeHint(self):
+        return QSize(self.fontMetrics().horizontalAdvance(self.text()) + 56, max(30, self.fontMetrics().height() + 12))
+
+    def paintEvent(self, _):
+        p = QPainter(self)
+        p.setRenderHint(QPainter.RenderHint.Antialiasing)
+        r = QRectF(self.rect())
+        p.setPen(q("text"))
+        p.setFont(self.font())
+        p.drawText(r.adjusted(0, 0, -44, 0), Qt.AlignmentFlag.AlignVCenter, self.text())
+        track = QRectF(r.right() - 2 - 32, (r.height() - 18) / 2, 32, 18)
+        if theme.kbd_focus(self):
+            p.setPen(QPen(q("blue"), 2))
+            p.setBrush(Qt.BrushStyle.NoBrush)
+            p.drawRoundedRect(track.adjusted(-2, -2, 2, 2), 11, 11)
+        hover = self.underMouse()
+        p.setPen(Qt.PenStyle.NoPen)
+        if self.isChecked():
+            p.setBrush(q("action_hover") if hover else q("action"))
+        else:
+            p.setBrush(q("select") if hover else q("track_off"))
+        p.drawRoundedRect(track, 9, 9)
+        knob = 14
+        x = track.right() - knob - 2 if self.isChecked() else track.left() + 2
+        p.setBrush(q("text"))
+        p.drawEllipse(QRectF(x, track.top() + 2, knob, knob))
+
+
 class SteamPopover(Overlay):
-    """The pop-up above the Steam process item: what the state means, auto-restart, Restart Now."""
+    """The pop-up above the Steam process item: what the state means, two switches, Restart Now.
+    Kept small: one short sentence, an × to close, and one button that does something."""
 
     restart_clicked = Signal()
     auto_restart_changed = Signal(bool)
@@ -854,40 +896,53 @@ class SteamPopover(Overlay):
     def __init__(self, parent):
         super().__init__(parent)
         self.setAccessibleName("Steam")
-        self.setFixedWidth(380)
         lay = QVBoxLayout(self)
-        lay.setContentsMargins(16, 14, 16, 14)
-        lay.setSpacing(10)
+        lay.setContentsMargins(12, 8, 8, 12)  # the × sits closer to the corner than the text does
+        lay.setSpacing(6)
         head = QHBoxLayout()
         head.setSpacing(8)
         self.icon = QLabel()
         self.icon.setFixedSize(16, 16)
         head.addWidget(self.icon)
-        self.title = _label("", font(1.08, QFont.Weight.Bold), C["text"])
+        self.title = _label("", font(1.0, QFont.Weight.Bold), C["text"])
         head.addWidget(self.title, 1)
+        self.close_btn = QToolButton()
+        self.close_btn.setObjectName("spopx")
+        self.close_btn.setIcon(icons.icon("close", 14, C["text3"]))
+        self.close_btn.setIconSize(QSize(14, 14))
+        self.close_btn.setToolTip("Close")
+        self.close_btn.setAccessibleName("Close")
+        self.close_btn.setCursor(Qt.CursorShape.PointingHandCursor)
+        self.close_btn.clicked.connect(self.dismiss)
+        head.addWidget(self.close_btn)
         lay.addLayout(head)
         self.body = QLabel()
         self.body.setWordWrap(True)
+        self.body.setFont(font(0.92))
         self.body.setStyleSheet(f"color: {C['text2']}; background: transparent;")
+        self.body.setContentsMargins(0, 0, 4, 2)  # lines up with the switches, not the ×
         lay.addWidget(self.body)
-        self.auto = QCheckBox("Restart Steam when I apply")
-        self.auto.setObjectName("spopcheck")
+        rows = QVBoxLayout()
+        rows.setContentsMargins(0, 0, 4, 0)
+        rows.setSpacing(0)
+        self.auto = SwitchRow("Restart Steam when I apply")
         self.auto.toggled.connect(self.auto_restart_changed)
-        lay.addWidget(self.auto)
-        self.on_quit = QCheckBox("Apply when I quit, without asking")
-        self.on_quit.setObjectName("spopcheck")
+        rows.addWidget(self.auto)
+        self.on_quit = SwitchRow("Apply when I quit, without asking")
         self.on_quit.toggled.connect(self.apply_on_quit_changed)
-        lay.addWidget(self.on_quit)
-        row = QHBoxLayout()
-        row.setSpacing(8)
-        row.addStretch(1)
+        rows.addWidget(self.on_quit)
+        lay.addLayout(rows)
+        lay.addSpacing(2)
         self.restart = QPushButton("Restart Steam Now")
+        self.restart.setProperty("kind", "confirm")
+        self.restart.setIcon(icons.icon("restart", 14, "white"))
+        self.restart.setIconSize(QSize(14, 14))
         self.restart.clicked.connect(self._restart)
-        row.addWidget(self.restart)
-        self.close_btn = QPushButton("Close")
-        self.close_btn.clicked.connect(self.dismiss)
-        row.addWidget(self.close_btn)
-        lay.addLayout(row)
+        foot = QHBoxLayout()
+        foot.setContentsMargins(0, 0, 4, 0)
+        foot.addWidget(self.restart)
+        lay.addLayout(foot)
+        self.setFixedWidth(max(300, self.on_quit.sizeHint().width() + 24))
         self.state = "closed"
 
     def set_apply_on_quit(self, on: bool):
@@ -907,8 +962,7 @@ class SteamPopover(Overlay):
         self.icon.setPixmap(icons.pixmap(ic, 16, C[col], self.devicePixelRatioF()))
         text = POPOVER_TEXT[state]
         if state == "restart" and waiting_icons > 0:
-            text += (f" {waiting_icons} {'icon' if waiting_icons == 1 else 'icons'} will be added "
-                     "when Steam closes.")
+            text += f" {waiting_icons} {'icon waits' if waiting_icons == 1 else 'icons wait'} for Steam to close."
         self.body.setText(text)
         self.restart.setVisible(state != "closed")
         self.setAccessibleDescription(text)
