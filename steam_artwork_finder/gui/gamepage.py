@@ -274,85 +274,36 @@ class GhostStrip(QWidget):
         p.drawText(QRectF(tx, pill.y(), pill.right() - tx, ph), Qt.AlignmentFlag.AlignVCenter, text)
 
 
-class FileTile(QWidget):
-    """The first tile in each row's options: use a picture from your own files.
+class CustomImageButton(QPushButton):
+    """"Custom Image" under a row's name: use a picture from your own files.
 
-    Click it or press Enter to choose a file, or Ctrl+V to paste a picture; a picture
-    dropped anywhere on the row lights it up.
+    Click it or press Enter to choose a file, Ctrl+V to paste a picture, or right-click
+    for both; a picture dropped anywhere on the row lights it up.
     """
 
     chosen = Signal()
     pasted = Signal()
 
-    def __init__(self, thumb: QSize, what: str, parent=None):
-        super().__init__(parent)
-        self.setFixedSize(min(thumb.width(), 92), thumb.height())
-        self.drop_hot = False
+    def __init__(self, what: str, parent=None):
+        super().__init__("Custom Image", parent)
+        self.setIcon(icons.icon("folder", 16, C["blue_ink"]))
         self.setCursor(Qt.CursorShape.PointingHandCursor)
-        self.setFocusPolicy(Qt.FocusPolicy.StrongFocus)
-        self.setAttribute(Qt.WidgetAttribute.WA_Hover)
-        self.setAccessibleName(f"Use your own {what}")
+        self.setSizePolicy(QSizePolicy.Policy.Maximum, QSizePolicy.Policy.Fixed)
+        self.setAccessibleName(f"Use a custom {what}")
         self.setAccessibleDescription("Press Enter to choose a file, or Control V to paste a picture")
         self.setToolTip(f"Use your own {what}: choose a picture from your files.\n"
                         "You can also drop one on this row, or paste one with Ctrl+V.")
-        f = QFont(self.font())
-        f.setPointSizeF(theme.pt("caption"))
-        f.setWeight(QFont.Weight.DemiBold)
-        self.setFont(f)
+        self.clicked.connect(self.chosen.emit)
 
     def set_drop_hot(self, on: bool):
-        self.drop_hot = on
-        self.update()
-
-    def paintEvent(self, _):
-        p = QPainter(self)
-        p.setRenderHint(QPainter.RenderHint.Antialiasing)
-        r = QRectF(self.rect()).adjusted(0.75, 0.75, -0.75, -0.75)
-        hot = self.drop_hot or self.underMouse() or self.hasFocus()
-        if self.drop_hot:
-            p.setPen(QPen(q("blue_ink"), 1.5, Qt.PenStyle.DashLine))
-            p.setBrush(_alpha("blue", 46))
-        else:
-            p.setPen(QPen(q("blue_ink") if hot else q("line"), 1.5 if self.hasFocus() else 1))
-            p.setBrush(q("raised") if hot else _alpha("raised", 150))
-        p.drawRoundedRect(r, 3, 3)
-        isz = 20 if self.height() >= 60 else 16
-        text = "Drop it" if self.drop_hot else "Your file"
-        show_text = self.height() >= 50
-        th = QFontMetricsF(self.font()).height() if show_text else 0
-        top = (self.height() - isz - (th + 4 if show_text else 0)) / 2
-        icons.draw(p, "folder", QRect(round((self.width() - isz) / 2), round(top), isz, isz), q("blue_ink"))
-        if show_text:
-            p.setPen(q("text") if hot else q("text2"))
-            p.drawText(QRectF(0, top + isz + 4, self.width(), th), Qt.AlignmentFlag.AlignCenter, text)
-
-    def enterEvent(self, e):
-        self.update()
-        super().enterEvent(e)
-
-    def leaveEvent(self, e):
-        self.update()
-        super().leaveEvent(e)
-
-    def focusInEvent(self, e):
-        self.update()
-        super().focusInEvent(e)
-
-    def focusOutEvent(self, e):
-        self.update()
-        super().focusOutEvent(e)
-
-    def mouseReleaseEvent(self, e):
-        if e.button() == Qt.MouseButton.LeftButton and self.rect().contains(e.position().toPoint()):
-            self.chosen.emit()
-        else:
-            super().mouseReleaseEvent(e)
+        self.setText("Drop It Here" if on else "Custom Image")
+        self.setProperty("drop", "true" if on else "false")
+        self.style().unpolish(self)
+        self.style().polish(self)
 
     def keyPressEvent(self, e):
         if e.matches(QKeySequence.StandardKey.Paste):
             self.pasted.emit()
-        elif e.key() in (Qt.Key.Key_Return, Qt.Key.Key_Enter, Qt.Key.Key_Space):
-            self.chosen.emit()
         else:
             super().keyPressEvent(e)
 
@@ -395,6 +346,11 @@ class ArtworkRow(QWidget):
         left.addLayout(head)
         left.addWidget(label(info.where, "muted", wrap=True))
         left.addWidget(label(info.size, "faint"))
+        self.file_btn = CustomImageButton(slot.label.lower())
+        self.file_btn.chosen.connect(self.choose_file)
+        self.file_btn.pasted.connect(self.paste_file)
+        left.addSpacing(8)
+        left.addWidget(self.file_btn, 0, Qt.AlignmentFlag.AlignLeft)
         self.on_banner = None
         self.missing.setAccessibleName("Missing")
         if slot.key == "logo":
@@ -446,10 +402,6 @@ class ArtworkRow(QWidget):
         right.addLayout(top)
         body = QHBoxLayout()
         body.setSpacing(10)
-        self.file_tile = FileTile(info.thumb, slot.label.lower())
-        self.file_tile.chosen.connect(self.choose_file)
-        self.file_tile.pasted.connect(self.paste_file)
-        body.addWidget(self.file_tile, 0, Qt.AlignmentFlag.AlignTop)
         options = QVBoxLayout()
         options.setSpacing(0)
         options.setContentsMargins(0, 0, 0, 0)
@@ -574,7 +526,7 @@ class ArtworkRow(QWidget):
             if path is None:
                 self._set_caption("Nothing set")
             elif applied and applied.get("file"):
-                self._set_caption("In use · your file")
+                self._set_caption("In use · custom image")
             elif applied and applied.get("author"):
                 self._set_caption(f"In use · by {applied['author']}")
             else:
@@ -638,15 +590,15 @@ class ArtworkRow(QWidget):
     def dragEnterEvent(self, e):
         if localfile.source(e.mimeData()) is not None and self.win.current_shortcut() is not None:
             e.acceptProposedAction()
-            self.file_tile.set_drop_hot(True)
+            self.file_btn.set_drop_hot(True)
         else:
             e.ignore()
 
     def dragLeaveEvent(self, e):
-        self.file_tile.set_drop_hot(False)
+        self.file_btn.set_drop_hot(False)
 
     def dropEvent(self, e):
-        self.file_tile.set_drop_hot(False)
+        self.file_btn.set_drop_hot(False)
         src = localfile.source(e.mimeData())
         if src is None:
             e.ignore()

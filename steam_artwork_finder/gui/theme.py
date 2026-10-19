@@ -171,6 +171,7 @@ def stylesheet() -> str:
     QPushButton[kind="confirm"]:disabled {{ background: {c['disabled_bg']}; color: {c['text3']}; }}
     QPushButton[kind="danger"] {{ background: {c['danger']}; color: white; }}
     QPushButton[kind="danger"]:hover {{ background: {c['danger_hover']}; }}
+    QPushButton[drop="true"] {{ background: {c['info_ground']}; border: 1px dashed {c['blue_ink']}; color: {c['text']}; }}
     QPushButton[kind="quiet"] {{ background: transparent; color: {c['blue_ink']}; padding: 0 6px; min-height: 40px; }}
     QPushButton[kind="quiet"]:hover {{ text-decoration: underline; }}
     QPushButton[kind="seg"] {{ background: transparent; color: {c['text2']}; min-height: 40px; padding: 0 10px; }}

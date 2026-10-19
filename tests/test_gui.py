@@ -788,7 +788,7 @@ def test_own_file_waits_until_apply_and_undoes(qapp, window, tmp_path):
     _pump(qapp)
     sc = win.current_shortcut()
     row = win.page.rows["grid"]
-    assert row.file_tile.isVisible()  # there even without an API key or options
+    assert row.file_btn.isVisible() and row.file_btn.text() == "Custom Image"  # there even without an API key or options
     win.stage_file(SLOTS["grid"], path=str(src))
     _pump(qapp, 2000, until=lambda: win.pending.count(sc.appid))
     pick = win.pending.get(sc.appid, "grid")
@@ -805,7 +805,7 @@ def test_own_file_waits_until_apply_and_undoes(qapp, window, tmp_path):
     assert path.parent == win.user.grid_dir and path.name == f"{sc.appid}p.jpg"  # a copy, named Steam's way
     assert src.read_bytes() == data  # the user's own file is left alone
     win.page.show_game()
-    assert row.caption.text() == "In use · your file"
+    assert row.caption.text() == "In use · custom image"
     win.toast.undo_now()
     assert existing(win.user.grid_dir, sc.appid, SLOTS["grid"]) is None
 
