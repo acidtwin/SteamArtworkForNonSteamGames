@@ -153,6 +153,11 @@ def stylesheet() -> str:
     #spop {{ background: {c['ground']}; border: 1px solid {c['line']}; border-radius: 4px; }}
     #spop QPushButton {{ min-height: 36px; padding: 0 12px; }}
     #spopcheck {{ color: {c['text']}; spacing: 10px; }}
+    #fseg {{ background: {c['panel']}; border-radius: 4px; }}
+    #fseg QPushButton {{ background: transparent; color: {c['text2']}; min-height: 34px; border-radius: 3px; }}
+    #fseg QPushButton:hover {{ color: {c['text']}; }}
+    #fseg QPushButton:checked {{ background: {c['select']}; color: {c['text']}; }}
+    #facct {{ background: {c['panel']}; border-radius: 3px; }}
     #spopcheck::indicator {{ width: 18px; height: 18px; }}
     #empty {{ background: {c['raised']}; border-radius: 3px; color: {c['text2']}; padding: 12px; }}
     """

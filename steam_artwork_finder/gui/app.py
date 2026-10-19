@@ -40,6 +40,7 @@ from ..steam import (
 )
 from . import icons, workers
 from .chrome import ContentBar, Header, StatusBar, SteamPopover
+from .steamfolder import SteamFolderPopover
 from .dialogs import KeyPopover, MatchDialog, RestoreDialog
 from .gamepage import GamePage
 from .library import GameList, StartPage
@@ -134,7 +135,7 @@ class MainWindow(QMainWindow):
             self.stage.addWidget(w)
         cl.addWidget(self.stage, 1)
         self.statusbar = StatusBar()
-        self.statusbar.steam_clicked.connect(self.choose_steam_folder)
+        self.statusbar.steam_clicked.connect(self.show_folder_popover)
         self.statusbar.process_clicked.connect(self.show_steam_popover)
         self.statusbar.connection_clicked.connect(self.ask_api_key)
         cl.addWidget(self.statusbar)
@@ -153,6 +154,10 @@ class MainWindow(QMainWindow):
         self.keypop = KeyPopover(self)
         self.keypop.anchor_widget = self.statusbar.connection
         self.keypop.saved.connect(self._key_saved)
+        self.folderpop = SteamFolderPopover(self)
+        self.folderpop.anchor_widget = self.statusbar.steam
+        self.folderpop.use_root.connect(self.use_steam_root)
+        self.folderpop.account_chosen.connect(self._account_changed)
         self.popover.set_auto_restart(self.auto_restart)
         self.popover.auto_restart_changed.connect(self._set_auto_restart)
         self.popover.restart_clicked.connect(self.restart_steam_now)
@@ -349,7 +354,11 @@ class MainWindow(QMainWindow):
         return self.user.userdata.parent.parent if self.user else None
 
     def detect_steam(self, roots: list[Path] | None = None):
-        roots = roots if roots is not None else find_steam_roots()
+        if roots is None:
+            roots = find_steam_roots()
+            saved = self.config.data.get("steam_folder")
+            if saved:  # the folder chosen last time comes first
+                roots = find_steam_roots([Path(saved)]) + [r for r in roots if r != Path(saved)]
         self.users = [u for r in roots for u in list_users(r)]
         if not self.users:
             self.user = None
@@ -359,8 +368,32 @@ class MainWindow(QMainWindow):
             self.game_list.set_empty_reason("nosteam")
             self.stage.setCurrentWidget(self.nosteam)
             self.update_chrome()
+            self._sync_folder_popover()
             return
         self._account_changed(0)
+
+    def show_folder_popover(self):
+        if self.folderpop.is_open():
+            return self.folderpop.dismiss()
+        self.popover.dismiss()
+        self.keypop.dismiss()
+        self._sync_folder_popover()
+        self.folderpop.open_for(self.statusbar.steam_anchor())
+
+    def _sync_folder_popover(self):
+        idx = self.users.index(self.user) if self.user in self.users else -1
+        self.folderpop.set_current(self.steam_root, [u.label for u in self.users], idx, self._avatar())
+
+    def use_steam_root(self, root: Path):
+        """Switch to another Steam folder (from the pop-over), remembering it for next time."""
+        if root == self.steam_root:
+            return
+        if self.pending and not self._ask_discard():
+            return
+        self.pending.clear()
+        self.config.data["steam_folder"] = str(root)
+        self.config.save()
+        self.detect_steam([root])
 
     def choose_steam_folder(self):
         d = QFileDialog.getExistingDirectory(self, "Choose your Steam folder", str(Path.home()))
@@ -369,7 +402,7 @@ class MainWindow(QMainWindow):
             if not roots:
                 QMessageBox.warning(self, APP_NAME, "That folder doesn't have a Steam “userdata” folder inside it.")
                 return
-            self.detect_steam(roots)
+            self.use_steam_root(roots[0])
 
     def _account_changed(self, idx: int):
         if not 0 <= idx < len(self.users):
@@ -380,6 +413,7 @@ class MainWindow(QMainWindow):
                 return
         self.user = self.users[idx]
         self.header.set_users([u.label for u in self.users], idx, self._avatar())
+        self._sync_folder_popover()
         self.reload_shortcuts()
 
     def _avatar(self) -> QPixmap | None:
@@ -463,6 +497,7 @@ class MainWindow(QMainWindow):
         if self.popover.is_open():
             return self.popover.dismiss()
         self.keypop.dismiss()
+        self.folderpop.dismiss()
         self.popover.set_auto_restart(self.auto_restart)
         self.popover.show_for(self.steam_state(), self.statusbar.process_anchor(), len(self.config.pending_icons))
 
@@ -916,6 +951,7 @@ class MainWindow(QMainWindow):
         if self.keypop.is_open() and self.sender() is self.statusbar:
             return self.keypop.dismiss()  # a second click on the status item closes it
         self.popover.dismiss()
+        self.folderpop.dismiss()
         self.keypop.open_for(self.config.api_key, self.statusbar.connection_anchor())
 
     def _key_saved(self, key: str):

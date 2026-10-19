@@ -60,6 +60,55 @@ def candidate_roots() -> list[Path]:
     ]
 
 
+@dataclass
+class Place:
+    """One kind of place Steam might be installed, for the Steam folder pop-over's search."""
+
+    name: str  # "Steam (Flatpak)"
+    short: str  # "Flatpak", under its progress bar
+    candidates: list[Path]
+
+
+def _drive_candidates() -> list[Path]:
+    """A "Steam" folder at the top of each mounted drive."""
+    if sys.platform == "win32":
+        import string
+
+        out = []
+        for letter in string.ascii_uppercase[3:]:  # D: onwards; C: is covered by Program Files
+            drive = Path(f"{letter}:/")
+            if drive.exists():
+                out += [drive / "Steam", drive / "Program Files (x86)/Steam", drive / "Program Files/Steam"]
+        return out
+    user = os.environ.get("USER", "")
+    bases = [Path("/Volumes")] if sys.platform == "darwin" else \
+        [Path("/run/media") / user, Path("/media") / user, Path("/media"), Path("/mnt")]
+    out = []
+    for base in bases:
+        try:
+            mounts = [d for d in base.iterdir() if d.is_dir()]
+        except OSError:
+            continue
+        for d in mounts:
+            out += [d / "Steam", d / "steam", d / ".local/share/Steam"]
+    return out
+
+
+def search_places() -> list[Place]:
+    """Where the pop-over looks, in order. The first three match candidate_roots()."""
+    if sys.platform != "linux" and not sys.platform.startswith("freebsd"):
+        return [Place("Steam", "Steam", candidate_roots()),
+                Place("Other drives", "Drives", _drive_candidates())]
+    home = Path.home()
+    return [
+        Place("Steam", "Steam", [home / ".steam/steam", home / ".steam/root", home / ".local/share/Steam"]),
+        Place("Steam (Flatpak)", "Flatpak", [home / ".var/app/com.valvesoftware.Steam/.local/share/Steam",
+                                             home / ".var/app/com.valvesoftware.Steam/.steam/steam"]),
+        Place("Steam (Snap)", "Snap", [home / "snap/steam/common/.local/share/Steam"]),
+        Place("Other drives", "Drives", _drive_candidates()),
+    ]
+
+
 def _windows_registry_path() -> str | None:
     try:
         import winreg

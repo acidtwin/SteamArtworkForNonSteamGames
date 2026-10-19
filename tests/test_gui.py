@@ -148,3 +148,43 @@ def test_game_menu_opens_the_game(qapp, window):
     next(r for r in menu.rows if r.text() == "Open Game Page").click()
     _pump(qapp, 200)
     assert win.stage.currentWidget() is win.page and win.current == 2
+
+
+def test_steam_folder_popover_searches_and_switches(qapp, window, tmp_path, steam_root):
+    import shutil
+
+    from steam_artwork_finder.gui import steamfolder
+
+    win = window
+    pop = win.folderpop
+    pop.delay = 0
+    flatpak = tmp_path / ".var/app/com.valvesoftware.Steam/.local/share/Steam"
+    shutil.copytree(steam_root, flatpak)
+    h0 = None
+    win.statusbar.steam.click()
+    _pump(qapp, 100)
+    assert pop.is_open() and pop.pages.currentIndex() == 0
+    h0 = pop.height()
+    _pump(qapp, 2000, until=lambda: not pop.searching)
+    assert not pop.searching
+    assert [f.place.short for f in pop.found] == ["Flatpak"]  # the test's Steam lives outside the usual places
+    assert pop.dots.states[1] == "hit" and pop.dots.states[2] == "miss"
+    assert pop.title.text() == "Using your chosen folder" and pop.found[0].games == 3
+    assert pop.account.name.text() == "Deck User" and pop.account.switch.isEnabled()
+
+    pop.show_tab(1)
+    _pump(qapp, 50)
+    assert pop.height() == h0  # the tabs are the same size
+    pop._chosen(tmp_path / "nowhere")
+    assert "userdata" in pop.hint.text()
+    pop._chosen(flatpak)
+    _pump(qapp)
+    assert win.steam_root == flatpak.resolve()
+    assert win.config.data["steam_folder"] == str(flatpak.resolve())
+    assert pop.title.text() == "Using Steam (Flatpak)" and pop.pages.currentIndex() == 0
+    assert pop.height() == h0
+
+    win.statusbar.steam.click()  # a second click closes it
+    _pump(qapp, 400)
+    assert not pop.isVisible()
+    assert steamfolder.tilde(tmp_path / "x") == "~/x"

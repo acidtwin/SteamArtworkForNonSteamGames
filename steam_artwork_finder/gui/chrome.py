@@ -633,8 +633,8 @@ class StatusBar(QWidget):
         self.steam_found = found
         if found:
             self.steam.set_state("Steam Detected", "check-circle", C["ok"])
-            self.steam.setToolTip(_tip(path_text or "Steam folder", "Click to choose another Steam folder"))
-            self.steam.setAccessibleName("Steam Detected. Choose another Steam folder")
+            self.steam.setToolTip(_tip(path_text or "Steam folder", "Click to find Steam or choose another folder"))
+            self.steam.setAccessibleName("Steam Detected. Find Steam or choose another folder")
         else:
             self.steam.set_state("Steam Undetected", "x-circle", C["off"])
             self.steam.setToolTip(_tip("No Steam folder found", "Click to choose your Steam folder"))
@@ -653,6 +653,10 @@ class StatusBar(QWidget):
     def connection_anchor(self) -> QPoint:
         """Global top-right of the SteamGridDB item, for the API key pop-over."""
         return self.connection.mapToGlobal(QPoint(self.connection.width(), 0))
+
+    def steam_anchor(self) -> QPoint:
+        """Global top-centre of the Steam folder item, for its pop-over."""
+        return self.steam.mapToGlobal(QPoint(self.steam.width() // 2, 0))
 
     def process_anchor(self) -> QPoint:
         """Global top-centre of the Steam process item, for the pop-over."""
