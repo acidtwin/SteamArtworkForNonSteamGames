@@ -730,7 +730,7 @@ def main() -> int:
     app = QApplication(sys.argv)
     app.setApplicationName(APP_NAME)
     app.setApplicationVersion(__version__)
-    app.setDesktopFileName("steam-artwork-finder")
+    app.setDesktopFileName("io.github.acidtwin.SteamArtworkForNonSteamGames")
     app.setStyle("Fusion")
     app.setPalette(theme.palette())
     app.setStyleSheet(theme.stylesheet())

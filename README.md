@@ -51,8 +51,8 @@ python3 -m steam_artwork_finder
 To add it to your app menu on Linux, install the launcher and its icon:
 
 ```bash
-install -Dm644 packaging/steam-artwork-finder.desktop ~/.local/share/applications/steam-artwork-finder.desktop
-install -Dm644 packaging/steam-artwork-finder.svg ~/.local/share/icons/hicolor/scalable/apps/steam-artwork-finder.svg
+install -Dm644 packaging/io.github.acidtwin.SteamArtworkForNonSteamGames.desktop ~/.local/share/applications/io.github.acidtwin.SteamArtworkForNonSteamGames.desktop
+install -Dm644 packaging/io.github.acidtwin.SteamArtworkForNonSteamGames.svg ~/.local/share/icons/hicolor/scalable/apps/io.github.acidtwin.SteamArtworkForNonSteamGames.svg
 ```
 
 ### 3. Use it
