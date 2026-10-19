@@ -93,6 +93,11 @@ class MainWindow(QMainWindow):
         self.asset_cache: dict[tuple, list[Asset]] = {}
         self.pending = Pending()
         self.pick_pix: dict[tuple[int, str], QPixmap] = {}
+        # Each game's artwork files in ORDER (None where it has none), so painting and
+        # counting never touch the disk. Forgotten whenever the app writes a game's files.
+        self._cov: dict[int, list[Path | None]] = {}
+        # Many small changes in a row (a bulk Get Artwork) redraw everything at most every 100 ms.
+        self._refresh_timer = QTimer(self, singleShot=True, interval=100, timeout=self.refresh_all)
         self.last_errors: list[str] = []
         self.current = -1
         self.busy = ""  # "" | "fetch" | "apply" | "restart"
@@ -265,10 +270,23 @@ class MainWindow(QMainWindow):
 
     # ---- state helpers used by the pages ----------------------------------
 
-    def slot_path(self, sc: Shortcut, slot: Slot) -> Path | None:
-        if slot.key == "icon":
-            return current_icon(sc, self.user.grid_dir)
-        return existing(self.user.grid_dir, sc.appid, slot)
+    def slot_path(self, sc: Shortcut, slot: Slot, fresh: bool = False) -> Path | None:
+        """The file in use for a piece. `fresh` looks on disk again (before acting on the answer)."""
+        if fresh:
+            self.forget_files(sc.appid)
+        paths = self._cov.get(sc.appid)
+        if paths is None:
+            grid = self.user.grid_dir
+            paths = self._cov[sc.appid] = [current_icon(sc, grid) if k == "icon" else existing(grid, sc.appid, SLOTS[k])
+                                           for k in ORDER]
+        return paths[ORDER.index(slot.key)]
+
+    def forget_files(self, appid: int | None = None):
+        """Look on disk again for one game's artwork files (or every game's, with None)."""
+        if appid is None:
+            self._cov.clear()
+        else:
+            self._cov.pop(appid, None)
 
     def coverage(self, sc: Shortcut) -> list[bool]:
         return [self.slot_path(sc, SLOTS[k]) is not None for k in ORDER]
@@ -361,7 +379,7 @@ class MainWindow(QMainWindow):
             cur = self.pending.get(*key)
             if cur is not None and cur.asset is asset:
                 self.pick_pix[key] = pm
-                self.refresh_all()
+                self.refresh_soon()
 
         self.load_thumb(pick.asset, loaded)
 
@@ -376,7 +394,7 @@ class MainWindow(QMainWindow):
         sc = self.current_shortcut()
         if not sc or self.busy == "apply":
             return
-        if self.slot_path(sc, slot) is None:
+        if self.slot_path(sc, slot, fresh=True) is None:
             self.pending.drop(sc.appid, slot.key)  # nothing on disk: just drop the waiting pick
         else:
             self._stage(sc, slot.key, Pick(None))
@@ -405,6 +423,7 @@ class MainWindow(QMainWindow):
             if saved:  # the folder chosen last time comes first
                 roots = find_steam_roots([Path(saved)]) + [r for r in roots if r != Path(saved)]
         self.users = [u for r in roots for u in list_users(r)]
+        self.forget_files()
         if not self.users:
             self.user = None
             self.sfile = None
@@ -499,6 +518,7 @@ class MainWindow(QMainWindow):
             return self.detect_steam()
         from ..shortcuts import ShortcutsFile
 
+        self.forget_files()
         try:
             self.sfile = ShortcutsFile(self.user.shortcuts_path)
         except Exception as e:
@@ -531,6 +551,7 @@ class MainWindow(QMainWindow):
         """The shortcut list was re-read from disk mid-change: rebuild what indexes into it."""
         self.current = next((i for i, s in enumerate(self.sfile.shortcuts) if s.appid == appid), -1) \
             if self.current >= 0 else -1
+        self.forget_files()  # icon fields may have changed with it
         self.game_list.rebuild()
         self.start.rebuild()
 
@@ -598,12 +619,15 @@ class MainWindow(QMainWindow):
                 cover = load_pixmap(path) if path else None
             games.append((sc.name or "(unnamed)", what[:1].upper() + what[1:], len(picks), cover))
         dlg = QuitDialog(self, games)
-        if not dlg.exec():
-            return None
-        if dlg.choice == "apply" and dlg.remember.isChecked():
-            self._set_apply_on_quit(True)
-            self.popover.set_apply_on_quit(True)
-        return dlg.choice
+        try:
+            if not dlg.exec():
+                return None
+            if dlg.choice == "apply" and dlg.remember.isChecked():
+                self._set_apply_on_quit(True)
+                self.popover.set_apply_on_quit(True)
+            return dlg.choice
+        finally:
+            dlg.deleteLater()
 
     def _set_auto_restart(self, on: bool):
         self.config.data["auto_restart_steam"] = on
@@ -676,6 +700,7 @@ class MainWindow(QMainWindow):
         for key, path in pending.items():
             sc = self.sfile.find(int(key))
             if sc is not None:
+                self.forget_files(sc.appid)
                 try:
                     if artwork.set_icon(self.sfile, sc, path):
                         reloaded = True  # Steam rewrote the list on exit: indexes may have moved
@@ -734,7 +759,7 @@ class MainWindow(QMainWindow):
             self._record_match(sc, game, n)
             if sc is self.current_shortcut() and self.stage.currentWidget() is self.page:
                 self.page.update_match()
-            self.refresh_all()
+            self.refresh_soon()
 
         def finished(*_):
             self._matching = False
@@ -788,7 +813,13 @@ class MainWindow(QMainWindow):
         else:
             self.statusbar.set_message(None, "")
 
+    def refresh_soon(self):
+        """refresh_all within 100 ms, once however many changes arrive meanwhile."""
+        if not self._refresh_timer.isActive():
+            self._refresh_timer.start()
+
     def refresh_all(self):
+        self._refresh_timer.stop()
         if not self.sfile or not self.sfile.shortcuts:
             self.update_chrome()
             return
@@ -825,6 +856,8 @@ class MainWindow(QMainWindow):
         self.game_list.homebar.home.set_on(idx < 0)
         if not self.sfile or not self.sfile.shortcuts:
             return
+        if 0 <= idx < len(self.sfile.shortcuts):
+            self.forget_files(self.sfile.shortcuts[idx].appid)  # the page shows what's on disk now
         if idx < 0:
             self.tray.hide()
             self.stage.setCurrentWidget(self.start)
@@ -968,6 +1001,7 @@ class MainWindow(QMainWindow):
                 QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.Cancel) != QMessageBox.StandardButton.Yes:
             return
         self.pending.drop(sc.appid)
+        self.forget_files(sc.appid)  # what's on disk now
         jobs = [(sc, k, Pick(None)) for k in ORDER if self.slot_path(sc, SLOTS[k]) is not None]
         done, errors = self._write(jobs, self.steam_is_running(), self.user.grid_dir, self.sfile)
         self._after_write(done, errors, f"Removed all artwork from {sc.name}.")
@@ -992,6 +1026,8 @@ class MainWindow(QMainWindow):
             except Exception as e:
                 errors.append(f"{sc.name} {slot.label.lower()}: {e}")
                 continue
+            finally:
+                self.forget_files(sc.appid)
             if defer:
                 change.old_icon = old_icon  # so Undo can put the field back once the icon is linked
                 self.config.set_pending_icon(sfile.path, sc.appid, "" if pick.clears else str(change.new_file))
@@ -1037,6 +1073,8 @@ class MainWindow(QMainWindow):
                 except Exception as e:
                     self.toast.show_message(f"Couldn't undo: {e}")
                     return
+                finally:
+                    self.forget_files(change.shortcut.appid)
                 if change.old_icon is not None:
                     queued = None
                     if running:
@@ -1188,8 +1226,11 @@ class MainWindow(QMainWindow):
         if not sc or self.busy == "apply" or not self.ensure_key():
             return
         dlg = MatchDialog(self, self.sgdb, sc.name, sc.exe)
-        if dlg.exec() and dlg.selected():
-            g = dlg.selected()
+        try:
+            g = dlg.selected() if dlg.exec() else None
+        finally:
+            dlg.deleteLater()
+        if g is not None:
             old = self.match_info(sc)
             self.config.set_match(sc.appid, g.id, g.name, g.year)
             self.guesses.pop(sc.appid, None)
@@ -1262,7 +1303,7 @@ class MainWindow(QMainWindow):
                 _, i, sc = ev
                 self._progress(f"Getting artwork  {i + 1} of {plural(total, 'game')}")
                 self.status[sc.appid] = "getting"
-                self.game_list.refresh()
+                self.refresh_soon()
             elif kind == "match":
                 _, sc, game, n, saved = ev
                 self.status.pop(sc.appid, None)
@@ -1270,11 +1311,11 @@ class MainWindow(QMainWindow):
                     self._record_match(sc, game, n, commit=single)
                 if self.current_shortcut() is sc:
                     self.page.update_match()
-                self.game_list.refresh()
+                self.refresh_soon()
             elif kind == "asset":
                 _, sc, slot, data, asset = ev
                 self._stage(sc, slot.key, Pick(asset, data))
-                self.refresh_all()
+                self.refresh_soon()
 
         def done(report):
             self._set_busy("")
@@ -1361,9 +1402,12 @@ class MainWindow(QMainWindow):
             return
         running = self.steam_is_running()
         dlg = RestoreDialog(self, self.sfile.backups(), self.sfile.shortcuts, running)
-        if not dlg.exec() or not dlg.selected():
+        try:
+            path = dlg.selected() if dlg.exec() else None
+        finally:
+            dlg.deleteLater()
+        if not path:
             return
-        path = dlg.selected()
         if not self.steam_is_running():
             return self._restore(path)
         root = self.steam_root

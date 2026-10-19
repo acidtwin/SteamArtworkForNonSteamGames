@@ -17,18 +17,20 @@ from PySide6.QtWidgets import (
     QStyle,
     QStyledItemDelegate,
     QToolButton,
+    QToolTip,
     QVBoxLayout,
     QWidget,
 )
 
 from . import icons, theme
 from ..artwork import SLOTS
+from .gamemenu import SHADOW, FadingPopup, PopupRow
 from .theme import C, q
 from .widgets import FlowLayout, ScaledCache, draw_dashed_empty, draw_dots, fill_rect, quiet_button
 
 ROLE_INDEX = Qt.ItemDataRole.UserRole  # index into the shortcut list
 ICON = QSize(32, 32)
-NEW_BG = "#1474c8"
+NEW_BG = C["action"]
 
 # key, name for the tooltip, text in the menu
 FILTERS = (("all", "All Games", "All"), ("missing", "Missing Art", "Missing Art"), ("check", "To Check", "To Check"))
@@ -62,7 +64,7 @@ def draw_game_icon(p: QPainter, rect: QRect, name: str, icon: QPixmap | None):
     path.addRoundedRect(QRectF(rect), 3, 3)
     p.setClipPath(path)
     if icon is not None and not icon.isNull():
-        p.fillRect(rect, QColor("#11151a"))
+        p.fillRect(rect, q("input"))
         p.drawPixmap(rect, icon)
     else:
         p.fillRect(rect, q("raised"))
@@ -105,8 +107,14 @@ def spoken(win, idx: int) -> str:
     return ", ".join(parts)
 
 
+def set_spoken(it: QListWidgetItem, text: str):
+    """Set an item's screen-reader text, only when it changed (each set repaints and re-sorts)."""
+    if it.data(Qt.ItemDataRole.AccessibleTextRole) != text:
+        it.setData(Qt.ItemDataRole.AccessibleTextRole, text)
+
+
 TAGS = {
-    "notfound": ("Not found", "#3b2422", C["bad"]),
+    "notfound": ("Not found", C["bad_ground"], C["bad"]),
     "getting": ("Getting", C["info_ground"], C["blue_ink"]),
     "check": ("Check match", C["warn_ground"], C["warn"]),
 }
@@ -261,22 +269,14 @@ class FilterButton(QToolButton):
         draw_all_games_icon(p, QRect((self.width() - 22) // 2, (self.height() - 22) // 2, 22, 22), color)
 
 
-class FilterRow(QAbstractButton):
+class FilterRow(PopupRow):
     """One radio row of the filter menu: ring, text, count on the right."""
 
     def __init__(self, key: str, text: str, parent=None):
-        super().__init__(parent)
+        super().__init__(text, parent, QFont.Weight.DemiBold)
         self.key = key
-        self.setText(text)
         self.count = 0
         self.setCheckable(True)
-        self.setCursor(Qt.CursorShape.PointingHandCursor)
-        self.setAttribute(Qt.WidgetAttribute.WA_Hover)
-        self.setFocusPolicy(Qt.FocusPolicy.StrongFocus)
-        f = QFont(self.font())
-        f.setPointSizeF(theme.pt("control"))
-        f.setWeight(QFont.Weight.DemiBold)
-        self.setFont(f)
 
     def set_count(self, n: int):
         self.count = n
@@ -285,9 +285,6 @@ class FilterRow(QAbstractButton):
 
     def sizeHint(self):
         return QSize(222, max(44, self.fontMetrics().height() + 20))
-
-    def keyPressEvent(self, e):
-        self.parent().keyPressEvent(e)  # the menu handles arrows, Enter and Esc
 
     def paintEvent(self, _):
         p = QPainter(self)
@@ -321,20 +318,15 @@ class FilterRow(QAbstractButton):
                    Qt.AlignmentFlag.AlignVCenter | Qt.AlignmentFlag.AlignRight, str(self.count))
 
 
-class PopupMenu(QFrame):
+class PopupMenu(FadingPopup):
     """A small popup with a caps heading and radio rows (anything with a `key`)."""
 
     chosen = Signal(str)
-    closed = Signal()
 
     def __init__(self, heading: str, spoken: str, rows: list, width: int, parent=None):
-        super().__init__(parent, Qt.WindowType.Popup | Qt.WindowType.FramelessWindowHint)
+        super().__init__(parent, width, margin=5)
         self.setAttribute(Qt.WidgetAttribute.WA_NoMouseReplay)  # clicking the button again just closes it
         self.setAccessibleName(spoken)
-        self.setFixedWidth(width)
-        lay = QVBoxLayout(self)
-        lay.setContentsMargins(5, 5, 5, 5)
-        lay.setSpacing(0)
         head = QLabel(heading)
         f = QFont(head.font())
         f.setPointSizeF(theme.pt("label"))
@@ -343,53 +335,30 @@ class PopupMenu(QFrame):
         head.setFont(f)
         head.setStyleSheet(f"color: {C['text3']}; background: transparent;")
         head.setContentsMargins(12, 8, 12, 6)
-        lay.addWidget(head)
+        self.lay.addWidget(head)
         self.rows = {}
         for row in rows:
-            row.setParent(self)
             row.clicked.connect(lambda _=False, k=row.key: self._pick(k))
             self.rows[row.key] = row
-            lay.addWidget(row)
+            self.lay.addWidget(row)
+
+    def _rows(self):
+        return list(self.rows.values())
 
     def set_mode(self, mode: str):
         for key, row in self.rows.items():
             row.setChecked(key == mode)
 
     def popup_at(self, top_right: QPoint):
+        """Open with the card's top-right corner at `top_right` (global)."""
         self.adjustSize()
-        self.move(top_right.x() - self.width(), top_right.y())
-        self.show()
-        next((r for r in self.rows.values() if r.isChecked()), next(iter(self.rows.values()))).setFocus()
+        first = next((r for r in self.rows.values() if r.isChecked()), next(iter(self.rows.values())))
+        self._show_at(top_right.x() - (self.width() - 2 * SHADOW), top_right.y(), first)
 
     def _pick(self, key: str):
         self.set_mode(key)
         self.close()
         self.chosen.emit(key)
-
-    def keyPressEvent(self, e):
-        rows = list(self.rows.values())
-        cur = next((i for i, r in enumerate(rows) if r.hasFocus()), 0)
-        k = e.key()
-        if k in (Qt.Key.Key_Down, Qt.Key.Key_Tab):
-            rows[(cur + 1) % len(rows)].setFocus()
-        elif k in (Qt.Key.Key_Up, Qt.Key.Key_Backtab):
-            rows[(cur - 1) % len(rows)].setFocus()
-        elif k in (Qt.Key.Key_Return, Qt.Key.Key_Enter, Qt.Key.Key_Space):
-            self._pick(rows[cur].key)
-        elif k == Qt.Key.Key_Escape:
-            self.close()
-        else:
-            super().keyPressEvent(e)
-
-    def hideEvent(self, e):
-        super().hideEvent(e)
-        self.closed.emit()
-
-    def paintEvent(self, _):
-        p = QPainter(self)
-        p.fillRect(self.rect(), q("ground"))
-        p.setPen(q("line"))
-        p.drawRect(self.rect().adjusted(0, 0, -1, -1))
 
 
 class FilterMenu(PopupMenu):
@@ -399,29 +368,18 @@ class FilterMenu(PopupMenu):
         super().__init__("SHOW", "Show games", [FilterRow(key, text) for key, _tip, text in FILTERS], 232, parent)
 
 
-class ViewRow(QAbstractButton):
+class ViewRow(PopupRow):
     """One row of the view menu: the view's picture, its name, and a tick on the one in use."""
 
     def __init__(self, key: str, text: str, icon: str, parent=None):
-        super().__init__(parent)
+        super().__init__(text, parent, QFont.Weight.DemiBold)
         self.key = key
         self.icon_name = icon
-        self.setText(text)
         self.setAccessibleName(text)
         self.setCheckable(True)
-        self.setCursor(Qt.CursorShape.PointingHandCursor)
-        self.setAttribute(Qt.WidgetAttribute.WA_Hover)
-        self.setFocusPolicy(Qt.FocusPolicy.StrongFocus)
-        f = QFont(self.font())
-        f.setPointSizeF(theme.pt("control"))
-        f.setWeight(QFont.Weight.DemiBold)
-        self.setFont(f)
 
     def sizeHint(self):
         return QSize(190, max(40, self.fontMetrics().height() + 18))
-
-    def keyPressEvent(self, e):
-        self.parent().keyPressEvent(e)
 
     def paintEvent(self, _):
         p = QPainter(self)
@@ -693,7 +651,7 @@ class GameList(QWidget):
         for row in range(self.list.count()):
             it = self.list.item(row)
             if it.data(ROLE_INDEX) < n:
-                it.setData(Qt.ItemDataRole.AccessibleTextRole, spoken(self.win, it.data(ROLE_INDEX)))
+                set_spoken(it, spoken(self.win, it.data(ROLE_INDEX)))
 
     def counts(self) -> dict[str, int]:
         scs = self.win.sfile.shortcuts
@@ -819,7 +777,7 @@ class WallDelegate(QStyledItemDelegate):
         self.win = win
         self.view = view
         self.covers = ScaledCache()
-        self._picks: dict[int, QPixmap] = {}
+        self.picks: dict = {}
 
     def tile_height(self, font: QFont) -> int:
         f = QFont(font)
@@ -830,15 +788,6 @@ class WallDelegate(QStyledItemDelegate):
 
     def sizeHint(self, option, index):
         return QSize(self.MIN_W, self.tile_height(option.font))
-
-    def pick_cover(self, pm: QPixmap) -> QPixmap:
-        key = pm.cacheKey()
-        out = self._picks.get(key)
-        if out is None:
-            if len(self._picks) > 200:
-                self._picks.clear()
-            out = self._picks[key] = fill_rect(pm, self.COVER, self.view.devicePixelRatioF())
-        return out
 
     def paint(self, p: QPainter, option, index):
         p.save()
@@ -852,18 +801,13 @@ class WallDelegate(QStyledItemDelegate):
         focus = bool(option.state & QStyle.StateFlag.State_HasFocus) and self.view.hasFocus()
         pick = self.win.pending.get(sc.appid, "grid")
         new = pick is not None and not pick.clears
-        path = None if pick is not None else self.win.cover_path(sc)
-        if not new and path is None:
+        if not new and (pick is not None or self.win.cover_path(sc) is None):
             draw_dashed_empty(p, r, sc.name, plus=False, focus=hover or focus)
         else:
             clip = QPainterPath()
             clip.addRoundedRect(r, 3, 3)
             p.setClipPath(clip)
-            if new:
-                ppm = self.win.pick_pixmap(sc, "grid")
-                pm = self.pick_cover(ppm) if ppm is not None and not ppm.isNull() else None
-            else:
-                pm = self.covers.get(path, self.COVER, self.view.viewport().update, self.view.devicePixelRatioF())
+            pm = small_cover(self, sc, self.COVER)
             if pm is None or pm.isNull():
                 p.fillRect(r, q("raised"))  # decoding, or not an image
             else:
@@ -983,7 +927,7 @@ def small_cover(delegate, sc, size: QSize) -> QPixmap | None:
         pm = win.pick_pixmap(sc, "grid")
         if pm is None or pm.isNull():
             return None
-        key = (pm.cacheKey(), size.width(), size.height())
+        key = (pm.cacheKey(), size.width(), size.height(), dpr)
         out = delegate.picks.get(key)
         if out is None:
             if len(delegate.picks) > 200:
@@ -1067,13 +1011,20 @@ class ListDelegate(QStyledItemDelegate):
 
 DETAIL_COLS = ("Cover", "Wide", "Banner", "Logo", "Icon")
 DETAIL_W, STATUS_W = 64, 130
+NARROW_W = 40  # piece columns when the view is narrow
+NAME_X = 8 + 22 + 12  # where the name column starts: after the row's small cover
+NAME_MIN = 140
 
 
-def detail_columns(width: float) -> tuple[float, list[float], float]:
-    """x of the name column's end, the centre of each piece column, and the status column's x."""
-    status_x = width - STATUS_W - 8
-    first = status_x - DETAIL_W * len(DETAIL_COLS)
-    return first, [first + DETAIL_W * (i + 0.5) for i in range(len(DETAIL_COLS))], status_x
+def detail_columns(width: float) -> tuple[float, list[float], float | None, float]:
+    """x of the name column's end, the centre of each piece column, the status column's x
+    (None when it doesn't fit: the status goes in the row's tooltip) and a piece column's width."""
+    col, status_x = DETAIL_W, width - STATUS_W - 8
+    if status_x - DETAIL_W * len(DETAIL_COLS) < NAME_X + NAME_MIN:  # too narrow for everything
+        col, status_x = NARROW_W, None
+    first = (width - 8 if status_x is None else status_x) - col * len(DETAIL_COLS)
+    first = max(first, NAME_X + 40.0)  # past that the columns run off the right instead of over the covers
+    return first, [first + col * (i + 0.5) for i in range(len(DETAIL_COLS))], status_x, col
 
 
 def detail_status(win, idx: int) -> tuple[str, QColor]:
@@ -1100,6 +1051,16 @@ class DetailsDelegate(QStyledItemDelegate):
     def sizeHint(self, option, index):
         return QSize(300, 42)
 
+    def helpEvent(self, event, view, option, index):
+        """Narrow, the status column is gone: the tooltip says it instead."""
+        if event.type() == event.Type.ToolTip and detail_columns(option.rect.width() - 8)[2] is None:
+            idx = index.data(ROLE_INDEX)
+            if idx is not None and idx < len(self.win.sfile.shortcuts):
+                name = self.win.sfile.shortcuts[idx].name or "(unnamed)"
+                QToolTip.showText(event.globalPos(), f"{name}\n{detail_status(self.win, idx)[0]}", view)
+                return True
+        return super().helpEvent(event, view, option, index)
+
     def paint(self, p: QPainter, option, index):
         p.save()
         p.setRenderHint(QPainter.RenderHint.Antialiasing)
@@ -1112,7 +1073,7 @@ class DetailsDelegate(QStyledItemDelegate):
         sc = self.win.sfile.shortcuts[idx]
         cv = QRectF(r.x() + 8, r.center().y() - self.COVER.height() / 2, self.COVER.width(), self.COVER.height())
         draw_small_cover(p, cv, small_cover(self, sc, self.COVER), sc.name)
-        name_end, centres, status_x = detail_columns(r.width())
+        name_end, centres, status_x, _col = detail_columns(r.width())
         f = QFont(option.font)
         f.setPointSizeF(theme.pt("control"))
         f.setWeight(QFont.Weight.DemiBold)
@@ -1128,12 +1089,13 @@ class DetailsDelegate(QStyledItemDelegate):
             else:
                 p.setPen(QPen(q("text3"), 1.5))
                 p.drawLine(QPointF(r.x() + x - 4, cy), QPointF(r.x() + x + 4, cy))
-        text, colour = detail_status(self.win, idx)
-        sf = QFont(option.font)
-        sf.setPointSizeF(theme.pt("faint"))
-        p.setFont(sf)
-        p.setPen(colour)
-        p.drawText(QRectF(r.x() + status_x, r.y(), STATUS_W, r.height()), Qt.AlignmentFlag.AlignVCenter, text)
+        if status_x is not None:
+            text, colour = detail_status(self.win, idx)
+            sf = QFont(option.font)
+            sf.setPointSizeF(theme.pt("faint"))
+            p.setFont(sf)
+            p.setPen(colour)
+            p.drawText(QRectF(r.x() + status_x, r.y(), STATUS_W, r.height()), Qt.AlignmentFlag.AlignVCenter, text)
         p.restore()
 
 
@@ -1155,12 +1117,16 @@ class DetailsHeader(QWidget):
         p.setPen(q("text3"))
         x0 = self.view.viewport().x() + self.view.x() - self.x()
         width = self.view.viewport().width() - 8
-        name_end, centres, status_x = detail_columns(width)
+        name_end, centres, status_x, col = detail_columns(width)
         h = self.height()
-        p.drawText(QRectF(x0 + 8 + DetailsDelegate.COVER.width() + 12, 0, 200, h), Qt.AlignmentFlag.AlignVCenter, "NAME")
+        fm = QFontMetrics(f)
+        p.drawText(QRectF(x0 + NAME_X, 0, max(0.0, name_end - NAME_X - 4), h), Qt.AlignmentFlag.AlignVCenter,
+                   fm.elidedText("NAME", Qt.TextElideMode.ElideRight, int(max(0.0, name_end - NAME_X - 4))))
         for label, x in zip(DETAIL_COLS, centres):
-            p.drawText(QRectF(x0 + x - DETAIL_W / 2, 0, DETAIL_W, h), Qt.AlignmentFlag.AlignCenter, label.upper())
-        p.drawText(QRectF(x0 + status_x, 0, STATUS_W, h), Qt.AlignmentFlag.AlignVCenter, "STATUS")
+            text = fm.elidedText(label.upper(), Qt.TextElideMode.ElideRight, int(col) + 12)  # may overhang a little
+            p.drawText(QRectF(x0 + x - col / 2, 0, col, h), Qt.AlignmentFlag.AlignCenter | Qt.TextFlag.TextDontClip, text)
+        if status_x is not None:
+            p.drawText(QRectF(x0 + status_x, 0, STATUS_W, h), Qt.AlignmentFlag.AlignVCenter, "STATUS")
         p.setPen(QPen(q("line"), 1))
         p.drawLine(QPointF(x0 + 4, h - 0.5), QPointF(x0 + width - 4, h - 0.5))
 
@@ -1313,7 +1279,7 @@ class StartPage(QWidget):
             idx = it.data(ROLE_INDEX)
             if idx >= n:
                 continue
-            it.setData(Qt.ItemDataRole.AccessibleTextRole, spoken(win, idx))
+            set_spoken(it, spoken(win, idx))
             show = self.piece is None or not cov[idx][self.piece]
             it.setHidden(not show)
             shown += show

@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from PySide6.QtCore import QPointF, QRectF, QSize, Qt, Signal
-from PySide6.QtGui import QFont, QFontMetrics, QPainter, QPainterPath, QPen
+from PySide6.QtGui import QFont, QFontMetrics, QPainter, QPainterPath, QPen, QPixmap
 from PySide6.QtWidgets import (
     QButtonGroup,
     QHBoxLayout,
@@ -47,6 +47,22 @@ class OptionDelegate(QStyledItemDelegate):
     def __init__(self, tray):
         super().__init__()
         self.tray = tray
+        self._scaled: dict[tuple, QPixmap] = {}  # thumbnails scaled for the tray, so a repaint only draws
+
+    def scaled(self, pm: QPixmap, s: QSize, logo: bool, dpr: float) -> QPixmap:
+        key = (pm.cacheKey(), s.width(), s.height(), logo, dpr)
+        out = self._scaled.get(key)
+        if out is None:
+            if len(self._scaled) > 300:
+                self._scaled.clear()
+            if logo:  # logos keep their shape, with a margin
+                out = pm.scaled(s * 0.86 * dpr, Qt.AspectRatioMode.KeepAspectRatio,
+                                Qt.TransformationMode.SmoothTransformation)
+                out.setDevicePixelRatio(dpr)
+            else:
+                out = fill_rect(pm, s, dpr)
+            self._scaled[key] = out
+        return out
 
     def sizeHint(self, option, index):
         s = thumb_size(self.tray.slot.key)
@@ -67,14 +83,13 @@ class OptionDelegate(QStyledItemDelegate):
         else:
             p.fillRect(r, q("raised"))
         if pm is not None and not pm.isNull():
+            dpr = p.device().devicePixelRatioF()
+            sp = self.scaled(pm, s, logo, dpr)
             if logo:
-                dpr = p.device().devicePixelRatioF()
-                sp = pm.scaled(s * 0.86 * dpr, Qt.AspectRatioMode.KeepAspectRatio, Qt.TransformationMode.SmoothTransformation)
-                sp.setDevicePixelRatio(dpr)
                 w, h = sp.width() / dpr, sp.height() / dpr
                 p.drawPixmap(QPointF(r.x() + (s.width() - w) / 2, r.y() + (s.height() - h) / 2), sp)
             else:
-                p.drawPixmap(r.topLeft(), fill_rect(pm, s, p.device().devicePixelRatioF()))
+                p.drawPixmap(r.topLeft(), sp)
         p.setClipping(False)
         picked = bool(index.data(ROLE_PICK))
         if picked:
@@ -315,7 +330,7 @@ class OptionTray(QWidget):
         """Same as the Clear pill: drop a new pick when nothing is on disk, else mark the piece for clearing."""
         sc = self.win.current_shortcut()
         pick = self._pick()
-        if pick is not None and not pick.clears and self.win.slot_path(sc, self.slot) is None:
+        if pick is not None and not pick.clears and self.win.slot_path(sc, self.slot, fresh=True) is None:
             self.win.unstage(self.slot)
         else:
             self.win.stage_clear(self.slot)

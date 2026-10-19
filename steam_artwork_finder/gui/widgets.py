@@ -232,6 +232,7 @@ class ArtView(QWidget):
         self.badge = False
         self.selected = False
         self.round = 3
+        self._scaled: tuple | None = None  # (key, backdrop, art) as drawn at this size
         self.setCursor(Qt.CursorShape.PointingHandCursor)
         self.setFocusPolicy(Qt.FocusPolicy.StrongFocus)
         self.setAttribute(Qt.WidgetAttribute.WA_Hover)
@@ -245,7 +246,31 @@ class ArtView(QWidget):
     def set_pixmap(self, pm: QPixmap | None, backdrop: QPixmap | None = None):
         self.pixmap = pm or QPixmap()
         self.backdrop = backdrop or QPixmap()
+        self._scaled = None
         self.update()
+
+    def resizeEvent(self, e):
+        self._scaled = None
+        super().resizeEvent(e)
+
+    def _render(self) -> tuple[QPixmap | None, QPixmap | None]:
+        """The backdrop and the art scaled for this size, made once rather than on every repaint."""
+        dpr = self.devicePixelRatioF()
+        key = (self.pixmap.cacheKey(), self.backdrop.cacheKey(), self.checker, dpr)
+        if self._scaled is None or self._scaled[0] != key:
+            bd = fill_rect(self.backdrop, self.size(), dpr) if not self.backdrop.isNull() else None
+            art = None
+            if not self.pixmap.isNull():
+                if self.checker or bd is not None:
+                    # Logos keep their shape, centred with a margin.
+                    box = self.size() * (0.7 if bd is not None else 0.86) * dpr
+                    art = self.pixmap.scaled(box, Qt.AspectRatioMode.KeepAspectRatio,
+                                             Qt.TransformationMode.SmoothTransformation)
+                    art.setDevicePixelRatio(dpr)
+                else:
+                    art = fill_rect(self.pixmap, self.size(), dpr)
+            self._scaled = (key, bd, art)
+        return self._scaled[1], self._scaled[2]
 
     def paintEvent(self, _):
         p = QPainter(self)
@@ -258,23 +283,19 @@ class ArtView(QWidget):
             draw_dashed_empty(p, r, self.empty_text, focus=self.hasFocus())
             return
         p.setClipPath(clip)
-        if not self.backdrop.isNull():
-            p.drawPixmap(self.rect(), fill_rect(self.backdrop, self.size(), self.devicePixelRatioF()))
+        bd, art = self._render()
+        if bd is not None:
+            p.drawPixmap(self.rect(), bd)
         elif self.checker:
             draw_checker(p, r)
-        if not self.pixmap.isNull():
-            if self.checker or not self.backdrop.isNull():
-                # Logos keep their shape, centred with a margin.
-                dpr = self.devicePixelRatioF()
-                box = self.size() * (0.7 if not self.backdrop.isNull() else 0.86) * dpr
-                s = self.pixmap.scaled(box, Qt.AspectRatioMode.KeepAspectRatio,
-                                       Qt.TransformationMode.SmoothTransformation)
-                s.setDevicePixelRatio(dpr)
-                w, h = s.width() / dpr, s.height() / dpr
-                p.drawPixmap(QPointF((self.width() - w) / 2, (self.height() - h) / 2), s)
+        if art is not None:
+            if self.checker or bd is not None:
+                dpr = art.devicePixelRatio()
+                w, h = art.width() / dpr, art.height() / dpr
+                p.drawPixmap(QPointF((self.width() - w) / 2, (self.height() - h) / 2), art)
             else:
-                p.drawPixmap(self.rect(), fill_rect(self.pixmap, self.size(), self.devicePixelRatioF()))
-        elif not self.backdrop.isNull():
+                p.drawPixmap(self.rect(), art)
+        elif bd is not None:
             p.fillRect(r, QColor(0, 0, 0, 90))
         p.setClipping(False)
         if self.badge:

@@ -570,3 +570,122 @@ def test_thumbnail_cache_replaces_a_cut_off_file(qapp, tmp_path, monkeypatch):
     p.write_bytes(PNG[:20])  # the app was killed mid-download
     assert workers.cached_download(url, lambda u: fetched.append(u) or PNG) == PNG
     assert len(fetched) == 2 and p.read_bytes() == PNG
+
+
+def test_banner_header_fits_the_page(qapp, window):
+    from PySide6.QtCore import QPoint
+    from PySide6.QtWidgets import QLabel
+
+    win = window
+    win.config.data["api_key"] = "x"
+    win.sgdb.match = lambda name: (None, 0)
+    win.sgdb.assets = lambda *a, **k: []
+    win.open_game(0)
+    _pump(qapp)
+    page, card = win.page, win.page.card
+    win.sfile.shortcuts[0].name = "A Very Long Game Name That Goes On And On, The Definitive Edition"
+    card.set_game(win.sfile.shortcuts[0].name)
+    card.set_state("check", "The Legend of Zelda: Tears of the Kingdom", "2023", 12)
+    card.set_actions(True, 3, False)
+
+    def fits():
+        _pump(qapp, 150)
+        right = card.apply_btn.mapTo(card, QPoint(card.apply_btn.width(), 0)).x()
+        assert page.scroll.widget().width() <= page.scroll.viewport().width()
+        assert right <= card.width() and card.title.width() <= card.width()
+
+    fits()
+    assert not card.compact and card.height() == 210  # buttons beside the name, as always
+    shown = QLabel.text(card.title)
+    assert card.title.text().startswith("A Very Long") and shown.endswith("…") and card.title.toolTip()
+    win.tray.show()
+    win.split.setSizes([300, 610, 370])
+    fits()
+    assert card.compact  # the buttons moved to a row of their own
+    win.tray.hide()
+    _pump(qapp, 150)
+    assert not card.compact
+
+
+def test_artwork_files_are_looked_up_once_and_again_after_a_write(qapp, window):
+    from steam_artwork_finder.artwork import SLOTS
+    from steam_artwork_finder.pending import Pick
+
+    win = window
+    sc = win.sfile.shortcuts[0]
+    assert win.coverage(sc) == [False] * 5
+    win.user.grid_dir.mkdir(parents=True, exist_ok=True)
+    (win.user.grid_dir / f"{sc.appid}_hero.png").write_bytes(PNG)
+    assert win.coverage(sc)[2] is False  # remembered, not looked up on every paint
+    assert win.slot_path(sc, SLOTS["hero"], fresh=True) is not None
+    win._stage(sc, "grid", Pick(_asset(1), PNG))
+    win.apply_games([sc.appid])
+    _pump(qapp, 3000, until=lambda: not win.busy)
+    assert win.coverage(sc)[:3] == [True, False, True]
+    win.toast.undo_now()
+    assert win.coverage(sc)[0] is False
+    (win.user.grid_dir / f"{sc.appid}_logo.png").write_bytes(PNG)
+    win.reload_shortcuts()
+    assert win.coverage(win.sfile.shortcuts[0])[3] is True
+
+
+def test_content_bar_buttons_keep_focus_through_a_refresh(qapp, window):
+    win = window
+    win.activateWindow()
+    b = win.cbar.buttons[0]
+    b.setFocus()
+    _pump(qapp, 50)
+    win.refresh_all()
+    win.refresh_all()
+    assert win.cbar.buttons[0] is b and b.hasFocus() and b.text() == "Get Artwork (3 Games)"
+
+
+def test_popover_keeps_tab_and_esc_to_itself(qapp, window):
+    from PySide6.QtCore import QEvent, Qt
+    from PySide6.QtGui import QKeyEvent
+    from PySide6.QtWidgets import QApplication, QLineEdit
+
+    win = window
+    win.activateWindow()
+    _pump(qapp, 50)
+    win.ask_api_key()
+    _pump(qapp, 200)
+    pop = win.keypop
+    assert pop.is_open()
+    for _ in range(8):  # Tab goes round the pop-over's own controls
+        pop.focusNextPrevChild(True)
+        assert pop.isAncestorOf(QApplication.focusWidget())
+    other = QLineEdit()  # Esc in another window (a dialog) isn't the pop-over's
+    QApplication.sendEvent(other, QKeyEvent(QEvent.Type.KeyPress, Qt.Key.Key_Escape, Qt.KeyboardModifier.NoModifier))
+    assert pop.is_open()
+    QApplication.sendEvent(pop.edit, QKeyEvent(QEvent.Type.KeyPress, Qt.Key.Key_Escape, Qt.KeyboardModifier.NoModifier))
+    assert not pop.is_open()
+    assert QApplication.focusWidget() is win.statusbar.connection  # back where it was opened from
+
+
+def test_dialogs_are_deleted_when_closed(qapp, window, monkeypatch):
+    from PySide6.QtCore import QEvent
+
+    from steam_artwork_finder.gui import dialogs
+
+    win = window
+    win.config.data["api_key"] = "x"
+    win.sgdb.search = lambda term: []
+    monkeypatch.setattr(dialogs.MatchDialog, "exec", lambda dlg: 0)
+    win.open_game(0)
+    for _ in range(2):
+        win.change_match()
+    qapp.sendPostedEvents(None, QEvent.Type.DeferredDelete)  # what the event loop does when it gets back
+    assert not win.findChildren(dialogs.MatchDialog)
+
+
+def test_details_columns_never_overlap_the_names(qapp):
+    from steam_artwork_finder.gui.library import NAME_X, STATUS_W, detail_columns
+
+    end, centres, status_x, col = detail_columns(900)
+    assert status_x is not None and centres[-1] + col / 2 <= status_x and col == 64
+    for width in (380, 500, 639):
+        end, centres, status_x, col = detail_columns(width)
+        assert status_x is None and end >= NAME_X + 40  # the status column moves into the tooltip
+        assert centres[0] - col / 2 >= end
+    assert detail_columns(640 + STATUS_W)[2] is not None

@@ -27,6 +27,7 @@ from ..sgdb import Game, SteamGridDB
 from . import icons, theme, workers
 from .chrome import Overlay
 from .theme import C
+from .widgets import fill_rect
 
 API_KEY_URL = "https://www.steamgriddb.com/profile/preferences/api"
 
@@ -48,7 +49,7 @@ class KeyBadge(QWidget):
         p = QPainter(self)
         p.setRenderHint(QPainter.RenderHint.Antialiasing)
         g = QLinearGradient(0, 0, self.width(), self.height())
-        g.setColorAt(0, QColor("#1a9fff"))
+        g.setColorAt(0, QColor(C["blue"]))
         g.setColorAt(1, QColor("#1a4f8a"))
         p.setPen(Qt.PenStyle.NoPen)
         p.setBrush(g)
@@ -226,6 +227,9 @@ def _bold(w: QWidget, size: str | None = None, weight=QFont.Weight.DemiBold):
     w.setFont(f)
 
 
+_cropped: dict[tuple, QPixmap] = {}  # (pixmap, size, dpr) -> the pixmap cropped to fill it
+
+
 def _paint_cover(p: QPainter, r: QRectF, pm: QPixmap | None, name: str = ""):
     """A cover cropped to fill r, or a dark card with the game's initial while it loads."""
     from PySide6.QtGui import QPainterPath
@@ -235,10 +239,14 @@ def _paint_cover(p: QPainter, r: QRectF, pm: QPixmap | None, name: str = ""):
     p.save()
     p.setClipPath(path)
     if pm is not None and not pm.isNull():
-        s = pm.size().scaled(r.size().toSize(), Qt.AspectRatioMode.KeepAspectRatioByExpanding)
-        src = QRectF((s.width() - r.width()) / 2, (s.height() - r.height()) / 2, r.width(), r.height())
-        sx, sy = pm.width() / s.width(), pm.height() / s.height()
-        p.drawPixmap(r, pm, QRectF(src.x() * sx, src.y() * sy, src.width() * sx, src.height() * sy))
+        dpr = p.device().devicePixelRatioF()
+        key = (pm.cacheKey(), r.width(), r.height(), dpr)
+        out = _cropped.get(key)
+        if out is None:
+            if len(_cropped) > 200:
+                _cropped.clear()
+            out = _cropped[key] = fill_rect(pm, r.size().toSize(), dpr)
+        p.drawPixmap(r.topLeft(), out)
     else:
         p.fillRect(r, QColor(C["raised"]))
         if name:
@@ -392,6 +400,7 @@ class MatchDialog(QDialog):
         self.games: list[Game] = []
         self.rows: list[ResultRow] = []
         self._run = 0  # newer searches win over slower older ones
+        self._gone = False  # closed: answers still on their way are dropped
         self._art: dict[tuple[int, str], list] = {}  # (game id, kind) -> assets
         self._pix: dict[str, QPixmap] = {}
         self._asking: dict[tuple[int, str], list] = {}  # requests in flight -> who wants the answer
@@ -400,12 +409,12 @@ class MatchDialog(QDialog):
             f"#matchchip {{ background: {C['panel']}; border: 1px solid {C['line']}; border-radius: 15px;"
             f" min-height: 30px; max-height: 30px; padding: 0 12px; color: {C['text']}; font-weight: 600; }}"
             f"#matchchip:hover {{ border-color: {C['text3']}; }}"
+            f"#matchchip:focus {{ border: 2px solid {C['blue']}; padding: 0 11px; }}"
             f"#matchchip:checked {{ background: rgba(26,159,255,.12); border: 2px solid {C['blue']}; padding: 0 11px; }}"
             f"#matchtip {{ background: rgba(26,159,255,.08); border-left: 3px solid {C['blue']}; }}"
             f"#matchprev {{ background: {C['panel']}; border-radius: 4px; }}"
             f"#matchstat {{ background: {C['ground']}; border-radius: 3px; }}"
-            f"#matchsearch QToolButton {{ min-width: 0; min-height: 0; padding: 0; }}"
-            f"#matchfoot {{ background: #1a1e25; border-top: 1px solid {C['line']}; }}")
+            f"#matchsearch QToolButton {{ min-width: 0; min-height: 0; padding: 0; }}")
         outer = QVBoxLayout(self)
         outer.setContentsMargins(0, 0, 0, 0)
         outer.setSpacing(0)
@@ -521,7 +530,7 @@ class MatchDialog(QDialog):
         outer.addLayout(body, 1)
 
         foot = QFrame()
-        foot.setObjectName("matchfoot")
+        foot.setObjectName("dialogfoot")
         fl = QHBoxLayout(foot)
         fl.setContentsMargins(16, 12, 16, 12)
         fl.setSpacing(8)
@@ -566,8 +575,14 @@ class MatchDialog(QDialog):
                     on_done=lambda games: self._show(games, run),
                     on_error=lambda msg: run == self._run and self.status.setText(msg))
 
+    def done(self, r: int):
+        self._gone = True
+        self._run += 1  # searches still on their way are dropped
+        self._wait.stop()
+        super().done(r)
+
     def _show(self, games: list[Game], run: int | None = None):
-        if run is not None and run != self._run:
+        if self._gone or run is not None and run != self._run:
             return
         n = len(games)
         self.status.setText(f"{n} result{'' if n == 1 else 's'}" if games else "No matches. Try a shorter name.")
@@ -639,6 +654,8 @@ class MatchDialog(QDialog):
     def _load(self, gid: int, kind: str, on_pixmap, stat: QLabel | None = None):
         """Get the game's artwork list for `kind` (once), then its first picture's thumbnail."""
         def got(assets):
+            if self._gone:
+                return
             if stat is not None:
                 g = self.selected()
                 if g is not None and g.id == gid:
@@ -666,6 +683,8 @@ class MatchDialog(QDialog):
         from .widgets import load_pixmap
 
         def done(data):
+            if self._gone:
+                return
             pm = self._pix.get(url) or load_pixmap(data=data, key=("thumb", url))
             self._pix[url] = pm
             try:
@@ -756,7 +775,7 @@ class QuitDialog(QDialog):
             pf.setPointSizeF(theme.pt("tag"))
             pf.setWeight(QFont.Weight.ExtraBold)
             pill.setFont(pf)
-            pill.setStyleSheet(f"background: #2c3a1a; color: {C['ok']}; border-radius: 2px; padding: 0 7px;")
+            pill.setStyleSheet(f"background: {C['ok_ground']}; color: {C['ok']}; border-radius: 2px; padding: 0 7px;")
             pill.setFixedHeight(20)
             rl.addWidget(pill, 0, Qt.AlignmentFlag.AlignVCenter)
             row.setAccessibleName(f"{name}: {what}")
@@ -773,8 +792,7 @@ class QuitDialog(QDialog):
         outer.addLayout(body)
 
         foot = QFrame()
-        foot.setObjectName("quitfoot")
-        foot.setStyleSheet(f"#quitfoot {{ background: #1a1e25; border-top: 1px solid {C['line']}; }}")
+        foot.setObjectName("dialogfoot")
         fl = QHBoxLayout(foot)
         fl.setContentsMargins(18, 12, 18, 12)
         fl.setSpacing(8)
@@ -844,7 +862,7 @@ def difference_tags(d) -> list[tuple[str, str]]:
     return tags or [("Same as now", "")]
 
 
-TAG_STYLE = {"add": ("#2c3a1a", "ok"), "del": ("#3b2422", "bad"), "chg": ("#23364a", "blue_ink"), "": ("#2a3442", "text3")}
+TAG_STYLE = {"add": ("ok_ground", "ok"), "del": ("bad_ground", "bad"), "chg": ("chg_ground", "blue_ink"), "": ("raised", "text3")}
 
 
 class BackupRow(QAbstractButton):
@@ -876,7 +894,7 @@ class BackupRow(QAbstractButton):
             f.setWeight(QFont.Weight.ExtraBold)
             t.setFont(f)
             t.setFixedHeight(18)
-            t.setStyleSheet(f"background: {bg}; color: {C[fg]}; border-radius: 2px; padding: 0 6px;")
+            t.setStyleSheet(f"background: {C[bg]}; color: {C[fg]}; border-radius: 2px; padding: 0 6px;")
             tl.addWidget(t)
         tl.addStretch(1)
         words.addLayout(tl)
@@ -910,6 +928,9 @@ class BackupRow(QAbstractButton):
         else:
             p.setPen(QPen(QColor(C["text3"]), 1.5))
             p.drawEllipse(c.adjusted(0.75, 0.75, -0.75, -0.75))
+        if self.hasFocus():
+            p.setPen(QPen(QColor(C["blue"]), 2))
+            p.drawRoundedRect(QRectF(self.rect()).adjusted(1, 1, -1, -1), 3, 3)
         if not self.isEnabled():
             p.fillRect(self.rect(), QColor(23, 26, 33, 110))
 
@@ -982,8 +1003,7 @@ class RestoreDialog(QDialog):
         outer.addLayout(body, 1)
 
         foot = QFrame()
-        foot.setObjectName("quitfoot")
-        foot.setStyleSheet(f"#quitfoot {{ background: #1a1e25; border-top: 1px solid {C['line']}; }}")
+        foot.setObjectName("dialogfoot")
         fl = QHBoxLayout(foot)
         fl.setContentsMargins(18, 12, 18, 12)
         fl.setSpacing(8)
