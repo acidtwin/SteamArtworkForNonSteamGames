@@ -79,11 +79,7 @@ def test_animated_options_only_where_steam_plays_them():
     assert not Asset(1, "u", "https://x/t.jpg", 0, 0, "", 0, "", "").animated
 
 
-@pytest.fixture(scope="module")
-def qapp():
-    from PySide6.QtWidgets import QApplication
-
-    return QApplication.instance() or QApplication([])
+from test_gui import _pump, qapp, window  # noqa: E402,F401  (shared fixtures)
 
 
 def test_apng_frames_blend_and_dispose(qapp):
@@ -141,3 +137,32 @@ def test_frames_halve_when_count_unknown(qapp):
         out.add(img, 10)
     got = out.frames()
     assert len(got) <= 4 and sum(ms for _, ms in got) == 200
+
+
+def test_library_plays_animated_covers_on_screen(qapp, window):
+    win = window
+    sc = win.sfile.shortcuts[0]
+    grid = win.user.grid_dir
+    grid.mkdir(parents=True, exist_ok=True)
+    red, blue = (255, 0, 0, 255), (0, 0, 255, 255)
+    (grid / f"{sc.appid}p.png").write_bytes(
+        make_apng(60, 90, [(0, 0, 60, 90, red, 40, 0, 0), (0, 0, 60, 90, blue, 40, 0, 0)]))
+    win._cov.clear()
+    win.go_home()
+    wall = win.start.wall
+    wall.viewport().repaint()
+    anim = wall.anim
+    _pump(qapp, 3000, until=lambda: any(a["frames"] for a in anim.anims.values()))
+    (a,) = anim.anims.values()
+    assert len(a["frames"]) == 2
+    seen = set()
+    for _ in range(20):
+        _pump(qapp, 30)
+        wall.viewport().repaint()
+        seen.add(a["i"])
+    assert seen == {0, 1}  # it plays
+
+    win.config.data["show_animated"] = False  # the setting stills it
+    wall.viewport().repaint()
+    assert not anim.anims
+    win.config.data["show_animated"] = True

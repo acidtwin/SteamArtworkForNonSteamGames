@@ -2,7 +2,9 @@
 
 from __future__ import annotations
 
-from PySide6.QtCore import QEvent, QPoint, QPointF, QRect, QRectF, QSize, Qt, QTimer, Signal
+import time
+
+from PySide6.QtCore import QEvent, QObject, QPoint, QPointF, QRect, QRectF, QSize, Qt, QTimer, Signal
 from PySide6.QtGui import QAction, QColor, QFont, QFontMetrics, QPainter, QPainterPath, QPen, QPixmap
 from PySide6.QtWidgets import (
     QAbstractButton,
@@ -22,8 +24,8 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
-from . import icons, theme
-from ..artwork import SLOTS
+from . import icons, motion, theme, workers
+from ..artwork import SLOTS, file_is_animated
 from .gamemenu import SHADOW, FadingPopup, PopupRow
 from .theme import C, q
 from .widgets import FlowLayout, ScaledCache, draw_dashed_empty, draw_dots, fill_rect, quiet_button
@@ -851,7 +853,7 @@ class WallDelegate(QStyledItemDelegate):
             clip = QPainterPath()
             clip.addRoundedRect(r, 3, 3)
             p.setClipPath(clip)
-            pm = small_cover(self, sc, self.COVER)
+            pm = small_cover(self, sc, self.COVER, option.rect)
             if pm is None or pm.isNull():
                 p.fillRect(r, q("raised"))  # decoding, or not an image
             else:
@@ -960,7 +962,102 @@ class Chip(QAbstractButton):
         p.drawText(QRectF(x, 0, 1000, self.height()), Qt.AlignmentFlag.AlignVCenter, b)
 
 
-def small_cover(delegate, sc, size: QSize) -> QPixmap | None:
+class CoverAnimator(QObject):
+    """Plays animated covers in the library, as Steam's library does.
+
+    Only covers painted lately (on screen) play: each is decoded once, at the size it's
+    drawn and within a small budget, one at a time in the background. A cover that stops
+    being painted (scrolled away, another page shown) stops, and its frames are dropped
+    once it has been out of sight for KEEP seconds, or sooner when the total passes CAP.
+    """
+
+    BUDGET = 6 * 1024 * 1024  # decoded frames for one cover
+    CAP = 64 * 1024 * 1024  # all covers' frames together
+    KEEP = 20.0
+
+    def __init__(self, win, view):
+        super().__init__(view)
+        self.win, self.view = win, view
+        self.animated: dict[tuple, bool] = {}  # (file, mtime) -> animated?
+        self.anims: dict[tuple, dict] = {}
+        self.timer = QTimer(self)
+        self.timer.timeout.connect(self._tick)
+
+    def frame(self, path, size: QSize, dpr: float, rect: QRect) -> QPixmap | None:
+        """The frame due now for an animated cover drawn in `rect`; None for a still (or not decoded yet)."""
+        if not self.win.show_animated:
+            if self.anims:
+                self.anims.clear()
+            return None
+        try:
+            fk = (str(path), path.stat().st_mtime_ns)
+        except OSError:
+            return None
+        if fk not in self.animated:
+            self.animated[fk] = file_is_animated(path)
+        if not self.animated[fk]:
+            return None
+        key = fk + (size.width(), size.height(), dpr)
+        now = time.monotonic()
+        a = self.anims.get(key)
+        if a is None:
+            a = self.anims[key] = {"frames": None, "i": 0, "due": 0.0, "bytes": 0}
+            bound = QSize(round(size.width() * dpr), round(size.height() * dpr))
+            workers.run(motion.decode_frames, str(path), bound, budget=self.BUDGET,
+                        on_done=lambda fr, key=key: self._decoded(key, fr, size, dpr),
+                        on_error=lambda _m, key=key: self.anims.pop(key, None), pool=motion.decode_pool())
+        a["seen"], a["rect"] = now, QRect(rect)
+        if self.timer.interval() != 30 or not self.timer.isActive():
+            self.timer.start(30)
+        return a["frames"][a["i"]][0] if a["frames"] else None
+
+    def _decoded(self, key, frames, size, dpr):
+        a = self.anims.get(key)
+        if a is None:  # dropped while it decoded
+            return
+        if len(frames) < 2:
+            self.anims.pop(key, None)
+            self.animated[key[:2]] = False
+            return
+        a["frames"] = [(fill_rect(QPixmap.fromImage(img), size, dpr), ms) for img, ms in frames]
+        a["bytes"] = sum(img.sizeInBytes() for img, _ in frames)
+        a["due"] = time.monotonic() + frames[0][1] / 1000
+        self.view.viewport().update(a["rect"])
+
+    def _on_screen(self, a, now) -> bool:
+        # Every frame change repaints the cover, which marks it seen again; one that isn't
+        # repainted within its frame's time and a little more is off screen.
+        ms = a["frames"][a["i"]][1] if a["frames"] else 0
+        return now - a["seen"] < ms / 1000 + 0.5
+
+    def _tick(self):
+        now = time.monotonic()
+        playing = False
+        for key, a in list(self.anims.items()):
+            if now - a["seen"] > self.KEEP:
+                del self.anims[key]
+                continue
+            if not self._on_screen(a, now):
+                continue
+            playing = True
+            if a["frames"] and now >= a["due"]:
+                a["i"] = (a["i"] + 1) % len(a["frames"])
+                a["due"] = max(a["due"] + a["frames"][a["i"]][1] / 1000, now)
+                self.view.viewport().update(a["rect"])
+        total = sum(a["bytes"] for a in self.anims.values())
+        if total > self.CAP:  # drop the covers seen longest ago until back under
+            for key, a in sorted(self.anims.items(), key=lambda kv: kv[1]["seen"]):
+                if total <= self.CAP or self._on_screen(a, now):
+                    break
+                total -= a["bytes"]
+                del self.anims[key]
+        if not self.anims:
+            self.timer.stop()
+        elif not playing:
+            self.timer.start(1000)  # nothing on screen: only check now and then for frames to drop
+
+
+def small_cover(delegate, sc, size: QSize, rect: QRect | None = None) -> QPixmap | None:
     """The game's cover (or its waiting pick) cropped to `size`; None if it has none or it's decoding."""
     win, view = delegate.win, delegate.view
     dpr = view.devicePixelRatioF()
@@ -979,7 +1076,14 @@ def small_cover(delegate, sc, size: QSize) -> QPixmap | None:
             out = delegate.picks[key] = fill_rect(pm, size, dpr)
         return out
     path = win.cover_path(sc)
-    return delegate.covers.get(path, size, view.viewport().update, dpr) if path else None
+    if path is None:
+        return None
+    anim = getattr(view, "anim", None)
+    if anim is not None and rect is not None:
+        pm = anim.frame(path, size, dpr, rect)
+        if pm is not None:
+            return pm
+    return delegate.covers.get(path, size, view.viewport().update, dpr)
 
 
 def draw_small_cover(p: QPainter, r: QRectF, pm: QPixmap | None, name: str):
@@ -1036,7 +1140,7 @@ class ListDelegate(QStyledItemDelegate):
         idx = index.data(ROLE_INDEX)
         sc = self.win.sfile.shortcuts[idx]
         cv = QRectF(r.x() + 8, r.center().y() - self.COVER.height() / 2, self.COVER.width(), self.COVER.height())
-        draw_small_cover(p, cv, small_cover(self, sc, self.COVER), sc.name)
+        draw_small_cover(p, cv, small_cover(self, sc, self.COVER, option.rect), sc.name)
         f = QFont(option.font)
         f.setPointSizeF(theme.pt("control"))
         f.setWeight(QFont.Weight.DemiBold)
@@ -1129,7 +1233,7 @@ class DetailsDelegate(QStyledItemDelegate):
         idx = index.data(ROLE_INDEX)
         sc = self.win.sfile.shortcuts[idx]
         cv = QRectF(r.x() + 8, r.center().y() - self.COVER.height() / 2, self.COVER.width(), self.COVER.height())
-        draw_small_cover(p, cv, small_cover(self, sc, self.COVER), sc.name)
+        draw_small_cover(p, cv, small_cover(self, sc, self.COVER, option.rect), sc.name)
         name_end, centres, status_x, _col = detail_columns(r.width())
         f = QFont(option.font)
         f.setPointSizeF(theme.pt("control"))
@@ -1216,6 +1320,7 @@ class CoverWall(QListWidget):
         self.delegates = {"grid": self.delegate, "list": ListDelegate(win, self), "details": DetailsDelegate(win, self)}
         self.view = ""
         self.cols = 1  # grid columns, set by fit()
+        self.anim = CoverAnimator(win, self)
         self.set_view("grid")
 
     def set_view(self, view: str):

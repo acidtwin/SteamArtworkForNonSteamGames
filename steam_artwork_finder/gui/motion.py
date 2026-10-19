@@ -175,15 +175,16 @@ def _reader_frames(data: bytes, max_frames: int, bound: QSize | None = None,
     return out.frames()
 
 
-def decode_frames(path: str, bound: QSize | None = None, max_frames: int = MAX_FRAMES) -> list[tuple[QImage, int]]:
+def decode_frames(path: str, bound: QSize | None = None, max_frames: int = MAX_FRAMES,
+                  budget: int | None = None) -> list[tuple[QImage, int]]:
     """Worker: every frame of an animated file (APNG, WebP or GIF, whatever its name), scaled
-    to cover `bound`, within FRAME_BUDGET. A still image gives one frame."""
+    to cover `bound`, within `budget` bytes (FRAME_BUDGET if not given). A still image gives one frame."""
     try:
         data = Path(path).read_bytes()
     except OSError:
         return []
     read = apng_frames if data.startswith(PNG_SIG) else _reader_frames
-    return read(data, max_frames, bound, FRAME_BUDGET)
+    return read(data, max_frames, bound, budget or FRAME_BUDGET)
 
 
 # ---- playing ---------------------------------------------------------------------
@@ -192,7 +193,7 @@ def decode_frames(path: str, bound: QSize | None = None, max_frames: int = MAX_F
 _pool = None
 
 
-def _decode_pool():
+def decode_pool():
     """Animations decode one at a time, so opening a page full of them can't decode them all at once."""
     global _pool
     if _pool is None:
@@ -225,7 +226,7 @@ class FrameMotion(Motion):
         self.timer.setSingleShot(True)
         self.timer.timeout.connect(self._next)
         workers.run(decode_frames, path, bound, on_done=self._decoded, on_error=lambda _m: None,
-                    pool=_decode_pool())
+                    pool=decode_pool())
 
     def _decoded(self, frames):
         self.frames = [(QPixmap.fromImage(img), ms) for img, ms in frames]

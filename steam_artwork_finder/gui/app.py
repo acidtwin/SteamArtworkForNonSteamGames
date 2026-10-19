@@ -375,9 +375,11 @@ class MainWindow(QMainWindow):
         return self.config.data.get("show_animated", True)
 
     def _set_show_animated(self, on: bool):
-        """Mix animated options into the strips and the tray, or not; reloads the open game's options."""
+        """Animated options in the strips and the tray, and animated artwork playing on the game page
+        and in the library, or none of it; reloads the open game's options."""
         self.config.data["show_animated"] = on
         self.config.save()
+        self.start.wall.viewport().update()
         sc, game = self.current_shortcut(), self.current_game()
         if sc is not None and game is not None and self.stage.currentWidget() is self.page:
             self._load_rows(sc, game)
@@ -422,7 +424,7 @@ class MainWindow(QMainWindow):
 
     def file_motion_spec(self, path: Path | None, size) -> tuple:
         """(key, factory) to play an animated artwork file from Steam's folder; nothing for a still."""
-        if path is None:
+        if path is None or not self.show_animated:
             return None, None
         try:
             key = (str(path), path.stat().st_mtime_ns)
