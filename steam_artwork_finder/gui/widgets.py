@@ -242,6 +242,9 @@ def draw_dots(p: QPainter, x: float, y: float, states: list[bool], d: float = 7,
     return x + len(states) * (d + gap)
 
 
+FRAME_CACHE = 64 * 1024 * 1024  # bytes of scaled animation frames one ArtView keeps
+
+
 class ArtView(QWidget):
     """One piece of artwork drawn at a fixed shape, or a dashed empty slot."""
 
@@ -261,6 +264,7 @@ class ArtView(QWidget):
         self.round = 3
         self._scaled: tuple | None = None  # (key, backdrop, art) as drawn at this size
         self._frames: dict = {}  # scaled frames of a looping animation, so each loop only draws
+        self._frames_bytes = 0
         self._motion = None
         self.motion_spec: tuple = (None, None)  # (key, factory) of what's playing, for previews
         self.setCursor(Qt.CursorShape.PointingHandCursor)
@@ -289,6 +293,7 @@ class ArtView(QWidget):
             self._motion.deleteLater()
             self._motion = None
         self._frames = {}
+        self._frames_bytes = 0
         self.motion_spec = (key, factory)
         if key is None or factory is None:
             return
@@ -320,6 +325,7 @@ class ArtView(QWidget):
     def resizeEvent(self, e):
         self._scaled = None
         self._frames = {}
+        self._frames_bytes = 0
         super().resizeEvent(e)
 
     def _render(self) -> tuple[QPixmap | None, QPixmap | None]:
@@ -341,8 +347,9 @@ class ArtView(QWidget):
                 else:
                     art = fill_rect(self.pixmap, self.size(), dpr)
             self._scaled = (key, bd, art)
-            if isinstance(self._motion, motion.FrameMotion) and len(self._frames) < 400:
+            if isinstance(self._motion, motion.FrameMotion) and self._frames_bytes < FRAME_CACHE:
                 self._frames[key] = self._scaled  # the same frames come round again
+                self._frames_bytes += sum(pm.width() * pm.height() * 4 for pm in (bd, art) if pm is not None)
         return self._scaled[1], self._scaled[2]
 
     def paintEvent(self, _):

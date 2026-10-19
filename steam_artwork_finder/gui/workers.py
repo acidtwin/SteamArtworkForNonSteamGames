@@ -38,8 +38,8 @@ class Task(QRunnable):
 _live: set[Task] = set()
 
 
-def run(fn, *args, on_done=None, on_error=None, on_progress=None, **kwargs) -> Task:
-    """Start fn in the pool. If fn takes `progress`, it gets an emit function."""
+def run(fn, *args, on_done=None, on_error=None, on_progress=None, pool=None, **kwargs) -> Task:
+    """Start fn in the pool (or `pool`). If fn takes `progress`, it gets an emit function."""
     task = Task(fn, *args, **kwargs)
     if on_progress is not None:
         task.kwargs["progress"] = task.signals.progress.emit
@@ -53,7 +53,7 @@ def run(fn, *args, on_done=None, on_error=None, on_progress=None, **kwargs) -> T
     task.signals.done.connect(lambda *_: _live.discard(task))
     task.signals.failed.connect(lambda *_: _live.discard(task))
     task.setAutoDelete(False)
-    QThreadPool.globalInstance().start(task)
+    (pool or QThreadPool.globalInstance()).start(task)
     return task
 
 

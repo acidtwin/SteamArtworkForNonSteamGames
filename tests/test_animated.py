@@ -113,3 +113,31 @@ def test_decode_frames_reads_webp_named_png(qapp, tmp_path):
     frames[0].save(p, format="WEBP", save_all=True, append_images=frames[1:], duration=80, loop=0)
     out = decode_frames(str(p), QSize(20, 30))
     assert len(out) == 4 and out[0][0].width() == 20 and out[1][1] == 80
+
+
+def test_decode_frames_stays_within_budget(qapp, tmp_path, monkeypatch):
+    from PySide6.QtCore import QSize
+    from steam_artwork_finder.gui import motion
+
+    Image = pytest.importorskip("PIL.Image")
+    frames = [Image.new("RGBA", (200, 100), (i * 8, 0, 0, 255)) for i in range(30)]
+    p = tmp_path / "hero.png"
+    frames[0].save(p, format="WEBP", save_all=True, append_images=frames[1:], duration=40, loop=0)
+    one = 100 * 50 * 4  # a frame scaled down to cover 100x50
+    monkeypatch.setattr(motion, "FRAME_BUDGET", one * 7)
+    out = motion.decode_frames(str(p), QSize(100, 50))
+    assert out[0][0].width() == 100
+    assert 1 < len(out) <= 7 and sum(f.sizeInBytes() for f, _ in out) <= one * 7
+    assert sum(ms for _, ms in out) == 30 * 40  # dropped frames' time goes to the ones kept
+
+
+def test_frames_halve_when_count_unknown(qapp):
+    from PySide6.QtGui import QImage
+    from steam_artwork_finder.gui.motion import _Frames
+
+    img = QImage(10, 10, QImage.Format.Format_ARGB32)
+    out = _Frames(budget=img.sizeInBytes() * 4)
+    for _ in range(20):
+        out.add(img, 10)
+    got = out.frames()
+    assert len(got) <= 4 and sum(ms for _, ms in got) == 200
