@@ -84,6 +84,7 @@ def stylesheet() -> str:
     QPushButton:focus {{ outline: none; border: 2px solid {c['blue']}; }}
     QPushButton[kind="go"] {{ background: {c['go']}; color: white; padding: 0 18px; font-size: {pt('go')}pt; }}
     QPushButton[kind="go"]:hover {{ background: {c['go_hover']}; }}
+    QPushButton[kind="go"]:disabled {{ background: #242c37; color: {c['text3']}; }}
     QPushButton[kind="confirm"] {{ background: {c['action']}; color: white; }}
     QPushButton[kind="confirm"]:hover {{ background: {c['action_hover']}; }}
     QPushButton[kind="confirm"]:disabled {{ background: #242c37; color: {c['text3']}; }}

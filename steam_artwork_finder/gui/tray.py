@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from PySide6.QtCore import QRectF, QSize, Qt, Signal
+from PySide6.QtCore import QPointF, QRectF, QSize, Qt, Signal
 from PySide6.QtGui import QFont, QFontMetrics, QPainter, QPainterPath, QPen
 from PySide6.QtWidgets import (
     QButtonGroup,
@@ -68,10 +68,13 @@ class OptionDelegate(QStyledItemDelegate):
             p.fillRect(r, q("raised"))
         if pm is not None and not pm.isNull():
             if logo:
-                sp = pm.scaled(s * 0.86, Qt.AspectRatioMode.KeepAspectRatio, Qt.TransformationMode.SmoothTransformation)
-                p.drawPixmap(int(r.x() + (s.width() - sp.width()) / 2), int(r.y() + (s.height() - sp.height()) / 2), sp)
+                dpr = p.device().devicePixelRatioF()
+                sp = pm.scaled(s * 0.86 * dpr, Qt.AspectRatioMode.KeepAspectRatio, Qt.TransformationMode.SmoothTransformation)
+                sp.setDevicePixelRatio(dpr)
+                w, h = sp.width() / dpr, sp.height() / dpr
+                p.drawPixmap(QPointF(r.x() + (s.width() - w) / 2, r.y() + (s.height() - h) / 2), sp)
             else:
-                p.drawPixmap(r.topLeft(), fill_rect(pm, s))
+                p.drawPixmap(r.topLeft(), fill_rect(pm, s, p.device().devicePixelRatioF()))
         p.setClipping(False)
         picked = bool(index.data(ROLE_PICK))
         if picked:

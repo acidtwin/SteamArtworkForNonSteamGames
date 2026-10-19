@@ -256,6 +256,8 @@ class ArtworkRow(QWidget):
 
         right = QVBoxLayout()
         right.setSpacing(8)
+        right.addStretch(0)  # grows while a message shows, so the message sits mid-row
+        self._right = right
         top = QHBoxLayout()
         self.count = label("", "faint")
         self.count.setTextFormat(Qt.TextFormat.RichText)
@@ -266,6 +268,7 @@ class ArtworkRow(QWidget):
         right.addLayout(top)
         self.message = label("", "empty", wrap=True)
         self.message.setMinimumWidth(120)
+        self.message.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Preferred)
         right.addWidget(self.message)
         self.strip_host = QWidget()
         self.strip = QHBoxLayout(self.strip_host)
@@ -421,10 +424,12 @@ class ArtworkRow(QWidget):
     def set_message(self, text: str):
         self._clear_strip()
         self.count.setText("")
+        self.count.hide()
         self.see_all.hide()
         self.scroll.hide()
         self.message.setText(text)
         self.message.show()
+        self._right.setStretch(0, 1)
 
     def set_loading(self):
         self.set_message("Loading options from SteamGridDB…")
@@ -437,6 +442,8 @@ class ArtworkRow(QWidget):
             self.set_message(f"SteamGridDB has no {self.slot.label.lower()} for this game yet.")
             return
         self.message.hide()
+        self._right.setStretch(0, 0)
+        self.count.show()
         self.scroll.show()
         self.total = n if not more else 50
         shown = f"{n}+" if more else str(n)
@@ -512,8 +519,7 @@ class CoverThumb(QWidget):
         p.setClipPath(clip)
         if self.pixmap is not None and not self.pixmap.isNull():
             dpr = self.devicePixelRatioF()
-            pm = fill_rect(self.pixmap, self.size() * dpr)
-            pm.setDevicePixelRatio(dpr)
+            pm = fill_rect(self.pixmap, self.size(), dpr)
             p.drawPixmap(0, 0, pm)
         else:
             g = QLinearGradient(QPointF(0, 0), QPointF(self.width() * 0.4, self.height()))

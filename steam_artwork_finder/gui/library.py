@@ -192,7 +192,7 @@ class GameRowDelegate(QStyledItemDelegate):
         sc = self.win.sfile.shortcuts[idx]
         icon_rect = QRect(r.x() + 8, r.y() + (r.height() - ICON.height()) // 2, ICON.width(), ICON.height())
         ipath = self.win.slot_path(sc, SLOTS["icon"])
-        icon = self.icon_cache.get(ipath, ICON, self.view.viewport().update) if ipath else QPixmap()
+        icon = self.icon_cache.get(ipath, ICON, self.view.viewport().update, self.view.devicePixelRatioF()) if ipath else QPixmap()
         draw_game_icon(p, icon_rect, sc.name, icon)
         f = QFont(option.font)
         f.setPointSizeF(theme.pt("control"))
@@ -669,7 +669,7 @@ class WallDelegate(QStyledItemDelegate):
         if out is None:
             if len(self._picks) > 200:
                 self._picks.clear()
-            out = self._picks[key] = fill_rect(pm, self.COVER)
+            out = self._picks[key] = fill_rect(pm, self.COVER, self.view.devicePixelRatioF())
         return out
 
     def paint(self, p: QPainter, option, index):
@@ -695,7 +695,7 @@ class WallDelegate(QStyledItemDelegate):
                 ppm = self.win.pick_pixmap(sc, "grid")
                 pm = self.pick_cover(ppm) if ppm is not None and not ppm.isNull() else None
             else:
-                pm = self.covers.get(path, self.COVER, self.view.viewport().update)
+                pm = self.covers.get(path, self.COVER, self.view.viewport().update, self.view.devicePixelRatioF())
             if pm is None or pm.isNull():
                 p.fillRect(r, q("raised"))  # decoding, or not an image
             else:
