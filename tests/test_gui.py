@@ -139,6 +139,28 @@ def test_games_are_matched_at_startup(qapp, window):
     assert not win.config.get_match(win.sfile.shortcuts[0].appid)  # guesses wait for the user
 
 
+def test_status_bar_shows_matching_and_reloads(qapp, window, monkeypatch):
+    from steam_artwork_finder.sgdb import Game
+
+    win = window
+    shown = []
+    real = win.statusbar.set_message
+    monkeypatch.setattr(win.statusbar, "set_message", lambda kind, text="": (shown.append(text), real(kind, text)))
+    win.config.data["api_key"] = "x"
+    win.sgdb.match = lambda name: (Game(9, name + " Remastered", "2020"), 4)
+    win.set_connection("connected")
+    _pump(qapp, 3000, until=lambda: not win._matching and len(win.guesses) == 3)
+    assert "Matching games on SteamGridDB · 0 of 3" in shown
+    assert "Matching games on SteamGridDB · 3 of 3" in shown
+    assert win.statusbar.message.text() == ""  # quiet again once it's done
+
+    win.sfile.shortcuts.pop()  # as if a game was added in Steam since the list was read
+    win.reload_game_list()
+    assert win.statusbar.message.accessibleName() == "Game list reloaded · 3 games, 1 new"
+    win._note_timer.timeout.emit()
+    assert win.statusbar.message.text() == ""
+
+
 def test_game_menu_opens_the_game(qapp, window):
     from PySide6.QtCore import QPoint
 

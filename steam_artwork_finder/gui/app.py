@@ -91,6 +91,9 @@ class MainWindow(QMainWindow):
         self.status: dict[int, str] = {}  # appid -> "notfound" | "check" | "getting"
         self.guesses: dict[int, Game] = {}  # best guesses not yet confirmed by an action
         self._matching = False  # the startup lookup of every game is running
+        self._match_count = (0, 0)  # games looked up so far, of how many
+        self._note: tuple[str, str] | None = None  # a short-lived status bar message
+        self._note_timer = QTimer(self, singleShot=True, interval=5000, timeout=self._clear_note)
         self.candidates: dict[int, int] = {}  # appid -> how many similar names SteamGridDB returned
         self.asset_cache: dict[tuple, list[Asset]] = {}
         self.pending = Pending()
@@ -205,8 +208,8 @@ class MainWindow(QMainWindow):
         self.steam_timer.start()
         for keys, fn in ((QKeySequence.StandardKey.Find, lambda: self.game_list.search.setFocus()),
                          (QKeySequence.StandardKey.Undo, self.toast.undo_now),
-                         (QKeySequence.StandardKey.Refresh, self.reload_shortcuts),
-                         (QKeySequence("Ctrl+R"), self.reload_shortcuts),
+                         (QKeySequence.StandardKey.Refresh, self.reload_game_list),
+                         (QKeySequence("Ctrl+R"), self.reload_game_list),
                          (QKeySequence("Ctrl+Q"), self.close)):
             act = QAction(self)
             act.setShortcut(keys)
@@ -222,7 +225,7 @@ class MainWindow(QMainWindow):
 
         menu = GameMenu(None, "", None, [
             "Library",
-            Item("Reload Game List", "refresh", self.reload_shortcuts, shortcut="Ctrl+R"),
+            Item("Reload Game List", "refresh", self.reload_game_list, shortcut="Ctrl+R"),
             Item("Open Artwork Folder", "images", self.open_grid_folder, bool(self.user)),
             Item("Restore Steam's Game List…", "history", self.restore_backup, bool(self.sfile)),
             "Settings",
@@ -529,6 +532,44 @@ class MainWindow(QMainWindow):
             self, "Discard the artwork you haven't applied?",
             f"New artwork for {plural(n, 'game')} hasn't been applied yet.", "Discard", "trash", bad=True).exec())
 
+    def reload_game_list(self):
+        """Reload Game List (menu, Ctrl+R, F5): re-read Steam's list and say what changed."""
+        if self.busy or not self.user:
+            return self.reload_shortcuts()
+        before = {sc.appid for sc in self.sfile.shortcuts} if self.sfile else set()
+        self.reload_shortcuts()
+        if not self.sfile:
+            return
+        after = {sc.appid for sc in self.sfile.shortcuts}
+        parts = [plural(len(after), "game")]
+        if after - before:
+            parts.append(f"{len(after - before)} new")
+        if before - after:
+            parts.append(f"{len(before - after)} removed")
+        self.show_note("done", "Game list reloaded · " + ", ".join(parts))
+
+    def show_note(self, kind: str, text: str):
+        """A status bar message for a few seconds, unless work is running."""
+        self._note = (kind, text)
+        self._note_timer.start()
+        self._show_status()
+
+    def _clear_note(self):
+        self._note = None
+        self._show_status()
+
+    def _show_status(self):
+        """The left of the status bar: running work, then the startup match, then a short note."""
+        done, total = self._match_count
+        if self.busy:
+            self.statusbar.set_message("busy", self.progress_text)
+        elif self._matching and total:
+            self.statusbar.set_message("busy", f"Matching games on SteamGridDB · {done} of {total}")
+        elif self._note:
+            self.statusbar.set_message(*self._note)
+        else:
+            self.statusbar.set_message(None, "")
+
     def reload_shortcuts(self):
         if self._wait_for_busy():
             return
@@ -755,6 +796,8 @@ class MainWindow(QMainWindow):
         if not todo:
             return
         self._matching = True
+        self._match_count = (0, len(todo))
+        self._show_status()
         sfile = self.sfile
 
         def work(progress):
@@ -764,12 +807,15 @@ class MainWindow(QMainWindow):
                 except AuthError:
                     raise  # a revoked key: stop now rather than fail every game
                 except Exception:
-                    continue  # tried again next start, or when the game is opened
+                    game, n = None, None  # tried again next start, or when the game is opened
                 progress((appid, game, n))
 
         def got(result):
             appid, game, n = result
-            if self.sfile is not sfile or self.config.get_match(appid) or appid in self.guesses:
+            done, total = self._match_count
+            self._match_count = (done + 1, total)
+            self._show_status()
+            if n is None or self.sfile is not sfile or self.config.get_match(appid) or appid in self.guesses:
                 return
             sc = next((g for g in sfile.shortcuts if g.appid == appid), None)
             if sc is None or appid in self.status:
@@ -781,11 +827,15 @@ class MainWindow(QMainWindow):
 
         def finished(*_):
             self._matching = False
+            self._match_count = (0, 0)
+            self._show_status()
             if self.sfile is not sfile:  # another account loaded meanwhile: match its games too
                 QTimer.singleShot(0, self.match_all)
 
         def failed(msg):
             self._matching = False
+            self._match_count = (0, 0)
+            self._show_status()
             self._key_problem(msg)
 
         workers.run(work, on_progress=got, on_done=finished, on_error=failed)
@@ -826,10 +876,7 @@ class MainWindow(QMainWindow):
             if ready:
                 specs.append((f"Apply ({plural(ready, 'Game')})", "go", not self.busy, self.apply_all))
             self.cbar.set_buttons(specs)
-        if self.busy:
-            self.statusbar.set_message("busy", self.progress_text)
-        else:
-            self.statusbar.set_message(None, "")
+        self._show_status()
 
     def refresh_soon(self):
         """refresh_all within 100 ms, once however many changes arrive meanwhile."""
