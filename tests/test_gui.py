@@ -759,3 +759,31 @@ def test_option_strips_line_up_and_banners_keep_their_top(qapp, window):
     assert QColor(centred.pixel(50, 0)) == QColor("red") and QColor(centred.pixel(50, 49)) == QColor("blue")
     top = fill_rect(pm, QSize(100, 50), top=True).toImage()
     assert QColor(top.pixel(50, 0)) == QColor("red") and QColor(top.pixel(50, 49)) == QColor("red")
+
+
+def test_wall_gaps_are_not_clickable(qapp, window):
+    from PySide6.QtCore import QPoint, Qt
+    from PySide6.QtTest import QTest
+
+    wall = window.start.wall
+    picked = []
+    window.start.picked.connect(picked.append)
+    _pump(qapp, 100)
+    first, second = wall.visualRect(wall.model().index(0, 0)), wall.visualRect(wall.model().index(1, 0))
+    tile = wall.delegate.hit_rect(first)
+    assert tile.width() < first.width()  # the cell is wider than its cover
+    gap_x = (tile.right() + wall.delegate.hit_rect(second).left()) // 2
+    below = QPoint(tile.center().x(), first.bottom() - 4)  # under the artwork line, above the next row
+    for pt in (QPoint(gap_x, tile.center().y()), below):
+        assert not wall.indexAt(pt).isValid() and wall.itemAt(pt) is None
+        QTest.mouseClick(wall.viewport(), Qt.MouseButton.LeftButton, pos=pt)
+    assert picked == []
+    QTest.mouseClick(wall.viewport(), Qt.MouseButton.LeftButton, pos=tile.center())  # the cover
+    QTest.mouseClick(wall.viewport(), Qt.MouseButton.LeftButton, pos=QPoint(tile.x() + 5, tile.bottom() - 5))
+    assert picked == [0, 0]
+    window.start.set_view("list")
+    _pump(qapp, 50)
+    row = wall.visualRect(wall.model().index(0, 0))
+    assert wall.indexAt(row.center()).row() == 0
+    assert not wall.indexAt(QPoint(row.center().x(), row.bottom())).isValid()  # the gap between rows
+    window.start.set_view("grid")

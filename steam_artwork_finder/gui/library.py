@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from PySide6.QtCore import QEvent, QPoint, QPointF, QRect, QRectF, QSize, Qt, QTimer, Signal
+from PySide6.QtCore import QEvent, QModelIndex, QPoint, QPointF, QRect, QRectF, QSize, Qt, QTimer, Signal
 from PySide6.QtGui import QAction, QColor, QFont, QFontMetrics, QPainter, QPainterPath, QPen, QPixmap
 from PySide6.QtWidgets import (
     QAbstractButton,
@@ -821,8 +821,13 @@ class WallDelegate(QStyledItemDelegate):
         return self.COVER.height() + 8 + QFontMetrics(f).height() + 4 + QFontMetrics(m).height() + 4 + self.GAP
 
     def sizeHint(self, option, index):
-        # As wide as the wall's cell, so clicks and hover cover the whole cell the cover moves in.
+        # As wide as the wall's cell; hit_rect() keeps clicks and hover to the tile itself.
         return QSize(max(self.MIN_W, self.view.gridSize().width()), self.tile_height(option.font))
+
+    def hit_rect(self, cell: QRect) -> QRect:
+        """The cover, its name and its artwork line: the gaps around them are empty wall."""
+        return QRect(self.tile_x(cell), cell.y() + 2, self.COVER.width(),
+                     self.tile_height(self.view.font()) - self.GAP - 2)
 
     def tile_x(self, cell: QRect) -> int:
         """Where the cover sits in its cell: the spare width goes between the columns, so the first
@@ -1027,6 +1032,9 @@ class ListDelegate(QStyledItemDelegate):
     def sizeHint(self, option, index):
         return QSize(300, self.COVER.height() + 14)
 
+    def hit_rect(self, cell: QRect) -> QRect:
+        return cell.adjusted(0, 2, -8, -2)  # the row as painted, without the gaps between rows
+
     def paint(self, p: QPainter, option, index):
         p.save()
         p.setRenderHint(QPainter.RenderHint.Antialiasing)
@@ -1107,6 +1115,9 @@ class DetailsDelegate(QStyledItemDelegate):
 
     def sizeHint(self, option, index):
         return QSize(300, 42)
+
+    def hit_rect(self, cell: QRect) -> QRect:
+        return cell.adjusted(0, 1, -8, -1)
 
     def helpEvent(self, event, view, option, index):
         """Narrow, the status column is gone: the tooltip says it instead."""
@@ -1251,6 +1262,13 @@ class CoverWall(QListWidget):
     def resizeEvent(self, e):
         self.fit()
         super().resizeEvent(e)
+
+    def indexAt(self, pos: QPoint) -> QModelIndex:
+        """Only a game's tile or row counts: clicks, hover, tooltips and menus in the gaps find nothing."""
+        index = super().indexAt(pos)
+        if index.isValid() and not self.delegates[self.view].hit_rect(self.visualRect(index)).contains(pos):
+            return QModelIndex()
+        return index
 
     def contextMenuEvent(self, e):
         if e.reason() == e.Reason.Keyboard:
