@@ -227,8 +227,9 @@ class GameRowDelegate(QStyledItemDelegate):
         idx = index.data(ROLE_INDEX)
         sc = self.win.sfile.shortcuts[idx]
         icon_rect = QRect(r.x() + 8, r.y() + (r.height() - ICON.height()) // 2, ICON.width(), ICON.height())
-        ipath = self.win.slot_path(sc, SLOTS["icon"])
-        icon = self.icon_cache.get(ipath, ICON, self.view.viewport().update, self.view.devicePixelRatioF()) if ipath else QPixmap()
+        ipath, contain = self.win.list_icon(sc)  # its icon, else one cut from its other artwork
+        icon = self.icon_cache.get(ipath, ICON, self.view.viewport().update, self.view.devicePixelRatioF(),
+                                   contain) if ipath else QPixmap()
         draw_game_icon(p, icon_rect, sc.name, icon)
         f = QFont(option.font)
         f.setPointSizeF(theme.pt("control"))

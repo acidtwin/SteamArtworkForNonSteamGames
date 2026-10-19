@@ -775,10 +775,8 @@ def test_details_columns_never_overlap_the_names(qapp):
     assert detail_columns(640 + STATUS_W)[2] is not None
 
 
-def test_artwork_steamgriddb_lacks_is_remembered_and_an_icon_is_made(qapp, window, tmp_path):
+def test_artwork_steamgriddb_lacks_is_remembered(qapp, window, tmp_path):
     from PySide6.QtGui import QImage
-
-    from steam_artwork_finder.gui.fallback import GENERATED
 
     win = window
     win.config.data["api_key"] = "x"
@@ -797,16 +795,9 @@ def test_artwork_steamgriddb_lacks_is_remembered_and_an_icon_is_made(qapp, windo
     win.fill_everything()
     _pump(qapp, 3000, until=lambda: not win.busy)
     sc = win.sfile.shortcuts[0]
-    icon = win.pending.get(sc.appid, "icon")
-    assert icon.asset.style == GENERATED and icon.asset.author == "cover"
-    made = QImage.fromData(icon.data)
-    assert (made.width(), made.height()) == (256, 256)
+    assert win.pending.get(sc.appid, "icon") is None  # Steam's own icon is never made up
     assert win.config.no_art(sc.appid) == {"wide", "hero", "logo", "icon"}
-    assert "icons made from other artwork" in win.statusbar.message.accessibleName()
-
-    win.show_index(0)
-    _pump(qapp, 200)
-    assert win.page.rows["icon"].caption.text() == "Made from the cover · not applied yet"
+    assert "12 pieces had no options yet" in win.statusbar.message.accessibleName()
 
     win.pending.clear()
     win.refresh_all()
@@ -838,11 +829,11 @@ def test_startup_learns_what_steamgriddb_lacks(qapp, window):
     assert len(asked) == 15
 
 
-def test_startup_makes_the_icon_steamgriddb_lacks(qapp, window, tmp_path):
+def test_a_game_with_all_there_is_goes_quiet(qapp, window, tmp_path):
     from PySide6.QtGui import QImage
 
     from steam_artwork_finder.artwork import SLOTS, save_asset
-    from steam_artwork_finder.gui.fallback import GENERATED
+    from steam_artwork_finder.gui.library import status_text
 
     win = window
     win.config.data["api_key"] = "x"
@@ -856,7 +847,96 @@ def test_startup_makes_the_icon_steamgriddb_lacks(qapp, window, tmp_path):
     win.sgdb.assets = lambda kind, game_id, page=0, *a, **k: []
     win.sgdb.match = lambda name: (None, 0)
     win.set_connection("connected")
-    _pump(qapp, 3000, until=lambda: win.pending.get(sc.appid, "icon") is not None)
-    assert win.pending.get(sc.appid, "icon").asset.style == GENERATED
+    _pump(qapp, 3000, until=lambda: len(win.config.no_art(sc.appid)) == 4)
     _pump(qapp, 300)
-    assert [b.text() for b in win.cbar.buttons] == ["Apply (1 Game)"]  # nothing left to get, just apply
+    assert win.complete(sc) and status_text(win, 0)[0] == "All available"
+    assert not win.pending  # nothing staged for Steam
+    assert win.list_icon(sc) == (win.slot_path(sc, SLOTS["grid"]), False)  # the app's list uses the cover
+
+
+def test_game_list_icon_falls_back_to_other_artwork(qapp, window, tmp_path):
+    from PySide6.QtGui import QImage
+
+    from steam_artwork_finder.artwork import SLOTS, save_asset
+    from steam_artwork_finder.gui.widgets import decode_scaled
+
+    win = window
+    sc = win.sfile.shortcuts[0]
+    assert win.list_icon(sc) == (None, False)  # no artwork at all: the letter
+    img = QImage(200, 50, QImage.Format.Format_ARGB32)
+    img.fill(0xFF3366CC)
+    img.save(str(tmp_path / "logo.png"))
+    save_asset(win.user.grid_dir, sc, SLOTS["logo"], (tmp_path / "logo.png").read_bytes(), "image/png", None)
+    win.forget_files()
+    path, contain = win.list_icon(sc)
+    assert path is not None and contain  # a logo is fitted whole
+    out = decode_scaled(str(path), 32, 32, contain=True)
+    assert out.size().width() == 32 and out.pixelColor(16, 0).alpha() == 0 and out.pixelColor(16, 16).alpha() == 255
+    save_asset(win.user.grid_dir, sc, SLOTS["grid"], (tmp_path / "logo.png").read_bytes(), "image/png", None)
+    win.forget_files()
+    assert win.list_icon(sc)[1] is False  # the cover comes first, cropped to fill
+
+
+def _tiny_exe(path, png: bytes):
+    """A minimal Windows program whose only content is one icon (a PNG), like a game's .exe."""
+    import struct
+
+    def directory(entries):  # [(id, offset)]
+        return struct.pack("<IIHHHH", 0, 0, 0, 0, 0, len(entries)) + b"".join(
+            struct.pack("<II", i, o) for i, o in entries)
+
+    # Layout inside .rsrc: root, icon dir, icon lang, group dir, group lang, 2 data entries, data.
+    root, d_icon, d_icon_l, d_grp, d_grp_l = 0, 32, 56, 80, 104
+    e_icon, e_grp = 128, 144
+    group = struct.pack("<HHH", 0, 1, 1) + struct.pack("<BBBBHHIH", 64, 64, 0, 0, 1, 32, len(png), 1)
+    icon_at, grp_at = 160, 160 + len(png)
+    rsrc = b"".join([
+        directory([(3, 0x80000000 | d_icon), (14, 0x80000000 | d_grp)]),
+        directory([(1, 0x80000000 | d_icon_l)]), directory([(0x409, e_icon)]),
+        directory([(1, 0x80000000 | d_grp_l)]), directory([(0x409, e_grp)]),
+        struct.pack("<IIII", 0x1000 + icon_at, len(png), 0, 0),
+        struct.pack("<IIII", 0x1000 + grp_at, len(group), 0, 0),
+        png, group,
+    ])
+    opt = bytearray(224)
+    struct.pack_into("<H", opt, 0, 0x10B)
+    struct.pack_into("<I", opt, 92, 16)
+    struct.pack_into("<II", opt, 96 + 2 * 8, 0x1000, len(rsrc))
+    head = bytearray(b"MZ" + bytes(58) + struct.pack("<I", 0x40))
+    head += b"PE\0\0" + struct.pack("<HHIIIHH", 0x14C, 1, 0, 0, 0, 224, 0x102) + opt
+    head += struct.pack("<8sIIIIIIHHI", b".rsrc", len(rsrc), 0x1000, len(rsrc), 0x200, 0, 0, 0, 0, 0)
+    path.write_bytes(bytes(head) + bytes(0x200 - len(head)) + rsrc)
+
+
+def test_exe_icon_is_the_fallback_for_steam_and_the_list(qapp, window, tmp_path, monkeypatch):
+    from PySide6.QtGui import QImage
+
+    from steam_artwork_finder.exeicon import exe_icon, exe_path
+
+    monkeypatch.setenv("XDG_CACHE_HOME", str(tmp_path / "cache"))
+    img = QImage(64, 64, QImage.Format.Format_ARGB32)
+    img.fill(0xFFCC3333)
+    img.save(str(tmp_path / "i.png"))
+    exe = tmp_path / "Railway Empire 2" / "RailwayEmpire2.exe"
+    exe.parent.mkdir()
+    _tiny_exe(exe, (tmp_path / "i.png").read_bytes())
+    assert exe_icon(exe) == (tmp_path / "i.png").read_bytes()
+    assert exe_path(f'"{exe}"') == exe and exe_path('"/usr/bin/heroic" --launch x') is None
+
+    win = window
+    sc = win.sfile.shortcuts[0]
+    sc.exe = f'"{exe}"'
+    path, contain = win.list_icon(sc)  # the app's list shows the .exe's icon straight away
+    assert path is not None and QImage(str(path)).size().width() == 64 and not contain
+    assert win.pending.get(sc.appid, "icon") is None  # Steam is only offered it once SteamGridDB has none
+
+    win.config.data["api_key"] = "x"
+    win.config.set_match(sc.appid, 9, sc.name)
+    win.sgdb.assets = lambda kind, game_id, page=0, *a, **k: []
+    win.sgdb.match = lambda name: (None, 0)
+    win.set_connection("connected")
+    _pump(qapp, 3000, until=lambda: win.pending.get(sc.appid, "icon") is not None)
+    assert win.pending.get(sc.appid, "icon").asset.style == "exe"
+    win.show_index(0)
+    _pump(qapp, 200)
+    assert win.page.rows["icon"].caption.text() == "From the game's .exe · not applied yet"

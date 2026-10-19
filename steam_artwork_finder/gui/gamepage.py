@@ -27,7 +27,6 @@ from ..artwork import SLOTS, Slot
 from ..sgdb import Asset
 from . import icons, theme
 from .chrome import _Elided
-from .fallback import GENERATED
 from .theme import C, q
 from .widgets import ArtView, fill_rect, label, load_pixmap, quiet_button
 
@@ -443,17 +442,15 @@ class ArtworkRow(QWidget):
             self._set_caption("Removed when you apply" if path else "Nothing set", "rm" if path else "")
         elif pick is not None:
             pm = self._pick_pixmap(sc, self.slot.key, pick)
-            if pick.asset.style == GENERATED:  # SteamGridDB had none, so one was made
-                self._set_caption(f"Made from the {pick.asset.author} · not applied yet", "new")
-            else:
-                self._set_caption("Not applied yet", "new")
+            self._set_caption("From the game's .exe · not applied yet" if pick.asset.style == "exe"
+                              else "Not applied yet", "new")
         else:
             pm = load_pixmap(path) if path else None
             applied = self.win.config.get_applied(sc.appid, self.slot.key)
             if path is None:
                 self._set_caption("Nothing set")
-            elif applied and applied.get("made_from"):
-                self._set_caption(f"In use · made from the {applied['made_from']}")
+            elif applied and applied.get("from_exe"):
+                self._set_caption("In use · from the game's .exe")
             elif applied and applied.get("author"):
                 self._set_caption(f"In use · by {applied['author']}")
             else:

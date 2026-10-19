@@ -60,8 +60,9 @@ def load_pixmap(path: Path | None = None, data: bytes | None = None, key=None) -
     return pm
 
 
-def decode_scaled(path: str, w: int, h: int) -> QImage:
-    """Worker: decode an image file straight to a `w`×`h` cover-cropped QImage.
+def decode_scaled(path: str, w: int, h: int, contain: bool = False) -> QImage:
+    """Worker: decode an image file straight to a `w`×`h` cover-cropped QImage
+    (or, with `contain`, the whole picture centred on a clear `w`×`h`).
 
     Never holds the full-size image longer than the decode itself, so a
     300-game wall costs a few megabytes instead of hundreds.
@@ -71,11 +72,22 @@ def decode_scaled(path: str, w: int, h: int) -> QImage:
     _largest_frame(reader)
     size = reader.size()
     if size.isValid() and w > 0 and h > 0:
-        scale = max(w / size.width(), h / size.height())
-        reader.setScaledSize(QSize(max(w, round(size.width() * scale)), max(h, round(size.height() * scale))))
+        if contain:
+            scale = min(w / size.width(), h / size.height())
+            reader.setScaledSize(QSize(max(1, round(size.width() * scale)), max(1, round(size.height() * scale))))
+        else:
+            scale = max(w / size.width(), h / size.height())
+            reader.setScaledSize(QSize(max(w, round(size.width() * scale)), max(h, round(size.height() * scale))))
     img = reader.read()
     if img.isNull():
         return img
+    if contain:
+        out = QImage(w, h, QImage.Format.Format_ARGB32_Premultiplied)
+        out.fill(Qt.GlobalColor.transparent)
+        painter = QPainter(out)
+        painter.drawImage((w - img.width()) // 2, (h - img.height()) // 2, img)
+        painter.end()
+        return out
     x = (img.width() - w) // 2
     y = (img.height() - h) // 2
     return img.copy(x, y, w, h)
@@ -93,11 +105,13 @@ class ScaledCache:
         self.pending: set[tuple] = set()
         self.limit = limit
 
-    def get(self, path: Path, size: QSize, on_ready=None, dpr: float = 1.0) -> QPixmap | None:
-        """`dpr` is the screen's scale, so the decode has enough pixels to stay sharp."""
+    def get(self, path: Path, size: QSize, on_ready=None, dpr: float = 1.0,
+            contain: bool = False) -> QPixmap | None:
+        """`dpr` is the screen's scale, so the decode has enough pixels to stay sharp;
+        `contain` fits the whole picture in, rather than cropping it to fill."""
         w, h = round(size.width() * dpr), round(size.height() * dpr)
         try:
-            key = (str(path), path.stat().st_mtime_ns, w, h)
+            key = (str(path), path.stat().st_mtime_ns, w, h, contain)
         except OSError:
             return QPixmap()
         pm = self.ready.get(key)
@@ -117,7 +131,7 @@ class ScaledCache:
             if on_ready:
                 on_ready()
 
-        workers.run(decode_scaled, key[0], w, h, on_done=done,
+        workers.run(decode_scaled, key[0], w, h, contain, on_done=done,
                     on_error=lambda _m, key=key: done(QImage(), key))
         return None
 

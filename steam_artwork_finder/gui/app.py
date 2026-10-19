@@ -2,11 +2,12 @@
 
 from __future__ import annotations
 
+import itertools
 import sys
 from pathlib import Path
 
 from PySide6.QtCore import QObject, QPoint, QTimer, QUrl, Qt, Signal
-from PySide6.QtGui import QAction, QDesktopServices, QKeySequence, QPixmap
+from PySide6.QtGui import QAction, QDesktopServices, QImage, QKeySequence, QPixmap
 from PySide6.QtWidgets import (
     QApplication,
     QFileDialog,
@@ -25,7 +26,8 @@ from PySide6.QtWidgets import (
 from .. import APP_NAME, __version__
 from .. import artwork
 from ..artwork import SLOTS, Slot, current_icon, existing, prune_replaced, remove_asset, save_asset, undo
-from ..config import Config
+from ..config import Config, cache_dir
+from ..exeicon import exe_icon, exe_path
 from ..pending import Pending, Pick
 from ..sgdb import Asset, AuthError, Game, SGDBError, SteamGridDB, clean_name, name_variants
 from ..shortcuts import Shortcut
@@ -40,7 +42,6 @@ from ..steam import (
     wait_until_closed,
 )
 from . import icons, theme, workers
-from .fallback import GENERATED, SOURCES, icon_asset, square_icon
 from .chrome import ContentBar, Header, StatusBar, SteamPopover
 from .steamfolder import SteamFolderPopover
 from .dialogs import AboutDialog, ConfirmDialog, KeyPopover, MatchDialog, QuitDialog, RestoreDialog
@@ -50,6 +51,8 @@ from .tray import ROLE_PIX, OptionTray
 from .widgets import ArtView, Notice, Toast, label, load_pixmap
 
 ORDER = ("grid", "wide", "hero", "logo", "icon")
+EXE_STYLE = "exe"  # the style of an icon taken from the game's .exe
+_exe_ids = itertools.count(-1, -1)  # SteamGridDB ids are positive, so these never clash
 
 
 ISSUES_URL = "https://github.com/acidtwin/steam-artwork-for-non-steam-games/issues"
@@ -93,6 +96,7 @@ class MainWindow(QMainWindow):
         self.guesses: dict[int, Game] = {}  # best guesses not yet confirmed by an action
         self._matching = False  # the startup lookup of every game is running
         self._match_count = (0, 0)  # games looked up so far, of how many
+        self._exe_icons: dict = {}  # (appid, exe, mtime) -> the icon from its .exe, or None
         self._gaps_checked: set[int] = set()  # games whose missing pieces were asked about this session
         self._note: tuple[str, str] | None = None  # a short-lived status bar message
         self._note_timer = QTimer(self, singleShot=True, interval=5000, timeout=self._clear_note)
@@ -315,12 +319,8 @@ class MainWindow(QMainWindow):
         return [self.slot_path(sc, SLOTS[k]) is not None for k in ORDER]
 
     def unavailable(self, sc: Shortcut) -> set[str]:
-        """Missing pieces SteamGridDB has nothing for, so the game already has all there is.
-        Not the icon while the game has other artwork: Get Artwork can make one from it."""
-        none = self.config.no_art(sc.appid)
-        if "icon" in none and any(self.coverage(sc)[:4]):
-            none.discard("icon")
-        return none
+        """Missing pieces SteamGridDB has nothing for, so the game already has all there is."""
+        return self.config.no_art(sc.appid)
 
     def art_states(self, sc: Shortcut) -> list:
         """Per piece: True (has it), "none" (SteamGridDB has none) or False (missing)."""
@@ -333,6 +333,60 @@ class MainWindow(QMainWindow):
 
     def cover_path(self, sc: Shortcut) -> Path | None:
         return self.slot_path(sc, SLOTS["grid"])
+
+    def list_icon(self, sc: Shortcut) -> tuple[Path | None, bool]:
+        """(picture, contain) for the game's icon in the app's own lists: its icon, else the
+        one in its .exe, else one cut from its cover, banner or wide cover (a logo fitted
+        whole), else (None, False) for the letter. Steam's own icon isn't touched by this."""
+        path = self.slot_path(sc, SLOTS["icon"]) or self.exe_icon_file(sc)
+        if path is not None:
+            return path, False
+        for key in ("grid", "hero", "wide", "logo"):
+            path = self.slot_path(sc, SLOTS[key])
+            if path is not None:
+                return path, key == "logo"
+        return None, False
+
+    def exe_icon_file(self, sc: Shortcut) -> Path | None:
+        """The icon inside the game's .exe, saved once as a PNG in the cache; None if it has none."""
+        exe = exe_path(sc.exe)
+        try:
+            key = (sc.appid, str(exe), exe.stat().st_mtime_ns) if exe else None
+        except OSError:
+            key = None
+        if key in self._exe_icons:
+            return self._exe_icons[key]
+        out = None
+        if key is not None:
+            dest = cache_dir() / "exe-icons" / f"{sc.appid}-{key[2]}.png"
+            if dest.is_file():
+                out = dest
+            else:
+                data = exe_icon(exe)
+                img = QImage.fromData(data) if data else QImage()
+                if not img.isNull():
+                    dest.parent.mkdir(parents=True, exist_ok=True)
+                    if img.save(str(dest), "PNG"):
+                        out = dest
+        self._exe_icons[key] = out
+        return out
+
+    def stage_exe_icon(self, sc: Shortcut) -> bool:
+        """When SteamGridDB has no icon, stage the one in the game's .exe for Steam (written on
+        Apply like any pick). True if one was staged."""
+        if self.pending.get(sc.appid, "icon") is not None or self.slot_path(sc, SLOTS["icon"]):
+            return False
+        path = self.exe_icon_file(sc)
+        if path is None:
+            return False
+        try:
+            data = path.read_bytes()
+        except OSError:
+            return False
+        img = QImage.fromData(data)
+        self._stage(sc, "icon", Pick(Asset(next(_exe_ids), "", "", img.width(), img.height(), "image/png", 0,
+                                           EXE_STYLE, ""), data))
+        return True
 
     def icon_pixmap(self, sc: Shortcut) -> QPixmap | None:
         p = self.slot_path(sc, SLOTS["icon"])
@@ -900,7 +954,7 @@ class MainWindow(QMainWindow):
             self.config.set_no_art(appid, key, none)
             sc = next((g for g in self.sfile.shortcuts if g.appid == appid), None) if self.sfile else None
             if none and key == "icon" and sc is not None:
-                self._fallback_icon(sc)  # no icon there: one made from its other artwork waits for Apply
+                self.stage_exe_icon(sc)  # no icon on SteamGridDB: the game's own, ready for Apply
             self.refresh_soon()
 
         workers.run(work, on_progress=got, on_done=lambda *_: None,
@@ -1182,11 +1236,10 @@ class MainWindow(QMainWindow):
                 self.commit_match(sc)
                 if self.status.get(sc.appid) == "check":
                     self.status.pop(sc.appid, None)
-                if pick.asset.style == GENERATED:  # made from the game's other artwork
-                    self.config.set_applied(sc.appid, key, {"id": pick.asset.id, "author": "",
-                                                            "made_from": pick.asset.author})
-                else:
-                    self.config.set_applied(sc.appid, key, {"id": pick.asset.id, "author": pick.asset.author})
+                info = {"id": pick.asset.id, "author": pick.asset.author}
+                if pick.asset.style == EXE_STYLE:
+                    info["from_exe"] = True
+                self.config.set_applied(sc.appid, key, info)
             self.pending.drop(sc.appid, key)
             self.pick_pix.pop((sc.appid, key), None)
             if change.reloaded:
@@ -1437,26 +1490,6 @@ class MainWindow(QMainWindow):
             report["found"] += got
         return report
 
-    def _fallback_icon(self, sc: Shortcut) -> bool:
-        """Stage an icon made from the game's cover (or banner, wide cover, logo), waiting or
-        in use, for a game SteamGridDB has no icon for. True if one was made."""
-        if self.pending.get(sc.appid, "icon") is not None or self.slot_path(sc, SLOTS["icon"]):
-            return False
-        for key, name in SOURCES:
-            pick = self.pending.get(sc.appid, key)
-            data = pick.data if pick is not None and not pick.clears else None
-            if data is None and pick is None:
-                path = self.slot_path(sc, SLOTS[key])
-                try:
-                    data = path.read_bytes() if path else None
-                except OSError:
-                    data = None
-            icon = square_icon(data, contain=key == "logo") if data else None
-            if icon:
-                self._stage(sc, "icon", Pick(icon_asset(name), icon))
-                return True
-        return False
-
     def _run_fill(self, shortcuts: list[Shortcut], single: bool = False):
         if self.busy or not self.ensure_key():
             return
@@ -1503,10 +1536,11 @@ class MainWindow(QMainWindow):
                 if self.status.get(sc.appid) == "getting":
                     self.status.pop(sc.appid, None)
             self.refresh_all()
-            # Games SteamGridDB has no icon for get one made from their other artwork.
-            made = [sc for sc, *_ in jobs if "icon" in self.config.no_art(sc.appid) and self._fallback_icon(sc)]
-            report["gaps"] -= sum(1 for sc, slots, *_ in jobs if sc in made and SLOTS["icon"] in slots)
-            if made:
+            # SteamGridDB has no icon for these: the game's .exe may have one for Steam.
+            exe_icons = [sc for sc, *_ in jobs if "icon" in self.config.no_art(sc.appid) and self.stage_exe_icon(sc)]
+            report["gaps"] -= sum(1 for sc, slots, *_ in jobs if sc in exe_icons and SLOTS["icon"] in slots)
+            report["found"] += sum(1 for sc in exe_icons if self.pending.count(sc.appid) == 1)
+            if exe_icons:
                 self.refresh_all()
             if self.current >= 0:
                 self.load_options()
@@ -1530,8 +1564,6 @@ class MainWindow(QMainWindow):
                 parts.append(f"{plural(report['gaps'], 'piece')} had no options yet.")
             if report["errors"]:
                 parts.append(f"{len(report['errors'])} couldn't be downloaded.")
-            if made:
-                parts.append(f"{plural(len(made), 'icon')} made from other artwork.")
             if skipped:
                 parts.append(f"{skipped} skipped (not found before).")
             if report["errors"] or report["unsure"] or report["notfound"]:
@@ -1545,11 +1577,8 @@ class MainWindow(QMainWindow):
                 line.insert(0, "Stopped")
             if report["gaps"]:
                 line.append(f"{plural(report['gaps'], 'piece')} had no options yet")
-            if made:
-                line.append(f"{plural(len(made), 'icon')} made from other artwork")
             if skipped:
                 line.append(f"{skipped} skipped (not found before)")
-            found = found or len(made)
             self.show_note("done" if found else "info", " · ".join(line), hold=8000 if found else None)
 
         def failed(msg):
