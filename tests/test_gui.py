@@ -815,3 +815,24 @@ def test_artwork_steamgriddb_lacks_is_remembered_and_an_icon_is_made(qapp, windo
     assert len(win._unstaged_missing(sc, recheck=True)) == 5
     win.config.set_no_art(sc.appid, "hero", False)  # e.g. the game page found banners after all
     assert "hero" not in win.config.no_art(sc.appid)
+
+
+def test_startup_learns_what_steamgriddb_lacks(qapp, window):
+    from steam_artwork_finder.gui.library import status_text
+
+    win = window
+    win.config.data["api_key"] = "x"
+    for sc in win.sfile.shortcuts:
+        win.config.set_match(sc.appid, 9, sc.name)
+    asked = []
+    win.sgdb.assets = lambda kind, game_id, page=0: asked.append(kind) or []
+    win.set_connection("connected")
+    _pump(qapp, 3000, until=lambda: len(asked) == 15)
+    _pump(qapp, 300)
+    sc = win.sfile.shortcuts[0]
+    assert win.complete(sc) and win.art_states(sc) == ["none"] * 5
+    assert status_text(win, 0)[0] == "All available"
+    assert win.cbar.buttons[0].text() == "Get Artwork" and not win.cbar.buttons[0].isEnabled()
+    win.check_gaps()  # once a session is enough
+    _pump(qapp, 300)
+    assert len(asked) == 15

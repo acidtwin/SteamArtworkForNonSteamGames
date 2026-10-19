@@ -201,11 +201,18 @@ def draw_badge(p: QPainter, rect: QRectF, text: str = "IN USE"):
     p.restore()
 
 
-def draw_dots(p: QPainter, x: float, y: float, states: list[bool], d: float = 7, gap: float = 4):
+def draw_dots(p: QPainter, x: float, y: float, states: list, d: float = 7, gap: float = 4):
+    """One dot per piece: filled (has it), ring (missing), or a small grey dot ("none":
+    SteamGridDB has nothing for it, so there's nothing to get)."""
     p.save()
     p.setRenderHint(QPainter.RenderHint.Antialiasing)
     for i, on in enumerate(states):
         r = QRectF(x + i * (d + gap), y, d, d)
+        if on == "none":
+            p.setPen(Qt.PenStyle.NoPen)
+            p.setBrush(q("text3"))
+            p.drawEllipse(r.adjusted(d * 0.3, d * 0.3, -d * 0.3, -d * 0.3))
+            continue
         if on:
             p.setPen(Qt.PenStyle.NoPen)
             p.setBrush(q("blue_ink"))

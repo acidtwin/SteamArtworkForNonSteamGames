@@ -45,7 +45,7 @@ from .chrome import ContentBar, Header, StatusBar, SteamPopover
 from .steamfolder import SteamFolderPopover
 from .dialogs import AboutDialog, ConfirmDialog, KeyPopover, MatchDialog, QuitDialog, RestoreDialog
 from .gamepage import GamePage
-from .library import GameList, StartPage
+from .library import GameList, StartPage, art_text
 from .tray import ROLE_PIX, OptionTray
 from .widgets import ArtView, Notice, Toast, label, load_pixmap
 
@@ -93,6 +93,7 @@ class MainWindow(QMainWindow):
         self.guesses: dict[int, Game] = {}  # best guesses not yet confirmed by an action
         self._matching = False  # the startup lookup of every game is running
         self._match_count = (0, 0)  # games looked up so far, of how many
+        self._gaps_checked: set[int] = set()  # games whose missing pieces were asked about this session
         self._note: tuple[str, str] | None = None  # a short-lived status bar message
         self._note_timer = QTimer(self, singleShot=True, interval=5000, timeout=self._clear_note)
         self.candidates: dict[int, int] = {}  # appid -> how many similar names SteamGridDB returned
@@ -313,6 +314,23 @@ class MainWindow(QMainWindow):
     def coverage(self, sc: Shortcut) -> list[bool]:
         return [self.slot_path(sc, SLOTS[k]) is not None for k in ORDER]
 
+    def unavailable(self, sc: Shortcut) -> set[str]:
+        """Missing pieces SteamGridDB has nothing for, so the game already has all there is.
+        Not the icon while the game has other artwork: Get Artwork can make one from it."""
+        none = self.config.no_art(sc.appid)
+        if "icon" in none and any(self.coverage(sc)[:4]):
+            none.discard("icon")
+        return none
+
+    def art_states(self, sc: Shortcut) -> list:
+        """Per piece: True (has it), "none" (SteamGridDB has none) or False (missing)."""
+        none = self.unavailable(sc)
+        return [have or ("none" if k in none else False) for k, have in zip(ORDER, self.coverage(sc))]
+
+    def complete(self, sc: Shortcut) -> bool:
+        """Every piece there is: on disk, or not on SteamGridDB."""
+        return all(self.art_states(sc))
+
     def cover_path(self, sc: Shortcut) -> Path | None:
         return self.slot_path(sc, SLOTS["grid"])
 
@@ -431,7 +449,7 @@ class MainWindow(QMainWindow):
     def _unstaged_missing(self, sc: Shortcut, recheck: bool = False) -> list[Slot]:
         """The pieces a game has no artwork for, nor a waiting pick. Pieces SteamGridDB had
         nothing for lately are left out (the game has all there is), unless `recheck`."""
-        none = set() if recheck else self.config.no_art(sc.appid)
+        none = set() if recheck else self.unavailable(sc)
         return [SLOTS[k] for k, have in zip(ORDER, self.coverage(sc))
                 if not have and self.pending.get(sc.appid, k) is None and k not in none]
 
@@ -805,7 +823,7 @@ class MainWindow(QMainWindow):
                 if sc.name and not self.config.get_match(sc.appid)
                 and sc.appid not in self.guesses and sc.appid not in self.status]
         if not todo:
-            return
+            return self.check_gaps()
         self._matching = True
         self._match_count = (0, len(todo))
         self._show_status()
@@ -842,6 +860,8 @@ class MainWindow(QMainWindow):
             self._show_status()
             if self.sfile is not sfile:  # another account loaded meanwhile: match its games too
                 QTimer.singleShot(0, self.match_all)
+            else:
+                self.check_gaps()
 
         def failed(msg):
             self._matching = False
@@ -850,6 +870,38 @@ class MainWindow(QMainWindow):
             self._key_problem(msg)
 
         workers.run(work, on_progress=got, on_done=finished, on_error=failed)
+
+    def check_gaps(self):
+        """Ask SteamGridDB, once a session, whether matched games' missing pieces exist at all,
+        so a game that has everything there is stops counting as missing artwork."""
+        if self._matching or self.conn != "connected" or not self.sfile:
+            return
+        todo = []
+        for sc in self.sfile.shortcuts:
+            m = self.config.get_match(sc.appid)
+            if not m or sc.appid in self._gaps_checked:
+                continue
+            self._gaps_checked.add(sc.appid)
+            todo += [(sc.appid, m["id"], s.key) for s in self._unstaged_missing(sc)]
+        if not todo:
+            return
+
+        def work(progress):
+            for appid, game_id, key in todo:
+                try:
+                    progress((appid, key, not self.sgdb.assets(key, game_id)))
+                except AuthError:
+                    raise
+                except Exception:
+                    continue  # asked again next start
+
+        def got(result):
+            appid, key, none = result
+            self.config.set_no_art(appid, key, none)
+            self.refresh_soon()
+
+        workers.run(work, on_progress=got, on_done=lambda *_: None,
+                    on_error=lambda msg: self._key_problem(msg))
 
     def check_connection(self):
         if not self.config.api_key:
@@ -1058,9 +1110,8 @@ class MainWindow(QMainWindow):
         from .gamemenu import GameMenu, Item
 
         sc = self.sfile.shortcuts[idx]
-        have = sum(self.coverage(sc))
         n = self.pending.count(sc.appid)
-        menu = GameMenu(sc.name or "(unnamed)", "All artwork" if have == 5 else f"{have} of 5",
+        menu = GameMenu(sc.name or "(unnamed)", art_text(self, sc),
                         self.icon_pixmap(sc), [
             Item("Get All Artwork", "download", lambda: self._run_fill([sc], single=True),
                  bool(self._unstaged_missing(sc)) and not self.busy),

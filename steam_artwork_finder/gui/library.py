@@ -79,11 +79,15 @@ def draw_game_icon(p: QPainter, rect: QRect, name: str, icon: QPixmap | None):
 
 
 def status_text(win, idx: int) -> tuple[str, str | None]:
-    """('3 of 5' or 'All artwork', tag or None) for a game."""
+    """('3 of 5', 'All artwork' or 'All available', tag or None) for a game."""
     sc = win.sfile.shortcuts[idx]
-    tag = win.status.get(sc.appid)
+    return art_text(win, sc), win.status.get(sc.appid)
+
+
+def art_text(win, sc) -> str:
+    """'All artwork', 'All available' (SteamGridDB has no more) or '3 of 5'."""
     have = sum(win.coverage(sc))
-    return ("All artwork" if have == 5 else f"{have} of 5"), tag
+    return "All artwork" if have == 5 else "All available" if win.complete(sc) else f"{have} of 5"
 
 
 def is_ready(win, idx: int) -> bool:
@@ -99,7 +103,7 @@ def spoken(win, idx: int) -> str:
     """What a screen reader says for a game row or tile."""
     sc = win.sfile.shortcuts[idx]
     text, tag = status_text(win, idx)
-    parts = [sc.name or "unnamed game", text if text == "All artwork" else f"{text} artwork"]
+    parts = [sc.name or "unnamed game", text if text.startswith("All") else f"{text} artwork"]
     if tag:
         parts.append(TAGS[tag][0])
     if is_ready(win, idx):
@@ -161,7 +165,7 @@ def draw_meta(p: QPainter, win, idx: int, x: float, y: float, base: QFont, size:
     dots_w = 5 * (d + gap) + 3
     tag_w = QFontMetrics(tag_font(base)).horizontalAdvance((TAGS[tag][0] if tag else "").upper()) + 12
     if not (tag and width is not None and dots_w + tag_w > width):
-        x = draw_dots(p, x, y + (lh - d) / 2, win.coverage(sc), d=d, gap=gap) + 3
+        x = draw_dots(p, x, y + (lh - d) / 2, win.art_states(sc), d=d, gap=gap) + 3
     if tag:
         th = QFontMetrics(tag_font(base)).height() + 4
         draw_tag(p, int(x), int(y + (lh - th) / 2), tag)
@@ -681,7 +685,7 @@ class GameList(QWidget):
         scs = self.win.sfile.shortcuts
         return {
             "all": len(scs),
-            "missing": sum(1 for sc in scs if not all(self.win.coverage(sc))),
+            "missing": sum(1 for sc in scs if not self.win.complete(sc)),
             "check": sum(1 for sc in scs if needs_check(self.win, sc)),
         }
 
@@ -738,7 +742,7 @@ class GameList(QWidget):
             sc = self.win.sfile.shortcuts[it.data(ROLE_INDEX)]
             show = self.empty_reason is None and (not term or term in sc.name.casefold())
             if mode == "missing":
-                show = show and not all(self.win.coverage(sc))
+                show = show and not self.win.complete(sc)
             elif mode == "check":
                 show = show and needs_check(self.win, sc)
             it.setHidden(not show)
