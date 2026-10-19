@@ -50,14 +50,31 @@ def candidate_roots() -> list[Path]:
         return roots
     if sys.platform == "darwin":
         return [home / "Library/Application Support/Steam"]
-    return [
-        home / ".steam/steam",
-        home / ".steam/root",
-        home / ".local/share/Steam",
-        home / ".var/app/com.valvesoftware.Steam/.local/share/Steam",  # Flatpak
-        home / ".var/app/com.valvesoftware.Steam/.steam/steam",
-        home / "snap/steam/common/.local/share/Steam",  # Snap
-    ]
+    return _native_roots() + _flatpak_roots() + _snap_roots()
+
+
+def _native_roots() -> list[Path]:
+    """Steam from a distro package or Valve's own installer (also the Steam Deck)."""
+    home = Path.home()
+    out = [Path(os.environ["STEAM_DIR"])] if os.environ.get("STEAM_DIR") else []  # a user's own choice
+    out += [home / ".steam/steam", home / ".steam/root", home / ".local/share/Steam"]
+    xdg = os.environ.get("XDG_DATA_HOME")
+    if xdg:
+        out.append(Path(xdg) / "Steam")
+    out.append(home / ".steam/debian-installation")  # Debian and Ubuntu's steam-installer
+    return out
+
+
+def _flatpak_roots() -> list[Path]:
+    home = Path.home()
+    return [home / ".var/app/com.valvesoftware.Steam/.local/share/Steam",
+            home / ".var/app/com.valvesoftware.Steam/.steam/steam"]
+
+
+def _snap_roots() -> list[Path]:
+    home = Path.home()
+    return [home / "snap/steam/common/.local/share/Steam",
+            home / ".snap/data/steam/common/.local/share/Steam"]  # snapd's hidden-folder option
 
 
 @dataclass
@@ -99,12 +116,10 @@ def search_places() -> list[Place]:
     if sys.platform != "linux" and not sys.platform.startswith("freebsd"):
         return [Place("Steam", "Steam", candidate_roots()),
                 Place("Other drives", "Drives", _drive_candidates())]
-    home = Path.home()
     return [
-        Place("Steam", "Steam", [home / ".steam/steam", home / ".steam/root", home / ".local/share/Steam"]),
-        Place("Steam (Flatpak)", "Flatpak", [home / ".var/app/com.valvesoftware.Steam/.local/share/Steam",
-                                             home / ".var/app/com.valvesoftware.Steam/.steam/steam"]),
-        Place("Steam (Snap)", "Snap", [home / "snap/steam/common/.local/share/Steam"]),
+        Place("Steam", "Steam", _native_roots()),
+        Place("Steam (Flatpak)", "Flatpak", _flatpak_roots()),
+        Place("Steam (Snap)", "Snap", _snap_roots()),
         Place("Other drives", "Drives", _drive_candidates()),
     ]
 

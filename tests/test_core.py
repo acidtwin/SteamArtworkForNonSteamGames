@@ -309,3 +309,28 @@ def test_waiting_icons_belong_to_one_account(tmp_path):
     if sys.platform != "win32":
         assert stat.S_IMODE((tmp_path / "config.json").stat().st_mode) == 0o600
     assert not (tmp_path / "config.tmp").exists()
+
+
+def test_finds_steam_in_every_linux_install_place(tmp_path, monkeypatch):
+    from steam_artwork_finder import steam
+
+    monkeypatch.setattr(steam.sys, "platform", "linux")
+    monkeypatch.setenv("HOME", str(tmp_path))
+    monkeypatch.delenv("XDG_DATA_HOME", raising=False)
+    monkeypatch.delenv("STEAM_DIR", raising=False)
+    homes = {
+        "debian": tmp_path / ".steam/debian-installation",
+        "snap-hidden": tmp_path / ".snap/data/steam/common/.local/share/Steam",
+        "xdg": tmp_path / "data/Steam",
+        "own": tmp_path / "MySteam",
+    }
+    for root in homes.values():
+        (root / "userdata").mkdir(parents=True)
+    monkeypatch.setenv("XDG_DATA_HOME", str(tmp_path / "data"))
+    monkeypatch.setenv("STEAM_DIR", str(homes["own"]))
+    roots = steam.find_steam_roots()
+    assert roots[0] == homes["own"].resolve()  # STEAM_DIR is the user's own choice, so it comes first
+    assert set(roots) == {r.resolve() for r in homes.values()}
+    places = {pl.short: steam.find_steam_roots(pl.candidates) for pl in steam.search_places()}
+    assert homes["snap-hidden"].resolve() in places["Snap"]
+    assert homes["debian"].resolve() in places["Steam"]
