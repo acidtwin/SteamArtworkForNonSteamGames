@@ -232,3 +232,29 @@ def test_more_menu_has_sections_and_switches(qapp, window):
     quit_row.click()
     assert win.apply_on_quit and win.popover.on_quit.isChecked() and menu.isVisible()  # a switch keeps it open
     menu.close()
+
+
+def test_restore_window_says_what_changes(qapp, window, monkeypatch):
+    import time as _t
+
+    from steam_artwork_finder.gui import dialogs
+    from steam_artwork_finder.shortcuts import ShortcutsFile
+
+    win = window
+    sf = win.sfile
+    first = sf.backup()  # a copy with all three games
+    sc = sf.shortcuts[0]
+    sc.entry.set_string("AppName", "Renamed")
+    sf.save()
+    sf.reload()
+    copies = sf.backups()
+    dlg = dialogs.RestoreDialog(win, copies, sf.shortcuts, steam_open=True)
+    assert dlg.ok.text() == "Close Steam and Restore" and not dlg.ok.isEnabled()
+    texts = [w.text() for w in dlg.findChildren(dialogs.QLabel)]
+    assert "1 NAME DIFFERENT" in texts
+    dlg.rows[-1].click()
+    assert dlg.selected() == copies[-1][0] and dlg.ok.isEnabled()
+    now = _t.mktime((2026, 10, 19, 6, 44, 0, 0, 0, -1))
+    assert dialogs.friendly_time(now - 14 * 60, now) == ("Today, 06:30", "14 minutes ago")
+    assert dialogs.friendly_time(now - 9 * 3600, now)[0] == "Yesterday, 21:44"
+    assert ShortcutsFile(first).shortcuts[0].name != "Renamed"

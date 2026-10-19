@@ -178,7 +178,8 @@ class MainWindow(QMainWindow):
         for keys, fn in ((QKeySequence.StandardKey.Find, lambda: self.game_list.search.setFocus()),
                          (QKeySequence.StandardKey.Undo, self.toast.undo_now),
                          (QKeySequence.StandardKey.Refresh, self.reload_shortcuts),
-                         (QKeySequence("Ctrl+R"), self.reload_shortcuts)):
+                         (QKeySequence("Ctrl+R"), self.reload_shortcuts),
+                         (QKeySequence("Ctrl+Q"), self.close)):
             act = QAction(self)
             act.setShortcut(keys)
             act.triggered.connect(fn)
@@ -200,10 +201,12 @@ class MainWindow(QMainWindow):
             Item("Steam Folder…", "folder", self.show_folder_popover),
             Item("SteamGridDB API Key…", "key", self.ask_api_key),
             Item("Restart Steam When I Apply", "restart", self._menu_auto_restart, toggle=self.auto_restart),
-            Item("Apply When I Quit", "exit", self._menu_apply_on_quit, toggle=self.apply_on_quit),
+            Item("Apply When I Quit", "check", self._menu_apply_on_quit, toggle=self.apply_on_quit),
             "Help",
             Item("Report a Problem", "bug", lambda: QDesktopServices.openUrl(QUrl(ISSUES_URL)), external=True),
             Item("About", "info", self.about),
+            None,
+            Item("Exit", "exit", self.close, shortcut="Ctrl+Q"),
         ], self, width=300)
         self._more_menu = menu  # kept alive while it shows
         menu.adjustSize()
@@ -1217,22 +1220,40 @@ class MainWindow(QMainWindow):
     # ---- menu actions -----------------------------------------------------
 
     def restore_backup(self):
-        if not self.sfile:
+        if not self.sfile or self.busy:
             return
-        dlg = RestoreDialog(self, self.sfile.backups())
-        if dlg.exec() and dlg.selected():
-            if self.steam_is_running():
-                if QMessageBox.question(
-                        self, APP_NAME, "Steam is running and may overwrite the restored list when it "
-                        "closes. Restore anyway?") != QMessageBox.StandardButton.Yes:
-                    return
-            try:
-                self.sfile.restore(dlg.selected())
-            except Exception as e:
-                QMessageBox.warning(self, APP_NAME, f"Couldn't restore that backup: {e}")
+        running = self.steam_is_running()
+        dlg = RestoreDialog(self, self.sfile.backups(), self.sfile.shortcuts, running)
+        if not dlg.exec() or not dlg.selected():
+            return
+        path = dlg.selected()
+        if not self.steam_is_running():
+            return self._restore(path)
+        root = self.steam_root
+        self._set_busy("restart", "Closing Steam…")
+
+        def work():
+            shutdown_steam(root)
+            return wait_until_closed(root)
+
+        def done(closed):
+            self._set_busy("")
+            self.update_steam_state()
+            if not closed:
+                self.toast.show_message("Steam didn't close, so nothing was restored. Close it, then try again.")
                 return
-            self.reload_shortcuts()
-            self.toast.show_message("Backup restored. The list you had before is saved as a backup too.")
+            self._restore(path)
+
+        workers.run(work, on_done=done, on_error=lambda m: (self._set_busy(""), self.toast.show_message(m)))
+
+    def _restore(self, path: Path):
+        try:
+            self.sfile.restore(path)
+        except Exception as e:
+            QMessageBox.warning(self, APP_NAME, f"Couldn't restore that copy: {e}")
+            return
+        self.reload_shortcuts()
+        self.toast.show_message("Game list restored. The list you had before is saved as a copy too.")
 
     def open_grid_folder(self):
         if self.user:

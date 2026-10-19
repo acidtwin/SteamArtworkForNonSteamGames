@@ -2,11 +2,14 @@
 
 from __future__ import annotations
 
+import sys
 import time
 
 from PySide6.QtCore import QPoint, QRect, QRectF, QUrl, Qt, Signal
-from PySide6.QtGui import QColor, QDesktopServices, QFont, QGuiApplication, QLinearGradient, QPainter, QPixmap
+from PySide6.QtGui import QColor, QDesktopServices, QFont, QGuiApplication, QLinearGradient, QPainter, QPen, QPixmap
 from PySide6.QtWidgets import (
+    QAbstractButton,
+    QScrollArea,
     QCheckBox,
     QDialog,
     QDialogButtonBox,
@@ -386,44 +389,207 @@ class QuitDialog(QDialog):
         self.accept()
 
 
-class RestoreDialog(QDialog):
-    """Pick an earlier copy of Steam's shortcut list to put back."""
+def friendly_time(t: float, now: float | None = None) -> tuple[str, str]:
+    """("Today, 06:30", "14 minutes ago") for a file time."""
+    now = time.time() if now is None else now
+    lt, ln = time.localtime(t), time.localtime(now)
+    days = (time.mktime(ln[:3] + (0, 0, 0, 0, 0, -1)) - time.mktime(lt[:3] + (0, 0, 0, 0, 0, -1))) / 86400
+    clock = time.strftime("%H:%M", lt)
+    if round(days) == 0:
+        when = f"Today, {clock}"
+    elif round(days) == 1:
+        when = f"Yesterday, {clock}"
+    elif lt.tm_year == ln.tm_year:
+        when = time.strftime("%-d %b, %H:%M", lt) if sys.platform != "win32" else time.strftime("%d %b, %H:%M", lt)
+    else:
+        when = time.strftime("%d %b %Y", lt)
+    secs = max(0, now - t)
+    for size, unit in ((86400, "day"), (3600, "hour"), (60, "minute")):
+        if secs >= size:
+            n = int(secs // size)
+            return when, f"{n} {unit}{'' if n == 1 else 's'} ago"
+    return when, "just now"
 
-    def __init__(self, parent, backups):
+
+def _short(name: str, n: int = 26) -> str:
+    return name if len(name) <= n else name[:n - 1] + "…"
+
+
+def difference_tags(d) -> list[tuple[str, str]]:
+    """(text, tone) tags saying what restoring would change; tone is "add", "del", "chg" or ""."""
+    tags = []
+    if d.back:
+        tags.append((f"{_short(d.back[0])} comes back" if len(d.back) == 1 else f"{len(d.back)} games come back",
+                     "add"))
+    if d.gone:
+        tags.append((f"{_short(d.gone[0])} not in it" if len(d.gone) == 1 else f"{len(d.gone)} games not in it",
+                     "del"))
+    if d.renamed:
+        tags.append((f"{d.renamed} name{'' if d.renamed == 1 else 's'} different", "chg"))
+    if d.icons:
+        tags.append((f"{d.icons} icon{'' if d.icons == 1 else 's'} different", "chg"))
+    return tags or [("Same as now", "")]
+
+
+TAG_STYLE = {"add": ("#2c3a1a", "ok"), "del": ("#3b2422", "bad"), "chg": ("#23364a", "blue_ink"), "": ("#2a3442", "text3")}
+
+
+class BackupRow(QAbstractButton):
+    """One saved copy: a radio circle, when it was made, what restoring it changes, and its game count."""
+
+    def __init__(self, path, when: str, ago: str, count: int, tags: list[tuple[str, str]], parent=None):
         super().__init__(parent)
-        self.setWindowTitle("Restore a backup")
-        self.resize(520, 420)
-        lay = QVBoxLayout(self)
-        intro = QLabel(
-            "A copy of Steam's shortcut list (shortcuts.vdf) is saved before every change. "
-            "Restoring one puts back the game names, launch options and icons it had then. "
-            "Artwork images are not deleted. Close Steam before restoring."
-        )
-        intro.setWordWrap(True)
-        lay.addWidget(intro)
-        self.list = QListWidget()
-        self.list.setProperty("plain", True)
-        self.list.setAccessibleName("Backups")
+        self.path = path
+        self.setCheckable(True)
+        self.setAutoExclusive(True)
+        self.setEnabled(count >= 0)
+        self.setCursor(Qt.CursorShape.PointingHandCursor)
+        self.setAttribute(Qt.WidgetAttribute.WA_Hover)
+        lay = QHBoxLayout(self)
+        lay.setContentsMargins(42, 10, 12, 10)
+        lay.setSpacing(12)
+        words = QVBoxLayout()
+        words.setSpacing(5)
+        title = QLabel(f"<b>{when}</b>" + (f"<span style='color:{C['text3']}'>&nbsp; · &nbsp;{ago}</span>" if ago else ""))
+        title.setTextFormat(Qt.TextFormat.RichText)
+        words.addWidget(title)
+        tl = QHBoxLayout()
+        tl.setSpacing(6)
+        for text, tone in tags if count >= 0 else [("Can't be read", "del")]:
+            bg, fg = TAG_STYLE[tone]
+            t = QLabel(text.upper())
+            f = QFont(t.font())
+            f.setPointSizeF(theme.pt("tag"))
+            f.setWeight(QFont.Weight.ExtraBold)
+            t.setFont(f)
+            t.setFixedHeight(18)
+            t.setStyleSheet(f"background: {bg}; color: {C[fg]}; border-radius: 2px; padding: 0 6px;")
+            tl.addWidget(t)
+        tl.addStretch(1)
+        words.addLayout(tl)
+        lay.addLayout(words, 1)
+        if count >= 0:
+            n = QLabel(f"{count} game{'' if count == 1 else 's'}")
+            n.setStyleSheet(f"color: {C['text2']};")
+            lay.addWidget(n)
+        self.setAccessibleName(f"{when}, {ago}, {count} games: " + ", ".join(t for t, _ in tags))
+
+    def sizeHint(self):
+        return self.layout().sizeHint()
+
+    def paintEvent(self, _):
+        p = QPainter(self)
+        p.setRenderHint(QPainter.RenderHint.Antialiasing)
+        r = QRectF(self.rect()).adjusted(0.5, 0.5, -0.5, -0.5)
+        on = self.isChecked()
+        if on:
+            p.setBrush(QColor(26, 159, 255, 26))
+            p.setPen(QColor(C["blue"]))
+        else:
+            p.setBrush(QColor(C["raised"] if self.underMouse() and self.isEnabled() else C["panel"]))
+            p.setPen(Qt.PenStyle.NoPen)
+        p.drawRoundedRect(r, 3, 3)
+        c = QRectF(12, self.height() / 2 - 9, 18, 18)
+        p.setBrush(Qt.BrushStyle.NoBrush)
+        if on:
+            p.setPen(QPen(QColor(C["blue"]), 5))
+            p.drawEllipse(c.adjusted(2.5, 2.5, -2.5, -2.5))
+        else:
+            p.setPen(QPen(QColor(C["text3"]), 1.5))
+            p.drawEllipse(c.adjusted(0.75, 0.75, -0.75, -0.75))
+        if not self.isEnabled():
+            p.fillRect(self.rect(), QColor(23, 26, 33, 110))
+
+
+class RestoreDialog(QDialog):
+    """Pick an earlier copy of Steam's game list to put back."""
+
+    def __init__(self, parent, backups, now: list | None = None, steam_open: bool = False):
+        """backups: (path, game count) newest first; now: the shortcuts in the list today."""
+        from ..shortcuts import compare
+
+        super().__init__(parent)
+        self.setWindowTitle("Restore Steam's game list")
+        self.setMinimumWidth(560)
+        outer = QVBoxLayout(self)
+        outer.setContentsMargins(0, 0, 0, 0)
+        outer.setSpacing(0)
+        body = QVBoxLayout()
+        body.setContentsMargins(18, 18, 18, 18)
+        body.setSpacing(12)
+        title = QLabel("Put back an earlier game list")
+        f = QFont(title.font())
+        f.setPointSizeF(theme.pt("heading"))
+        f.setWeight(QFont.Weight.Bold)
+        title.setFont(f)
+        body.addWidget(title)
+        if steam_open:
+            warn = QLabel("Steam is open. It'll be closed first, or it would put its own list back when it quits.")
+            warn.setWordWrap(True)
+            warn.setStyleSheet(f"background: rgba(227,179,65,.1); border-left: 3px solid {C['wait']};"
+                               f" padding: 10px 12px; color: {C['text']};")
+            body.addWidget(warn)
+
+        rows = QWidget()
+        rl = QVBoxLayout(rows)
+        rl.setContentsMargins(0, 0, 0, 0)
+        rl.setSpacing(4)
+        self.rows: list[BackupRow] = []
         for path, count in backups:
-            when = time.strftime("%d %b %Y, %H:%M:%S", time.localtime(path.stat().st_mtime))
-            games = "unreadable" if count < 0 else f"{count} game{'s' if count != 1 else ''}"
-            it = QListWidgetItem(f"{when}    ·    {games}")
-            it.setData(Qt.ItemDataRole.UserRole, path)
-            if count < 0:
-                it.setFlags(Qt.ItemFlag.NoItemFlags)
-            self.list.addItem(it)
+            try:
+                when, ago = friendly_time(path.stat().st_mtime)
+                tags = difference_tags(compare(path, now)) if now is not None and count >= 0 else []
+            except Exception:
+                when, ago, tags, count = path.name, "", [], -1
+            row = BackupRow(path, when, ago, count, tags)
+            row.toggled.connect(self._changed)
+            rl.addWidget(row)
+            self.rows.append(row)
         if not backups:
-            self.list.addItem("No backups yet. One is made the first time the app changes the list.")
-            self.list.setEnabled(False)
-        self.list.itemDoubleClicked.connect(lambda *_: self.accept())
-        lay.addWidget(self.list, 1)
-        bb = QDialogButtonBox(QDialogButtonBox.StandardButton.Ok | QDialogButtonBox.StandardButton.Cancel)
-        bb.button(QDialogButtonBox.StandardButton.Ok).setText("Restore")
-        _confirm(bb, QDialogButtonBox.StandardButton.Ok)
-        bb.accepted.connect(self.accept)
-        bb.rejected.connect(self.reject)
-        lay.addWidget(bb)
+            empty = QLabel("No copies yet. One is saved the first time the app changes the list.")
+            empty.setStyleSheet(f"color: {C['text3']}; padding: 12px;")
+            rl.addWidget(empty)
+        rl.addStretch(1)
+        scroll = QScrollArea()
+        scroll.setWidget(rows)
+        scroll.setWidgetResizable(True)
+        scroll.setFrameShape(QFrame.Shape.NoFrame)
+        scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
+        scroll.setMinimumHeight(min(3, max(1, len(backups))) * 64)
+        scroll.setStyleSheet("QScrollArea, QScrollArea > QWidget > QWidget { background: transparent; }")
+        body.addWidget(scroll, 1)
+        info = QLabel("A copy is saved before every change. Restoring puts back game names, launch options "
+                      "and icons; artwork images stay. Your list now is saved as a copy first.")
+        info.setWordWrap(True)
+        info.setStyleSheet(f"color: {C['text3']};")
+        fi = QFont(info.font())
+        fi.setPointSizeF(theme.pt("faint"))
+        info.setFont(fi)
+        body.addWidget(info)
+        outer.addLayout(body, 1)
+
+        foot = QFrame()
+        foot.setObjectName("quitfoot")
+        foot.setStyleSheet(f"#quitfoot {{ background: #1a1e25; border-top: 1px solid {C['line']}; }}")
+        fl = QHBoxLayout(foot)
+        fl.setContentsMargins(18, 12, 18, 12)
+        fl.setSpacing(8)
+        fl.addStretch(1)
+        cancel = QPushButton("Cancel")
+        cancel.clicked.connect(self.reject)
+        fl.addWidget(cancel)
+        self.ok = QPushButton("Close Steam and Restore" if steam_open else "Restore")
+        self.ok.setIcon(icons.icon("history", 15, "white"))
+        self.ok.setProperty("kind", "confirm")
+        self.ok.setDefault(True)
+        self.ok.clicked.connect(self.accept)
+        fl.addWidget(self.ok)
+        outer.addWidget(foot)
+        self.resize(600, 460)
+        self._changed()
+
+    def _changed(self, *_):
+        self.ok.setEnabled(self.selected() is not None)
 
     def selected(self):
-        it = self.list.currentItem()
-        return it.data(Qt.ItemDataRole.UserRole) if it else None
+        return next((r.path for r in self.rows if r.isChecked()), None)
