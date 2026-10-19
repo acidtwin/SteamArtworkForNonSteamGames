@@ -538,7 +538,6 @@ class MainWindow(QMainWindow):
                 ("Get All Artwork", "ghost", bool(self._unstaged_missing(sc)) and not self.busy, self.fill_current),
                 (f"Apply ({plural(n, 'Change')})" if n else "Apply", "go", bool(n) and not self.busy,
                  lambda: self.apply_games([sc.appid])),
-                ("More for this game", "more", True, lambda pos: self.show_game_menu(self.current, pos)),
             ])
         else:
             self.cbar.show_library(len(games) if self.users else None)
