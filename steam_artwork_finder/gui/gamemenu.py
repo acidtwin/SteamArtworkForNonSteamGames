@@ -6,13 +6,14 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Callable
 
-from PySide6.QtCore import QPoint, QRect, QRectF, QSize, Qt, Signal
+from PySide6.QtCore import QPoint, QRect, QRectF, QSize, Qt, QVariantAnimation, Signal
 from PySide6.QtGui import QColor, QFont, QGuiApplication, QPainter, QPainterPath, QPen, QPixmap
-from PySide6.QtWidgets import QAbstractButton, QFrame, QVBoxLayout, QWidget
+from PySide6.QtWidgets import QAbstractButton, QFrame, QGraphicsOpacityEffect, QVBoxLayout, QWidget
 
 from . import icons, theme
 from .theme import C, q
 
+FADE_IN, FADE_OUT = 140, 120  # ms
 SHADOW = 12  # room around the menu for its shadow
 RADIUS = 6
 
@@ -51,7 +52,7 @@ class MenuRow(QAbstractButton):
         return QSize(244, max(40, self.fontMetrics().height() + 20))
 
     def keyPressEvent(self, e):
-        self.parent().keyPressEvent(e)  # the menu handles arrows, Enter and Esc
+        self.window().keyPressEvent(e)  # the menu handles arrows, Enter and Esc
 
     def enterEvent(self, e):
         if self.isEnabled():
@@ -175,6 +176,36 @@ class Section(QWidget):
                    Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignBottom, self.text)
 
 
+class _Ghost(QWidget):
+    """A picture of a menu that has just closed, fading out where it was. It ignores
+    the mouse, so the click that closed the menu goes where it was aimed."""
+
+    def __init__(self, pm: QPixmap, pos: QPoint, parent=None):
+        super().__init__(parent, Qt.WindowType.ToolTip | Qt.WindowType.FramelessWindowHint
+                         | Qt.WindowType.WindowTransparentForInput | Qt.WindowType.NoDropShadowWindowHint)
+        self.setAttribute(Qt.WidgetAttribute.WA_TranslucentBackground)
+        self.setAttribute(Qt.WidgetAttribute.WA_ShowWithoutActivating)
+        self.setAttribute(Qt.WidgetAttribute.WA_DeleteOnClose)
+        self.pm = pm
+        self.alpha = 1.0
+        self.resize(pm.deviceIndependentSize().toSize())
+        self.move(pos)
+        anim = QVariantAnimation(self, duration=FADE_OUT, startValue=1.0, endValue=0.0)
+        anim.valueChanged.connect(self._step)
+        anim.finished.connect(self.close)
+        self.show()
+        anim.start()
+
+    def _step(self, v):
+        self.alpha = float(v)
+        self.update()
+
+    def paintEvent(self, _):
+        p = QPainter(self)
+        p.setOpacity(self.alpha)
+        p.drawPixmap(0, 0, self.pm)
+
+
 class GameMenu(QFrame):
     """A popup that closes on any click outside it, like a QMenu.
 
@@ -191,8 +222,17 @@ class GameMenu(QFrame):
         self.setAttribute(Qt.WidgetAttribute.WA_DeleteOnClose)
         self.setAccessibleName(f"{name} menu" if name else "More")
         self.setFixedWidth(width + SHADOW * 2)
-        lay = QVBoxLayout(self)
-        lay.setContentsMargins(SHADOW + 6, SHADOW + 6, SHADOW + 6, SHADOW + 6)
+        outer = QVBoxLayout(self)
+        outer.setContentsMargins(SHADOW, SHADOW, SHADOW, SHADOW)
+        body = QWidget(self)  # the rows, faded in as one with the frame
+        self._fx = QGraphicsOpacityEffect(body, opacity=0.0)
+        body.setGraphicsEffect(self._fx)
+        outer.addWidget(body)
+        self._alpha = 0.0
+        self._fade = QVariantAnimation(self, duration=FADE_IN, startValue=0.0, endValue=1.0)
+        self._fade.valueChanged.connect(self._set_alpha)
+        lay = QVBoxLayout(body)
+        lay.setContentsMargins(6, 6, 6, 6)
         lay.setSpacing(0)
         if name:
             lay.addWidget(Header(name, sub, icon, self))
@@ -224,6 +264,7 @@ class GameMenu(QFrame):
             y = area.bottom() - self.height()
         self.move(max(area.left(), x), max(area.top(), y))
         self.show()
+        self._fade.start()
         self.activateWindow()
         first = next((r for r in self.rows if r.isEnabled()), None)
         if first:
@@ -250,13 +291,23 @@ class GameMenu(QFrame):
         else:
             super().keyPressEvent(e)
 
+    def _set_alpha(self, v):
+        self._alpha = float(v)
+        self._fx.setOpacity(self._alpha)
+        self.update()
+
     def hideEvent(self, e):
+        if self._alpha > 0.05:  # leave a picture of the menu behind that fades away
+            self._fade.stop()
+            self._set_alpha(1.0)
+            _Ghost(self.grab(), self.pos(), self.parentWidget())
         super().hideEvent(e)
         self.closed.emit()
 
     def paintEvent(self, _):
         p = QPainter(self)
         p.setRenderHint(QPainter.RenderHint.Antialiasing)
+        p.setOpacity(self._alpha)
         body = QRectF(self.rect()).adjusted(SHADOW, SHADOW, -SHADOW, -SHADOW)
         for i in range(SHADOW, 0, -1):  # a soft shadow, drawn as fading rings
             p.setPen(Qt.PenStyle.NoPen)
