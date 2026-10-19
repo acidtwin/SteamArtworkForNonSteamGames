@@ -30,5 +30,4 @@ Ideas and jobs saved for later, once the app is more final.
 
 ## Release
 
-- Choose a licence (the metainfo file has a placeholder).
 - Write the Flatpak manifest for Flathub.

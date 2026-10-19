@@ -2,11 +2,10 @@
 <component type="desktop-application">
   <id>io.github.acidtwin.SteamArtworkForNonSteamGames</id>
   <metadata_license>CC0-1.0</metadata_license>
-  <!-- Set this once a LICENSE file is chosen for the repo; Flathub needs a real SPDX id. -->
-  <project_license>LicenseRef-proprietary</project_license>
+  <project_license>MIT</project_license>
   <name>Steam Artwork for Non-Steam Games</name>
   <summary>Artwork and icons for your non-Steam games</summary>
-  <developer id="io.github.acidtwin"><name>acidtwin</name></developer>
+  <developer id="io.github.acidtwin"><name>Acid Design</name></developer>
   <description>
     <p>Gives the games you added to Steam yourself (emulators, GOG, itch.io, Heroic and Lutris installs) the same artwork as the rest of your library: cover, wide cover, banner, logo and icon, from SteamGridDB.</p>
     <p>It finds your Steam install on its own, lists every non-Steam shortcut, and fills in whatever is missing in one click. You can swap any piece from a visual picker and undo any change. Steam's shortcut list is backed up before every write.</p>

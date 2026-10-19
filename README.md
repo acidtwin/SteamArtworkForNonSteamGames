@@ -123,4 +123,10 @@ Arrow keys move through the game list, Tab reaches every piece and option, Enter
 
 ## Credits
 
+Designed, directed and tested by Acid Design. Built with the help of [Claude Code](https://claude.com/claude-code), which wrote the code to that direction.
+
 Artwork comes from [SteamGridDB](https://www.steamgriddb.com) and its community of artists. This project isn't affiliated with Valve or SteamGridDB.
+
+## Licence
+
+MIT. See [LICENSE](LICENSE).
