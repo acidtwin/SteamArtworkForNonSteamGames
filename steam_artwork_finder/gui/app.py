@@ -39,7 +39,7 @@ from ..steam import (
     steam_running,
     wait_until_closed,
 )
-from . import icons, theme, workers
+from . import icons, motion, theme, workers
 from .chrome import ContentBar, Header, StatusBar, SteamPopover
 from .steamfolder import SteamFolderPopover
 from .dialogs import AboutDialog, ConfirmDialog, KeyPopover, MatchDialog, QuitDialog, RestoreDialog
@@ -95,6 +95,8 @@ class MainWindow(QMainWindow):
         self.asset_cache: dict[tuple, list[Asset]] = {}
         self.pending = Pending()
         self.pick_pix: dict[tuple[int, str], QPixmap] = {}
+        self.motion_files: dict[int, tuple[str, str]] = {}  # animated asset id -> (kind, cached file)
+        self._anim_files: dict[tuple, bool] = {}  # (artwork file, mtime) -> animated?
         # Each game's artwork files in ORDER (None where it has none), so painting and
         # counting never touch the disk. Forgotten whenever the app writes a game's files.
         self._cov: dict[int, list[Path | None]] = {}
@@ -233,6 +235,7 @@ class MainWindow(QMainWindow):
             Item("SteamGridDB API Key…", "key", self.ask_api_key),
             Item("Restart Steam When I Apply", "power", self._menu_auto_restart, toggle=self.auto_restart),
             Item("Apply When I Quit", "check", self._menu_apply_on_quit, toggle=self.apply_on_quit),
+            Item("Show Animated Artwork", "play", self._set_show_animated, toggle=self.show_animated),
             "Help",
             Item("Report a Problem", "bug", lambda: QDesktopServices.openUrl(QUrl(ISSUES_URL)), external=True),
             Item("About", "info", self.about),
@@ -347,6 +350,10 @@ class MainWindow(QMainWindow):
             self.config.set_match(sc.appid, g.id, g.name, g.year)
 
     def load_thumb(self, asset: Asset, target):
+        if asset.animated:
+            self._load_animated(asset, target)
+            return
+
         def done(data):
             pm = load_pixmap(data=data, key=("thumb", asset.thumb))
             try:
@@ -361,8 +368,76 @@ class MainWindow(QMainWindow):
 
         workers.run(workers.cached_download, asset.thumb, self.sgdb.download, on_done=done)
 
+    # ---- animated artwork -----------------------------------------------------
+
+    @property
+    def show_animated(self) -> bool:
+        return self.config.data.get("show_animated", True)
+
+    def _set_show_animated(self, on: bool):
+        """Mix animated options into the strips and the tray, or not; reloads the open game's options."""
+        self.config.data["show_animated"] = on
+        self.config.save()
+        sc, game = self.current_shortcut(), self.current_game()
+        if sc is not None and game is not None and self.stage.currentWidget() is self.page:
+            self._load_rows(sc, game)
+            if self.tray.isVisible():
+                self.tray.open_slot(self.tray.slot)
+
+    def _load_animated(self, asset: Asset, target):
+        """An animated option plays its video thumbnail; where Qt can't play video, the file itself."""
+        kind, url = ("video", asset.thumb) if motion.video_supported() else ("frames", asset.url)
+
+        def deliver(pm):
+            try:
+                if isinstance(target, QListWidgetItem):
+                    target.setData(ROLE_PIX, pm)
+                elif callable(target):
+                    target(pm)
+            except RuntimeError:  # the item was replaced meanwhile
+                pass
+
+        def done(path):
+            self.motion_files[asset.id] = (kind, path)
+            try:
+                if isinstance(target, ArtView):
+                    target.size()  # raises if the widget was replaced meanwhile
+                    target.animated = True
+                    target.set_motion(*self.motion_spec(asset, target.size()))
+                else:
+                    motion.first_frame(kind, path, deliver)
+            except RuntimeError:
+                pass
+
+        workers.run(workers.cached_file, url, self.sgdb.download, on_done=done, on_error=lambda _m: None)
+
+    def motion_spec(self, asset: Asset | None, size) -> tuple:
+        """(key, factory) for ArtView.set_motion to play an animated option, once it's downloaded."""
+        src = self.motion_files.get(asset.id) if asset is not None and asset.animated else None
+        if src is None:
+            return None, None
+        kind, path = src
+        bound = size * self.devicePixelRatioF()
+        return ("asset", asset.id), lambda: motion.make(kind, path, bound)
+
+    def file_motion_spec(self, path: Path | None, size) -> tuple:
+        """(key, factory) to play an animated artwork file from Steam's folder; nothing for a still."""
+        if path is None:
+            return None, None
+        try:
+            key = (str(path), path.stat().st_mtime_ns)
+        except OSError:
+            return None, None
+        if key not in self._anim_files:
+            self._anim_files[key] = artwork.file_is_animated(path)
+        if not self._anim_files[key]:
+            return None, None
+        bound = size * self.devicePixelRatioF()
+        return ("file",) + key, lambda: motion.make("frames", str(path), bound)
+
     def fetch_assets(self, game_id: int, slot_key: str, page: int, callback):
-        key = (game_id, slot_key, page)
+        animated = self.show_animated
+        key = (game_id, slot_key, page, animated)
         if key in self.asset_cache:
             callback(self.asset_cache[key])
             return
@@ -376,7 +451,7 @@ class MainWindow(QMainWindow):
             self._network_problem(msg)
             callback(None)
 
-        workers.run(self.sgdb.assets, slot_key, game_id, page, on_done=done, on_error=failed)
+        workers.run(self.sgdb.assets, slot_key, game_id, page, animated, on_done=done, on_error=failed)
 
     # ---- waiting changes ----------------------------------------------------
 
@@ -982,12 +1057,14 @@ class MainWindow(QMainWindow):
                 self.page.scroll.ensureWidgetVisible(row, 0, 24)
         QTimer.singleShot(0, show)
 
-    def _tray_preview(self, slot: Slot, pm):
+    def _tray_preview(self, slot: Slot, pm, asset=None):
         row = self.page.rows.get(slot.key)
         if row is None:
             return
         if pm is not None and not pm.isNull():
             backdrop = row.art.backdrop if slot.key == "logo" else None
+            row.art.set_motion(*self.motion_spec(asset, row.art.size()))
+            row.art.animated = bool(asset and asset.animated)
             row.art.set_pixmap(pm, backdrop)
             row.caption.setText("Previewing")
             row._previewing = True

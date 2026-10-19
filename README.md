@@ -18,6 +18,7 @@ Linux first, including Steam Deck desktop mode: the window fits the Deck's 1280Ã
 - **Looks like your Steam library.** The start page is a cover wall like Steam's library home, with games that have no cover drawn as dashed tiles so the gaps stand out.
 - **One click for everything.** "Get artwork for N games" matches each shortcut on SteamGridDB and fills in whatever it's missing with the top-rated option. It never replaces artwork you already have.
 - **Every piece explained, with its options beside it.** A game's page has a row for each piece, saying where Steam shows it and its size, with the art in use and a strip of SteamGridDB options next to it. Hover an option to preview it, click to use it, and Undo if you change your mind. "See all" opens every option with style filters.
+- **Animated artwork.** Animated covers, wide covers, banners and logos from SteamGridDB sit in the same strips as still ones, marked with a small play tag, and play in the previews. Steam plays them in your library too. Turn them off with **Show Animated Artwork** in the â‹¯ menu. (Icons stay still: Steam doesn't animate them.)
 - **Logo on the banner.** Tick "Show it on the banner" to judge a logo against the banner it will sit on.
 - **Fix wrong matches.** *Not this game?* lets you search SteamGridDB yourself, and your choice is remembered. Games matched by a best guess are tagged "Check match".
 - **Safe writes.** See [How it keeps your shortcuts safe](#how-it-keeps-your-shortcuts-safe). Backups can be restored from inside the app.
@@ -119,7 +120,6 @@ Arrow keys move through the game list, Tab reaches every piece and option, Enter
 
 - AppImage and Flatpak builds for Linux (the Flatpak needs read/write access to `~/.local/share/Steam`, `~/.steam` and `~/.var/app/com.valvesoftware.Steam`, and `--talk-name=org.freedesktop.Flatpak` to tell whether Steam is running from inside the sandbox)
 - Windows build with PyInstaller, tested on a real install
-- Animated artwork option
 
 ## Credits
 

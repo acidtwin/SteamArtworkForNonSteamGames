@@ -44,6 +44,11 @@ class Asset:
     style: str
     author: str
 
+    @property
+    def animated(self) -> bool:
+        """SteamGridDB gives animated options a video thumbnail."""
+        return self.thumb.lower().split("?")[0].endswith((".webm", ".mp4"))
+
 
 def clean_name(name: str) -> str:
     name = re.sub(r"[™®©]", "", name)
@@ -224,11 +229,12 @@ class SteamGridDB:
                 first = (results[0], len(results))
         return first
 
-    def assets(self, kind: str, game_id: int, page: int = 0) -> list[Asset]:
+    def assets(self, kind: str, game_id: int, page: int = 0, animated: bool = False) -> list[Asset]:
+        """One page of options; `animated` mixes in animated ones where Steam plays them."""
         from .artwork import SLOTS
 
         slot = SLOTS[kind]
-        params = dict(slot.query)
+        params = slot.search(animated)
         params.update(nsfw="false", humor="any", page=page)
         data = self._get(f"/{slot.endpoint}/game/{game_id}", params)
         out = []

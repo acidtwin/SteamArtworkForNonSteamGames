@@ -57,6 +57,41 @@ def run(fn, *args, on_done=None, on_error=None, on_progress=None, **kwargs) -> T
     return task
 
 
+def _is_video(data: bytes) -> bool:
+    return data[:4] == b"\x1a\x45\xdf\xa3" or data[4:8] == b"ftyp"  # WebM/Matroska, MP4
+
+
+def _whole(data: bytes) -> bool:
+    return _is_video(data) or not QImage.fromData(data).isNull()
+
+
+def cached_file(url: str, fetch) -> str:
+    """Fetch url via fetch(url) into the cache folder (once) and return the file's path."""
+    d = cache_dir() / "thumbs"
+    d.mkdir(parents=True, exist_ok=True)
+    p = d / hashlib.sha1(url.encode()).hexdigest()
+    try:
+        if _whole(p.read_bytes()):
+            return str(p)
+        p.unlink(missing_ok=True)  # cut off or broken: fetch it again
+    except OSError:
+        pass
+    data = fetch(url)
+    # Written aside then renamed, so another thread never reads half a file.
+    fd, tmp = tempfile.mkstemp(prefix=p.name + ".", suffix=".part", dir=d)
+    try:
+        with os.fdopen(fd, "wb") as f:
+            f.write(data)
+        os.replace(tmp, p)
+    except OSError:
+        try:
+            os.unlink(tmp)
+        except OSError:
+            pass
+        raise
+    return str(p)
+
+
 def cached_download(url: str, fetch) -> bytes:
     """Fetch url via fetch(url), keeping a copy in the cache folder."""
     d = cache_dir() / "thumbs"

@@ -24,7 +24,7 @@ from ..artwork import SLOTS
 from . import icons, theme
 from .theme import q
 from .gamepage import draw_new_tag
-from .widgets import FlowLayout, draw_badge, draw_checker, fill_rect, label
+from .widgets import FlowLayout, draw_animated_tag, draw_badge, draw_checker, fill_rect, label
 
 ORDER = ("grid", "wide", "hero", "logo", "icon")
 ROLE_ASSET = Qt.ItemDataRole.UserRole
@@ -97,6 +97,9 @@ class OptionDelegate(QStyledItemDelegate):
             draw_new_tag(p, r)
         elif index.data(ROLE_INUSE):
             draw_badge(p, r)
+        a = index.data(ROLE_ASSET)
+        if a is not None and a.animated:
+            draw_animated_tag(p, r)
         sel = bool(option.state & QStyle.StateFlag.State_Selected)
         hov = bool(option.state & QStyle.StateFlag.State_MouseOver)
         if sel or hov or picked:
@@ -118,7 +121,7 @@ class OptionTray(QWidget):
     closed = Signal()
     use = Signal(object, object)  # slot, Asset (no longer emitted: picks stage through win.stage_pick)
     remove = Signal(object)  # slot (no longer emitted: clearing stages through win.stage_clear)
-    preview = Signal(object, object)  # slot, QPixmap or None
+    preview = Signal(object, object, object)  # slot, QPixmap or None, Asset or None
     slot_changed = Signal(object)
 
     def __init__(self, win):
@@ -168,7 +171,7 @@ class OptionTray(QWidget):
         self.list.setVerticalScrollMode(QListView.ScrollMode.ScrollPerPixel)
         self.list.setItemDelegate(OptionDelegate(self))
         self.list.itemEntered.connect(self._hover)
-        self.list.viewportEntered.connect(lambda: self.preview.emit(self.slot, None))
+        self.list.viewportEntered.connect(lambda: self.preview.emit(self.slot, None, None))
         self.list.currentItemChanged.connect(self._selected)
         self.list.itemDoubleClicked.connect(lambda *_: self._use())
         self.list.itemActivated.connect(lambda *_: self._use())
@@ -257,7 +260,8 @@ class OptionTray(QWidget):
             it.setData(ROLE_NAME, name)
             it.setData(ROLE_ASSET, a)
             self._mark(it, in_use, picked)
-            it.setToolTip(f"{a.width} × {a.height} · {a.style or 'style unknown'} · by {a.author or 'unknown'}")
+            it.setToolTip(f"{a.width} × {a.height} · {'animated · ' if a.animated else ''}"
+                          f"{a.style or 'style unknown'} · by {a.author or 'unknown'}")
             self.list.addItem(it)
             self.win.load_thumb(a, it)
         self.more.setVisible(len(assets) >= 50)
@@ -309,14 +313,14 @@ class OptionTray(QWidget):
             self.list.item(i).setHidden(want != "all" and a.style != want)
 
     def _tab(self, i):
-        self.preview.emit(self.slot, None)
+        self.preview.emit(self.slot, None, None)
         self.open_slot(SLOTS[ORDER[i]])
 
     def _hover(self, item):
-        self.preview.emit(self.slot, item.data(ROLE_PIX))
+        self.preview.emit(self.slot, item.data(ROLE_PIX), item.data(ROLE_ASSET))
 
     def leaveEvent(self, e):
-        self.preview.emit(self.slot, None)
+        self.preview.emit(self.slot, None, None)
         super().leaveEvent(e)
 
     def _selected(self, *_):
@@ -382,7 +386,7 @@ class OptionTray(QWidget):
         self._update_buttons()
 
     def close_tray(self):
-        self.preview.emit(self.slot, None)
+        self.preview.emit(self.slot, None, None)
         self.hide()
         self.closed.emit()
 

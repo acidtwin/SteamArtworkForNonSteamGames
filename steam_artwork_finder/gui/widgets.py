@@ -8,7 +8,7 @@ from PySide6.QtCore import QBuffer, QByteArray, QIODevice, QPoint, QPointF, QRec
 from PySide6.QtGui import QColor, QFont, QImage, QImageReader, QPainter, QPainterPath, QPen, QPixmap
 from PySide6.QtWidgets import QFrame, QHBoxLayout, QLabel, QLayout, QPushButton, QSizePolicy, QWidget
 
-from . import icons, theme, workers
+from . import icons, motion, theme, workers
 from .theme import C, q
 
 _cache: dict[tuple, QPixmap] = {}
@@ -202,6 +202,30 @@ def draw_badge(p: QPainter, rect: QRectF, text: str = "IN USE"):
     p.restore()
 
 
+def draw_animated_tag(p: QPainter, rect: QRectF):
+    """A small dark pill in the bottom-right corner marking an animated option: a play
+    triangle, with the word when there's room."""
+    p.save()
+    f = QFont(p.font())
+    f.setPointSizeF(theme.pt("tag"))
+    f.setWeight(QFont.Weight.Bold)
+    p.setFont(f)
+    fm = p.fontMetrics()
+    h = fm.height() + 4
+    text = "ANIMATED" if rect.width() >= 120 else ""
+    w = h + (fm.horizontalAdvance(text) + 6 if text else 0)
+    r = QRectF(rect.right() - w - 4, rect.bottom() - h - 4, w, h)
+    p.setRenderHint(QPainter.RenderHint.Antialiasing)
+    p.setPen(Qt.PenStyle.NoPen)
+    p.setBrush(QColor(11, 16, 22, 200))
+    p.drawRoundedRect(r, h / 2, h / 2)
+    icons.draw(p, "play", QRectF(r.left() + 3, r.top() + 2, h - 4, h - 4), QColor("white"))
+    if text:
+        p.setPen(QColor("white"))
+        p.drawText(r.adjusted(h - 2, 0, -6, 0), Qt.AlignmentFlag.AlignCenter, text)
+    p.restore()
+
+
 def draw_dots(p: QPainter, x: float, y: float, states: list[bool], d: float = 7, gap: float = 4):
     p.save()
     p.setRenderHint(QPainter.RenderHint.Antialiasing)
@@ -233,8 +257,12 @@ class ArtView(QWidget):
         self.checker = checker
         self.badge = False
         self.selected = False
+        self.animated = False  # marks an animated option with a small tag
         self.round = 3
         self._scaled: tuple | None = None  # (key, backdrop, art) as drawn at this size
+        self._frames: dict = {}  # scaled frames of a looping animation, so each loop only draws
+        self._motion = None
+        self.motion_spec: tuple = (None, None)  # (key, factory) of what's playing, for previews
         self.setCursor(Qt.CursorShape.PointingHandCursor)
         self.setFocusPolicy(Qt.FocusPolicy.StrongFocus)
         self.setAttribute(Qt.WidgetAttribute.WA_Hover)
@@ -251,14 +279,55 @@ class ArtView(QWidget):
         self._scaled = None
         self.update()
 
+    def set_motion(self, key=None, factory=None):
+        """Play an animation here: `factory()` makes the Motion, `key` says what it is, so asking
+        again for the same thing carries on rather than restarting. No key stops it."""
+        if key is not None and key == self.motion_spec[0]:
+            return
+        if self._motion is not None:
+            self._motion.stop()
+            self._motion.deleteLater()
+            self._motion = None
+        self._frames = {}
+        self.motion_spec = (key, factory)
+        if key is None or factory is None:
+            return
+        self._motion = factory()
+        self._motion.frame.connect(self._frame)
+        if self.isVisible():
+            self._motion.start()
+
+    def _frame(self, pm: QPixmap):
+        first = self.pixmap.isNull()
+        self.pixmap = pm
+        self.update()
+        if first:
+            self.frame_arrived()
+
+    def frame_arrived(self):
+        """The first picture of an animation has arrived (for subclasses)."""
+
+    def showEvent(self, e):
+        if self._motion is not None:
+            self._motion.start()
+        super().showEvent(e)
+
+    def hideEvent(self, e):
+        if self._motion is not None:
+            self._motion.stop()  # nothing plays where it can't be seen
+        super().hideEvent(e)
+
     def resizeEvent(self, e):
         self._scaled = None
+        self._frames = {}
         super().resizeEvent(e)
 
     def _render(self) -> tuple[QPixmap | None, QPixmap | None]:
         """The backdrop and the art scaled for this size, made once rather than on every repaint."""
         dpr = self.devicePixelRatioF()
         key = (self.pixmap.cacheKey(), self.backdrop.cacheKey(), self.checker, dpr)
+        if (self._scaled is None or self._scaled[0] != key) and key in self._frames:
+            self._scaled = self._frames[key]
         if self._scaled is None or self._scaled[0] != key:
             bd = fill_rect(self.backdrop, self.size(), dpr) if not self.backdrop.isNull() else None
             art = None
@@ -272,6 +341,8 @@ class ArtView(QWidget):
                 else:
                     art = fill_rect(self.pixmap, self.size(), dpr)
             self._scaled = (key, bd, art)
+            if isinstance(self._motion, motion.FrameMotion) and len(self._frames) < 400:
+                self._frames[key] = self._scaled  # the same frames come round again
         return self._scaled[1], self._scaled[2]
 
     def paintEvent(self, _):
@@ -311,6 +382,8 @@ class ArtView(QWidget):
         p.setClipping(False)
         if self.badge:
             draw_badge(p, r)
+        if self.animated:
+            draw_animated_tag(p, r)
         # Picked: a blue outline and a ticked corner. Keyboard focus: a white ring inside it, so the
         # option you're on never looks like a second pick.
         if self.selected or self.underMouse():

@@ -29,19 +29,28 @@ class Slot:
     suffix: str  # file name is f"{appid}{suffix}{ext}"
     aspect: float  # width / height, for previews
     query: dict = field(default_factory=dict)
+    animates: bool = False  # Steam plays animated files for this piece
+
+    def search(self, animated: bool = False) -> dict:
+        """The SteamGridDB filters for this piece, with or without animated options."""
+        q = dict(self.query)
+        if animated and self.animates:
+            q["types"] = "static,animated"
+            q["mimes"] += ",image/webp"  # animated options are APNG or WebP
+        return q
 
 
 SLOTS: dict[str, Slot] = {
     s.key: s
     for s in (
         Slot("grid", "Cover", "grids", "p", 600 / 900,
-             {"dimensions": "600x900,342x482,660x930", "mimes": "image/png,image/jpeg", "types": "static"}),
+             {"dimensions": "600x900,342x482,660x930", "mimes": "image/png,image/jpeg", "types": "static"}, True),
         Slot("wide", "Wide cover", "grids", "", 920 / 430,
-             {"dimensions": "460x215,920x430", "mimes": "image/png,image/jpeg", "types": "static"}),
+             {"dimensions": "460x215,920x430", "mimes": "image/png,image/jpeg", "types": "static"}, True),
         Slot("hero", "Banner", "heroes", "_hero", 1920 / 620,
-             {"mimes": "image/png,image/jpeg", "types": "static"}),
+             {"mimes": "image/png,image/jpeg", "types": "static"}, True),
         Slot("logo", "Logo", "logos", "_logo", 16 / 9,
-             {"mimes": "image/png", "types": "static"}),
+             {"mimes": "image/png", "types": "static"}, True),
         Slot("icon", "Icon", "icons", "_icon", 1.0,
              {"mimes": "image/png,image/vnd.microsoft.icon", "types": "static"}),
     )
@@ -168,6 +177,10 @@ def save_asset(
     """Write artwork into the grid folder; old files go to grid/.replaced/."""
     grid_dir.mkdir(parents=True, exist_ok=True)
     ext = MIME_EXT.get(mime) or _sniff_ext(data)
+    if ext == ".webp":
+        # Steam only looks for .png and .jpg names, but reads the file by its contents, so an
+        # animated WebP saved as .png plays (the SteamGridDB plugin for Steam does the same).
+        ext = ".png"
     stem = f"{shortcut.appid}{slot.suffix}"
     dest = grid_dir / (stem + ext)
     tmp = dest.with_name(dest.name + ".part")
@@ -213,6 +226,33 @@ def undo(change: Change, shortcuts_file: ShortcutsFile | None = None):
     _put_back(change.moved)
     if change.old_icon is not None and shortcuts_file is not None:
         change.reloaded = set_icon(shortcuts_file, change.shortcut, change.old_icon)
+
+
+def is_animated(data: bytes) -> bool:
+    """True for an animated PNG (APNG) or animated WebP, judged from the start of the file."""
+    if data.startswith(b"\x89PNG\r\n\x1a\n"):
+        # APNG puts an acTL chunk before the first image data.
+        pos = 8
+        while pos + 8 <= len(data):
+            length = int.from_bytes(data[pos:pos + 4], "big")
+            kind = data[pos + 4:pos + 8]
+            if kind == b"acTL":
+                return True
+            if kind in (b"IDAT", b"IEND"):
+                return False
+            pos += 12 + length
+        return False
+    if data[:4] == b"RIFF" and data[8:12] == b"WEBP" and data[12:16] == b"VP8X" and len(data) > 20:
+        return bool(data[20] & 0x02)  # the animation flag
+    return False
+
+
+def file_is_animated(path: Path) -> bool:
+    try:
+        with open(path, "rb") as f:
+            return is_animated(f.read(4096))
+    except OSError:
+        return False
 
 
 def _sniff_ext(data: bytes) -> str:

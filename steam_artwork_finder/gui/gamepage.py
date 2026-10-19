@@ -89,6 +89,9 @@ class OptionView(ArtView):
         super().set_pixmap(pm, backdrop)
         self.loaded.emit()
 
+    def frame_arrived(self):
+        self.loaded.emit()
+
 
 class CurrentArt(ArtView):
     """The piece in use (or waiting), with a frosted "Clear" pill on hover.
@@ -438,6 +441,7 @@ class ArtworkRow(QWidget):
         pick = self.pick()
         self.missing.setVisible(path is None and (pick is None or pick.clears))
         backdrop = self._backdrop(sc)
+        spec, animated = (None, None), False
         if pick is not None and pick.clears:
             pm = None
             backdrop = None
@@ -445,8 +449,12 @@ class ArtworkRow(QWidget):
         elif pick is not None:
             pm = self._pick_pixmap(sc, self.slot.key, pick)
             self._set_caption("Not applied yet", "new")
+            spec = self.win.motion_spec(pick.asset, self.art.size())
+            animated = pick.asset.animated
         else:
             pm = load_pixmap(path) if path else None
+            spec = self.win.file_motion_spec(path, self.art.size())
+            animated = spec[0] is not None
             applied = self.win.config.get_applied(sc.appid, self.slot.key)
             if path is None:
                 self._set_caption("Nothing set")
@@ -455,7 +463,13 @@ class ArtworkRow(QWidget):
             else:
                 self._set_caption("In use")
         self.art.new = pick is not None and not pick.clears
-        self.art.set_pixmap(pm, backdrop)
+        self.art.animated = animated
+        playing = spec[0] is not None and spec[0] == self.art.motion_spec[0]
+        self.art.set_motion(*spec)
+        if not playing or self.art.pixmap.isNull():
+            self.art.set_pixmap(pm, backdrop)
+        else:  # playing: keep the frame on show, but take a new banner behind a logo
+            self.art.set_pixmap(self.art.pixmap, backdrop)
         self.art.set_clearable(pick is not None and not pick.clears or (pick is None and path is not None))
         self.art.describe(f"{self.slot.label}: {self.caption.text()}")
         applied = self.win.config.get_applied(sc.appid, self.slot.key)
@@ -463,7 +477,8 @@ class ArtworkRow(QWidget):
             chosen = pick is not None and not pick.clears and pick.asset.id == a.id
             view.selected = chosen
             view.badge = pick is None and bool(applied and applied.get("id") == a.id and path is not None)
-            view.setToolTip(f"{a.width} × {a.height} · {a.style or 'style unknown'} · by {a.author or 'unknown'}\n"
+            view.setToolTip(f"{a.width} × {a.height} · {'animated · ' if a.animated else ''}"
+                            f"{a.style or 'style unknown'} · by {a.author or 'unknown'}\n"
                             + ("Click to un-pick it" if chosen else "Click to pick it"))
             view.update()
 
@@ -524,8 +539,9 @@ class ArtworkRow(QWidget):
         info = INFO[self.slot.key]
         for i, a in enumerate(self.assets):
             v = OptionView(info.thumb, "", checker=self.slot.key == "logo")
+            v.animated = a.animated
             v.describe(f"{self.slot.label} option {i + 1} of {len(self.assets)}, by {a.author or 'unknown'}"
-                       + (f", {a.style}" if a.style else ""))
+                       + (", animated" if a.animated else "") + (f", {a.style}" if a.style else ""))
             v.setAccessibleDescription("Press Enter to pick it")
             v.clicked.connect(lambda a=a: self._option_clicked(a))
             v.hovered.connect(lambda on, v=v: self._preview(on, v))
@@ -550,6 +566,9 @@ class ArtworkRow(QWidget):
         if on and not view.pixmap.isNull():
             backdrop = self.art.backdrop if self.slot.key == "logo" else None
             self.art.new = False
+            self.art.animated = view.animated
+            asset = next((a for v, a in zip(self.thumbs, self.assets) if v is view), None)
+            self.art.set_motion(*self.win.motion_spec(asset, self.art.size()))
             self.art.set_pixmap(view.pixmap, backdrop)
             self._set_caption("Previewing", "preview")
             self._previewing = True
