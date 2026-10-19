@@ -552,12 +552,6 @@ class MainWindow(QMainWindow):
             self.cbar.set_buttons(specs)
         if self.busy:
             self.statusbar.set_message("busy", self.progress_text)
-        elif self.pending:
-            n = len(self.pending.games())
-            self.statusbar.set_message(
-                "info", f"{n} {'game has' if n == 1 else 'games have'} new artwork ready to apply")
-        elif games and all(all(self.coverage(g)) for g in games):
-            self.statusbar.set_message("done", "Every game has all its artwork")
         else:
             self.statusbar.set_message(None, "")
 

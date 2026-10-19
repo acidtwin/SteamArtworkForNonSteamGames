@@ -95,7 +95,7 @@ def test_picks_wait_until_apply(qapp, window):
     win.go_home()
     _pump(qapp)
     assert [b.text() for b in win.cbar.buttons] == ["Get Artwork (3 Games)", "Apply (1 Game)"]
-    assert win.statusbar.kind == "info"
+    assert win.statusbar.kind is None  # the sidebar and Apply button already say so
 
     win.apply_all()
     _pump(qapp, 3000, until=lambda: not win.busy)
