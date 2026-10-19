@@ -1047,7 +1047,7 @@ class MainWindow(QMainWindow):
         sc = self.current_shortcut()
         if not sc or not self.ensure_key():
             return
-        dlg = MatchDialog(self, self.sgdb, sc.name)
+        dlg = MatchDialog(self, self.sgdb, sc.name, sc.exe)
         if dlg.exec() and dlg.selected():
             g = dlg.selected()
             old = self.match_info(sc)

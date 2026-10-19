@@ -111,3 +111,15 @@ def test_sessions_are_per_thread():
     t = threading.Thread(target=lambda: seen.append(c.http))
     t.start(); t.join()
     assert seen[0] is not c.http
+
+
+def test_suggestions_use_the_folder_for_file_names():
+    from steam_artwork_finder.sgdb import looks_like_file, suggestions
+
+    assert looks_like_file("SB.exe") and not looks_like_file("Celeste")
+    assert suggestions("SB.exe", "/home/a/Games/Super Bomberman R/SB.exe") == [
+        ("Super Bomberman R", "folder"), ("SB", "file")]
+    win = '"C:\\Games\\Super_Bomberman_R\\Binaries\\Win64\\SB.exe"'
+    assert suggestions("SB.exe", win)[0] == ("Super Bomberman R", "folder")
+    assert suggestions("game.exe", "/home/acid/game.exe") == [("game", "file")]  # a home folder is no name
+    assert suggestions("Celeste - GOG", "/home/a/Games/Celeste/Celeste") == [("Celeste", "name")]

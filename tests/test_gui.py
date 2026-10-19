@@ -270,3 +270,38 @@ def test_app_opens_on_the_library(qapp, window):
     win.activateWindow()
     _pump(qapp, 600)
     assert win.stage.currentWidget() is win.start and win.current == -1
+
+
+def test_match_window_suggests_and_previews(qapp):
+    from steam_artwork_finder.gui.dialogs import MatchDialog
+    from steam_artwork_finder.sgdb import Asset, Game
+
+    games = [Game(1, "Super Bomberman R", "2017", True), Game(2, "Super Bomberman R 2", "2023", True)]
+
+    class Fake:
+        searched: list = []
+
+        def search(self, term):
+            self.searched.append(term)
+            return games if term.startswith("Super") else []
+
+        def assets(self, kind, gid, page=0):
+            n = {"grid": 60, "hero": 3, "logo": 2, "icon": 1}[kind]
+            return [Asset(i, f"u{kind}{gid}{i}", f"u{kind}{gid}{i}", 1, 1, "", 0, "", "") for i in range(n)]
+
+        def download(self, url):
+            return PNG
+
+    fake = Fake()
+    dlg = MatchDialog(None, fake, "SB.exe", "/home/a/Games/Super Bomberman R/SB.exe")
+    _pump(qapp, 3000, until=lambda: ">1</b>" in dlg.stats["icon"].text())
+    assert fake.searched[0] == "Super Bomberman R"  # never "SB.exe"
+    assert dlg.tip is not None and [c.term for c in dlg.chips] == ["Super Bomberman R", "SB"]
+    assert dlg.selected().id == 1 and dlg.status.text() == "2 results"
+    assert "50+" in dlg.stats["grid"].text() and "covers" in dlg.stats["grid"].text()
+    dlg.rows[1].setChecked(True)
+    assert dlg.selected().id == 2 and dlg.p_name.text() == "Super Bomberman R 2"
+    dlg.chips[1].click()
+    _pump(qapp, 600, until=lambda: dlg.status.text().startswith("No"))
+    assert dlg.edit.text() == "SB" and dlg.selected() is None and not dlg.ok.isEnabled()
+    dlg.close()

@@ -70,6 +70,61 @@ def name_variants(name: str) -> list[str]:
     return out
 
 
+_FILEISH = re.compile(r"\.(exe|bat|cmd|com|lnk|sh|x86_64|x86|x64|appimage|bin|elf|jar|py)$", re.I)
+_PLAIN_DIRS = {
+    "", "bin", "bin32", "bin64", "x64", "x86", "x86_64", "win32", "win64", "binaries", "build", "release",
+    "linux", "windows", "system", "app", "data", "game", "games", "usr", "opt", "local", "share", "home",
+    "mnt", "media", "run", "steamapps", "common", "drive_c", "program files", "program files (x86)",
+}
+
+
+def looks_like_file(name: str) -> bool:
+    """True for shortcut names that are really file names, like "SB.exe"."""
+    return bool(_FILEISH.search(name.strip()))
+
+
+def _tidy(word: str) -> str:
+    return clean_name(word.replace("_", " "))
+
+
+def _folder(exe: str) -> str:
+    """The first meaningful folder above the program, skipping bin/x64/Binaries and the like."""
+    exe = exe.strip().strip('"')
+    if not exe:
+        return ""
+    parts = re.split(r"[\\/]+", exe)[:-1]
+    for i in range(len(parts) - 1, max(-1, len(parts) - 5), -1):
+        part = parts[i]
+        if part.casefold() in _PLAIN_DIRS or part.endswith(":"):
+            continue
+        if i > 0 and parts[i - 1].casefold() in ("home", "users"):  # a user name
+            return ""
+        return _tidy(part)
+    return ""
+
+
+def suggestions(name: str, exe: str = "") -> list[tuple[str, str]]:
+    """Search terms worth trying for a shortcut, best first, as (term, where it came from).
+
+    A name like "SB.exe" says little, so the folder the program sits in comes
+    first, then the file name without its extension.
+    """
+    out: list[tuple[str, str]] = []
+
+    def add(term: str, source: str):
+        if term and term.casefold() not in {t.casefold() for t, _ in out}:
+            out.append((term, source))
+
+    folder = _folder(exe)
+    if looks_like_file(name):
+        add(folder, "folder")
+        add(_tidy(_FILEISH.sub("", name.strip())), "file")
+    else:
+        add(name_variants(name)[-1] if name_variants(name) else "", "name")
+        add(folder, "folder")
+    return out
+
+
 class SteamGridDB:
     def __init__(self, api_key: str, session: requests.Session | None = None):
         self.api_key = api_key

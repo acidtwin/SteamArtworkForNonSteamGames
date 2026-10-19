@@ -5,8 +5,8 @@ from __future__ import annotations
 import sys
 import time
 
-from PySide6.QtCore import QPoint, QRect, QRectF, QUrl, Qt, Signal
-from PySide6.QtGui import QColor, QDesktopServices, QFont, QGuiApplication, QLinearGradient, QPainter, QPen, QPixmap
+from PySide6.QtCore import QPoint, QRect, QRectF, QSize, QTimer, QUrl, Qt, Signal
+from PySide6.QtGui import QAction, QColor, QDesktopServices, QFont, QGuiApplication, QLinearGradient, QPainter, QPen, QPixmap
 from PySide6.QtWidgets import (
     QAbstractButton,
     QScrollArea,
@@ -17,8 +17,6 @@ from PySide6.QtWidgets import (
     QHBoxLayout,
     QLabel,
     QLineEdit,
-    QListWidget,
-    QListWidgetItem,
     QPushButton,
     QToolButton,
     QVBoxLayout,
@@ -216,57 +214,472 @@ class KeyPopover(Overlay):
         return self.edit.text().strip()
 
 
-class MatchDialog(QDialog):
-    """Search SteamGridDB and pick which game a shortcut is."""
+PAGE_FULL = 50  # SteamGridDB returns up to this many per page; more means "50+"
+SHOWN_RESULTS = 8
 
-    def __init__(self, parent, sgdb: SteamGridDB, name: str):
+
+def _bold(w: QWidget, size: str | None = None, weight=QFont.Weight.DemiBold):
+    f = QFont(w.font())
+    if size:
+        f.setPointSizeF(theme.pt(size))
+    f.setWeight(weight)
+    w.setFont(f)
+
+
+def _paint_cover(p: QPainter, r: QRectF, pm: QPixmap | None, name: str = ""):
+    """A cover cropped to fill r, or a dark card with the game's initial while it loads."""
+    from PySide6.QtGui import QPainterPath
+
+    path = QPainterPath()
+    path.addRoundedRect(r, 2, 2)
+    p.save()
+    p.setClipPath(path)
+    if pm is not None and not pm.isNull():
+        s = pm.size().scaled(r.size().toSize(), Qt.AspectRatioMode.KeepAspectRatioByExpanding)
+        src = QRectF((s.width() - r.width()) / 2, (s.height() - r.height()) / 2, r.width(), r.height())
+        sx, sy = pm.width() / s.width(), pm.height() / s.height()
+        p.drawPixmap(r, pm, QRectF(src.x() * sx, src.y() * sy, src.width() * sx, src.height() * sy))
+    else:
+        p.fillRect(r, QColor(C["raised"]))
+        if name:
+            p.setPen(QColor(C["text3"]))
+            f = QFont(p.font())
+            f.setWeight(QFont.Weight.ExtraBold)
+            f.setPointSizeF(max(8.0, r.height() / 5))
+            p.setFont(f)
+            p.drawText(r, Qt.AlignmentFlag.AlignCenter, name[:1].upper())
+    p.restore()
+
+
+class ResultRow(QAbstractButton):
+    """One search result: its cover, name, year and a Verified mark, with a tick when picked."""
+
+    COVER = QSize(40, 60)
+
+    def __init__(self, game: Game, parent=None):
+        super().__init__(parent)
+        self.game = game
+        self.cover: QPixmap | None = None
+        self.setCheckable(True)
+        self.setAutoExclusive(True)
+        self.setCursor(Qt.CursorShape.PointingHandCursor)
+        self.setAttribute(Qt.WidgetAttribute.WA_Hover)
+        self.setFocusPolicy(Qt.FocusPolicy.NoFocus)
+        self.setFixedHeight(72)
+        bits = [game.name] + ([game.year] if game.year else []) + (["verified"] if game.verified else [])
+        self.setAccessibleName(", ".join(bits))
+
+    def set_cover(self, pm: QPixmap):
+        self.cover = pm
+        self.update()
+
+    def mouseDoubleClickEvent(self, e):
+        self.setChecked(True)
+        self.window().accept()
+
+    def paintEvent(self, _):
+        p = QPainter(self)
+        p.setRenderHint(QPainter.RenderHint.Antialiasing)
+        p.setRenderHint(QPainter.RenderHint.SmoothPixmapTransform)
+        on = self.isChecked()
+        r = QRectF(self.rect())
+        if on:
+            p.fillRect(r, QColor(C["select"]))
+            p.fillRect(QRectF(0, 0, 3, r.height()), QColor(C["blue"]))
+        elif self.underMouse():
+            p.fillRect(r, QColor(C["panel"]))
+        cv = QRectF(6, 6, self.COVER.width(), self.COVER.height())
+        _paint_cover(p, cv, self.cover, self.game.name)
+        x = cv.right() + 12
+        right = r.width() - 40
+        f = QFont(self.font())
+        f.setWeight(QFont.Weight.DemiBold)
+        f.setPointSizeF(theme.pt("body") * 1.05)
+        p.setFont(f)
+        p.setPen(QColor(C["text"]))
+        fm = p.fontMetrics()
+        p.drawText(QRectF(x, 14, right - x, fm.height()), Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignVCenter,
+                   fm.elidedText(self.game.name, Qt.TextElideMode.ElideRight, int(right - x)))
+        y = 14 + fm.height() + 5
+        f2 = QFont(self.font())
+        f2.setPointSizeF(theme.pt("faint"))
+        p.setFont(f2)
+        fm2 = p.fontMetrics()
+        if self.game.year:
+            p.setPen(QColor(C["text3"]))
+            w = fm2.horizontalAdvance(self.game.year)
+            p.drawText(QRectF(x, y, w + 2, fm2.height()), Qt.AlignmentFlag.AlignVCenter, self.game.year)
+            x += w + 10
+        if self.game.verified:
+            icons.draw(p, "check-circle", QRectF(x, y + (fm2.height() - 12) / 2, 12, 12), C["ok"])
+            f3 = QFont(f2)
+            f3.setWeight(QFont.Weight.ExtraBold)
+            f3.setPointSizeF(theme.pt("tag"))
+            f3.setLetterSpacing(QFont.SpacingType.PercentageSpacing, 104)
+            p.setFont(f3)
+            p.setPen(QColor(C["ok"]))
+            p.drawText(QRectF(x + 16, y, 80, fm2.height()), Qt.AlignmentFlag.AlignVCenter, "VERIFIED")
+        if on:
+            c = QRectF(r.width() - 32, r.height() / 2 - 10, 20, 20)
+            p.setPen(Qt.PenStyle.NoPen)
+            p.setBrush(QColor(C["blue"]))
+            p.drawEllipse(c)
+            icons.draw(p, "check", c.adjusted(3.5, 3.5, -3.5, -3.5), "white")
+
+
+class ArtPreview(QWidget):
+    """The picked game's banner with its cover over the corner and its logo on top."""
+
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self.setFixedHeight(84 + 24)
+        self.hero = self.cover = self.logo = None
+        self.name = ""
+
+    def show_game(self, name: str):
+        self.name = name
+        self.hero = self.cover = self.logo = None
+        self.update()
+
+    def paintEvent(self, _):
+        p = QPainter(self)
+        p.setRenderHint(QPainter.RenderHint.Antialiasing)
+        p.setRenderHint(QPainter.RenderHint.SmoothPixmapTransform)
+        hero = QRectF(0, 0, self.width(), 84)
+        if self.hero is not None and not self.hero.isNull():
+            _paint_cover(p, hero, self.hero)
+        else:
+            g = QLinearGradient(hero.topLeft(), hero.bottomRight())
+            g.setColorAt(0, QColor(C["stage"]))
+            g.setColorAt(1, QColor(C["raised"]))
+            p.setPen(Qt.PenStyle.NoPen)
+            p.setBrush(g)
+            p.drawRoundedRect(hero, 3, 3)
+        if self.logo is not None and not self.logo.isNull():
+            box = QRectF(hero.width() * 0.42, 8, hero.width() * 0.55, 68)
+            s = self.logo.size().scaled(box.size().toSize(), Qt.AspectRatioMode.KeepAspectRatio)
+            p.drawPixmap(QRectF(box.right() - s.width(), box.center().y() - s.height() / 2, s.width(), s.height()),
+                         self.logo, QRectF(self.logo.rect()))
+        cv = QRectF(10, 84 + 24 - 96, 64, 96)
+        p.setPen(Qt.PenStyle.NoPen)
+        p.setBrush(QColor(0, 0, 0, 110))
+        p.drawRoundedRect(cv.adjusted(-1, 2, 1, 4), 3, 3)
+        _paint_cover(p, cv, self.cover, self.name)
+
+
+class Chip(QPushButton):
+    """A suggested search term, with where it came from in quieter text."""
+
+    def __init__(self, term: str, source: str, parent=None):
+        super().__init__(parent)
+        self.term = term
+        self.setCheckable(True)
+        self.setCursor(Qt.CursorShape.PointingHandCursor)
+        self.setObjectName("matchchip")
+        self.setText(f"{term}  ·  {source}")
+        self.setAccessibleName(f"Search for {term}, from the {source} name")
+
+
+class MatchDialog(QDialog):
+    """Pick which SteamGridDB game a shortcut is: smarter search terms on top,
+    results with covers on the left, and a preview of the picked game's artwork."""
+
+    def __init__(self, parent, sgdb: SteamGridDB, name: str, exe: str = ""):
+        from ..sgdb import looks_like_file, suggestions
+
         super().__init__(parent)
         self.sgdb = sgdb
+        self.games: list[Game] = []
+        self.rows: list[ResultRow] = []
+        self._run = 0  # newer searches win over slower older ones
+        self._art: dict[tuple[int, str], list] = {}  # (game id, kind) -> assets
+        self._pix: dict[str, QPixmap] = {}
+        self._asking: dict[tuple[int, str], list] = {}  # requests in flight -> who wants the answer
         self.setWindowTitle(f"Which game is “{name}”?")
-        self.resize(460, 420)
-        lay = QVBoxLayout(self)
-        row = QHBoxLayout()
-        self.edit = QLineEdit(name)
+        self.setStyleSheet(
+            f"#matchchip {{ background: {C['panel']}; border: 1px solid {C['line']}; border-radius: 15px;"
+            f" min-height: 30px; max-height: 30px; padding: 0 12px; color: {C['text']}; font-weight: 600; }}"
+            f"#matchchip:hover {{ border-color: {C['text3']}; }}"
+            f"#matchchip:checked {{ background: rgba(26,159,255,.12); border: 2px solid {C['blue']}; padding: 0 11px; }}"
+            f"#matchtip {{ background: rgba(26,159,255,.08); border-left: 3px solid {C['blue']}; }}"
+            f"#matchprev {{ background: {C['panel']}; border-radius: 4px; }}"
+            f"#matchstat {{ background: {C['ground']}; border-radius: 3px; }}"
+            f"#matchsearch QToolButton {{ min-width: 0; min-height: 0; padding: 0; }}"
+            f"#matchfoot {{ background: #1a1e25; border-top: 1px solid {C['line']}; }}")
+        outer = QVBoxLayout(self)
+        outer.setContentsMargins(0, 0, 0, 0)
+        outer.setSpacing(0)
+        body = QVBoxLayout()
+        body.setContentsMargins(16, 16, 16, 16)
+        body.setSpacing(12)
+
+        self.terms = suggestions(name, exe)
+        first = self.terms[0][0] if self.terms else name
+        self.tip = None
+        if looks_like_file(name) and self.terms:
+            why = ("so we searched the folder it's in instead" if self.terms[0][1] == "folder"
+                   else "so we searched without the file ending")
+            self.tip = QFrame()
+            self.tip.setObjectName("matchtip")
+            tl = QHBoxLayout(self.tip)
+            tl.setContentsMargins(10, 8, 10, 8)
+            tl.setSpacing(8)
+            bulb = QLabel()
+            bulb.setPixmap(icons.pixmap("bulb", 16, C["blue_ink"], self.devicePixelRatioF()))
+            tl.addWidget(bulb)
+            tip = QLabel(f"“{name}” looks like a file name, {why}.")
+            tip.setWordWrap(True)
+            tip.setStyleSheet(f"color: {C['text2']};")
+            tl.addWidget(tip, 1)
+            body.addWidget(self.tip)
+
+        self.edit = QLineEdit(first)
+        self.edit.setPlaceholderText("Search SteamGridDB")
+        self.edit.addAction(icons.icon("search", 16, C["text3"]), QLineEdit.ActionPosition.LeadingPosition)
+        self.edit.setObjectName("matchsearch")
+        self.edit.setClearButtonEnabled(True)
+        for act in self.edit.findChildren(QAction):
+            if act.objectName() == "_q_qlineeditclearaction":
+                act.setIcon(icons.icon("close", 16, C["text2"]))
+        self.edit.setAccessibleName("Search SteamGridDB")
+        self.edit.textEdited.connect(self._typed)
         self.edit.returnPressed.connect(self.search)
-        btn = QPushButton("Search")
-        btn.clicked.connect(self.search)
-        row.addWidget(self.edit)
-        row.addWidget(btn)
-        lay.addLayout(row)
-        self.list = QListWidget()
-        self.list.setProperty("plain", True)
-        self.list.setAccessibleName("Search results")
-        self.list.itemDoubleClicked.connect(lambda *_: self.accept())
-        lay.addWidget(self.list)
+        body.addWidget(self.edit)
+        self._wait = QTimer(self)
+        self._wait.setSingleShot(True)
+        self._wait.setInterval(450)
+        self._wait.timeout.connect(self.search)
+
+        self.chips: list[Chip] = []
+        if len(self.terms) > 1 or (self.terms and self.terms[0][0] != name):
+            cl = QHBoxLayout()
+            cl.setSpacing(8)
+            tl = QLabel("Try:")
+            tl.setStyleSheet(f"color: {C['text3']};")
+            cl.addWidget(tl)
+            for term, source in self.terms:
+                chip = Chip(term, source)
+                chip.setChecked(term == first)
+                chip.clicked.connect(lambda _=False, c=chip: self._use_chip(c))
+                cl.addWidget(chip)
+                self.chips.append(chip)
+            cl.addStretch(1)
+            body.addLayout(cl)
+
+        split = QHBoxLayout()
+        split.setSpacing(16)
+        holder = QWidget()
+        self.list = QVBoxLayout(holder)
+        self.list.setContentsMargins(0, 0, 0, 0)
+        self.list.setSpacing(4)
+        self.list.addStretch(1)
+        self.scroll = QScrollArea()
+        self.scroll.setWidget(holder)
+        self.scroll.setWidgetResizable(True)
+        self.scroll.setFrameShape(QFrame.Shape.NoFrame)
+        self.scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
+        self.scroll.setStyleSheet("QScrollArea, QScrollArea > QWidget > QWidget { background: transparent; }")
+        self.scroll.setAccessibleName("Search results")
+        split.addWidget(self.scroll, 1)
+
+        prev = QFrame()
+        prev.setObjectName("matchprev")
+        prev.setFixedWidth(270)
+        pl = QVBoxLayout(prev)
+        pl.setContentsMargins(12, 12, 12, 12)
+        pl.setSpacing(6)
+        self.art = ArtPreview()
+        pl.addWidget(self.art)
+        self.p_name = QLabel()
+        self.p_name.setWordWrap(True)
+        _bold(self.p_name, "heading", QFont.Weight.Bold)
+        pl.addSpacing(4)
+        pl.addWidget(self.p_name)
+        self.p_meta = QLabel()
+        self.p_meta.setTextFormat(Qt.TextFormat.RichText)
+        pl.addWidget(self.p_meta)
+        grid = QHBoxLayout()
+        grid.setSpacing(6)
+        cols = [QVBoxLayout(), QVBoxLayout()]
+        for c in cols:
+            c.setSpacing(6)
+            grid.addLayout(c)
+        self.stats: dict[str, QLabel] = {}
+        for i, (kind, label) in enumerate((("grid", "covers"), ("hero", "banners"), ("logo", "logos"), ("icon", "icons"))):
+            box = QLabel()
+            box.setObjectName("matchstat")
+            box.setTextFormat(Qt.TextFormat.RichText)
+            box.setContentsMargins(8, 6, 8, 6)
+            box.setProperty("label", label)
+            cols[i % 2].addWidget(box)
+            self.stats[kind] = box
+        pl.addSpacing(4)
+        pl.addLayout(grid)
+        pl.addStretch(1)
+        split.addWidget(prev)
+        body.addLayout(split, 1)
+        outer.addLayout(body, 1)
+
+        foot = QFrame()
+        foot.setObjectName("matchfoot")
+        fl = QHBoxLayout(foot)
+        fl.setContentsMargins(16, 12, 16, 12)
+        fl.setSpacing(8)
         self.status = QLabel()
-        lay.addWidget(self.status)
-        bb = QDialogButtonBox(QDialogButtonBox.StandardButton.Ok | QDialogButtonBox.StandardButton.Cancel)
-        bb.button(QDialogButtonBox.StandardButton.Ok).setText("Use this game")
-        _confirm(bb, QDialogButtonBox.StandardButton.Ok)
-        bb.accepted.connect(self.accept)
-        bb.rejected.connect(self.reject)
-        lay.addWidget(bb)
+        self.status.setStyleSheet(f"color: {C['text3']};")
+        fl.addWidget(self.status, 1)
+        cancel = QPushButton("Cancel")
+        cancel.clicked.connect(self.reject)
+        fl.addWidget(cancel)
+        self.ok = QPushButton("Use this game")
+        self.ok.setIcon(icons.icon("check", 15, "white"))
+        self.ok.setProperty("kind", "confirm")
+        self.ok.setDefault(True)
+        self.ok.clicked.connect(self.accept)
+        fl.addWidget(self.ok)
+        outer.addWidget(foot)
+
+        self.resize(780, 600)
+        self._preview(None)
+        self.search()
+
+    # ---- searching ------------------------------------------------------------
+
+    def _typed(self, _text: str):
+        for c in self.chips:
+            c.setChecked(c.term == self.edit.text().strip())
+        self._wait.start()
+
+    def _use_chip(self, chip: Chip):
+        for c in self.chips:
+            c.setChecked(c is chip)
+        self.edit.setText(chip.term)
         self.search()
 
     def search(self):
+        self._wait.stop()
+        self._run += 1
+        run = self._run
         self.status.setText("Searching…")
-        self.list.clear()
-        workers.run(self.sgdb.search, self.edit.text(), on_done=self._show, on_error=self.status.setText)
+        self._fill([])
+        workers.run(self.sgdb.search, self.edit.text(),
+                    on_done=lambda games: self._show(games, run),
+                    on_error=lambda msg: run == self._run and self.status.setText(msg))
 
-    def _show(self, games: list[Game]):
-        self.status.setText("" if games else "No matches. Try a shorter name.")
+    def _show(self, games: list[Game], run: int | None = None):
+        if run is not None and run != self._run:
+            return
+        n = len(games)
+        self.status.setText(f"{n} result{'' if n == 1 else 's'}" if games else "No matches. Try a shorter name.")
+        self._fill(games[:SHOWN_RESULTS])
+        for row in self.rows:
+            self._load(row.game.id, "grid", row.set_cover)
+        if self.rows:
+            self.rows[0].setChecked(True)
+        else:
+            self._preview(None)
+
+    def _fill(self, games: list[Game]):
+        for row in self.rows:
+            row.setParent(None)
+            row.deleteLater()
+        self.rows = []
+        self.games = games
         for g in games:
-            label = g.name + (f" ({g.year})" if g.year else "") + ("  · verified" if g.verified else "")
-            it = QListWidgetItem(label)
-            it.setData(Qt.ItemDataRole.UserRole, g)
-            self.list.addItem(it)
-        if games:
-            self.list.setCurrentRow(0)
+            row = ResultRow(g)
+            row.toggled.connect(lambda on, r=row: on and self._preview(r.game))
+            self.list.insertWidget(self.list.count() - 1, row)
+            self.rows.append(row)
+        self.ok.setEnabled(bool(games))
+
+    def keyPressEvent(self, e):
+        step = {Qt.Key.Key_Down: 1, Qt.Key.Key_Up: -1}.get(e.key())
+        if step and self.rows:
+            i = next((n for n, r in enumerate(self.rows) if r.isChecked()), -1)
+            row = self.rows[max(0, min(len(self.rows) - 1, i + step))]
+            row.setChecked(True)
+            self.scroll.ensureWidgetVisible(row)
+            return
+        super().keyPressEvent(e)
+
+    # ---- the preview ----------------------------------------------------------
+
+    def _preview(self, game: Game | None):
+        self.art.show_game(game.name if game else "")
+        self.p_name.setText(game.name if game else "Pick a game")
+        if game:
+            bits = [f"<span style='color:{C['text3']}'>{game.year}</span>"] if game.year else []
+            if game.verified:
+                bits.append(f"<b style='color:{C['ok']}; font-size:{theme.pt('tag')}pt'>✓ VERIFIED</b>")
+            self.p_meta.setText(" &nbsp; ".join(bits))
+        else:
+            self.p_meta.setText(f"<span style='color:{C['text3']}'>Its artwork shows here.</span>")
+        for kind, box in self.stats.items():
+            self._stat(box, None)
+            if game:
+                self._load(game.id, kind, None, stat=box)
+        if game:
+            gid = game.id
+            self._load(gid, "grid", lambda pm: self._set_art(gid, "cover", pm))
+            self._load(gid, "hero", lambda pm: self._set_art(gid, "hero", pm))
+            self._load(gid, "logo", lambda pm: self._set_art(gid, "logo", pm))
+
+    def _stat(self, box: QLabel, n: int | None):
+        num = "–" if n is None else (f"{PAGE_FULL}+" if n >= PAGE_FULL else str(n))
+        box.setText(f"<b style='color:{C['text']}; font-size:{theme.pt('body') * 1.05}pt'>{num}</b>"
+                    f"<br><span style='color:{C['text2']}'>{box.property('label')}</span>")
+
+    def _set_art(self, gid: int, which: str, pm: QPixmap):
+        g = self.selected()
+        if g is None or g.id != gid:
+            return
+        setattr(self.art, which, pm)
+        self.art.update()
+
+    def _load(self, gid: int, kind: str, on_pixmap, stat: QLabel | None = None):
+        """Get the game's artwork list for `kind` (once), then its first picture's thumbnail."""
+        def got(assets):
+            if stat is not None:
+                g = self.selected()
+                if g is not None and g.id == gid:
+                    self._stat(stat, len(assets))
+            if on_pixmap is not None and assets:
+                self._thumb(assets[0].thumb, on_pixmap)
+
+        key = (gid, kind)
+        if key in self._art:
+            got(self._art[key])
+            return
+        waiting = self._asking.setdefault(key, [])
+        waiting.append(got)
+        if len(waiting) > 1:
+            return  # already asked; this joins the answer
+
+        def done(assets):
+            self._art[key] = assets
+            for cb in self._asking.pop(key, []):
+                cb(assets)
+
+        workers.run(self.sgdb.assets, kind, gid, on_done=done, on_error=lambda _m: self._asking.pop(key, None))
+
+    def _thumb(self, url: str, on_pixmap):
+        from .widgets import load_pixmap
+
+        def done(data):
+            pm = self._pix.get(url) or load_pixmap(data=data, key=("thumb", url))
+            self._pix[url] = pm
+            try:
+                on_pixmap(pm)
+            except RuntimeError:  # the row went away with a newer search
+                pass
+
+        if url in self._pix:
+            done(None)
+        else:
+            workers.run(workers.cached_download, url, self.sgdb.download, on_done=done, on_error=lambda _m: None)
 
     def selected(self) -> Game | None:
-        it = self.list.currentItem()
-        return it.data(Qt.ItemDataRole.UserRole) if it else None
-
+        return next((r.game for r in self.rows if r.isChecked()), None)
 
 
 class _Cover(QWidget):
