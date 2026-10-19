@@ -31,3 +31,5 @@ Ideas and jobs saved for later, once the app is more final.
 - **TheGamesDB as a gap-filling artwork source** (box art, fanart and clear logos, cropped to
   Steam's shapes). Parked 2026-10-19: it needs a developer key, applied for at
   https://api.thegamesdb.net/key.php after signing up, which felt too much for a quick, simple app.
+  Accounts are also limited to 1,000 API requests a month, with more only through a paid
+  Patreon tier, so it doesn't meet the free-only rule at any real scale.
