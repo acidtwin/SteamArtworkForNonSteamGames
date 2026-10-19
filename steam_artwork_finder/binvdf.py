@@ -43,6 +43,8 @@ class Typed:
 class VDFMap(dict):
     """An ordered mapping of key -> VDFMap | Typed."""
 
+    end_marker = T_END  # the byte that closed this map on disk (0x08, or 0x0B from some tools)
+
     def get_value(self, key, default=None):
         v = self.get(key)
         if v is None:
@@ -82,9 +84,10 @@ def loads(data: bytes) -> VDFMap:
         t = data[pos]
         pos += 1
         if t in (T_END, T_END_ALT):
+            stack[-1].end_marker = t
             if len(stack) == 1:
                 # Trailing end marker of the root map.
-                if pos != n and data[pos:].strip(b"\x08") != b"":
+                if pos != n and data[pos:].strip(b"\x08\x0b") != b"":
                     raise VDFError(f"unexpected data after root at offset {pos}")
                 return root
             stack.pop()
@@ -129,7 +132,7 @@ def loads(data: bytes) -> VDFMap:
 def dumps(obj: VDFMap) -> bytes:
     out = bytearray()
     _dump_map(obj, out)
-    out.append(T_END)
+    out.append(getattr(obj, "end_marker", T_END))
     return bytes(out)
 
 
@@ -140,7 +143,7 @@ def _dump_map(obj: dict, out: bytearray):
             out.append(T_MAP)
             out += k
             _dump_map(val, out)
-            out.append(T_END)
+            out.append(getattr(val, "end_marker", T_END))
             continue
         if not isinstance(val, Typed):
             val = _infer(val)

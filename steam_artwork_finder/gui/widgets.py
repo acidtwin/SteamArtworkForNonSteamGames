@@ -5,12 +5,14 @@ from __future__ import annotations
 from pathlib import Path
 
 from PySide6.QtCore import QPoint, QRect, QRectF, QSize, Qt, QTimer, Signal
-from PySide6.QtGui import QColor, QFont, QPainter, QPainterPath, QPen, QPixmap
+from PySide6.QtGui import QColor, QFont, QImage, QImageReader, QPainter, QPainterPath, QPen, QPixmap
 from PySide6.QtWidgets import QFrame, QHBoxLayout, QLabel, QLayout, QPushButton, QSizePolicy, QWidget
 
+from . import icons, theme, workers
 from .theme import C, q
 
 _cache: dict[tuple, QPixmap] = {}
+FULL_CACHE = 80  # full-size pixmaps kept (the open game's pieces, recent thumbnails)
 
 
 def load_pixmap(path: Path | None = None, data: bytes | None = None, key=None) -> QPixmap:
@@ -28,10 +30,72 @@ def load_pixmap(path: Path | None = None, data: bytes | None = None, key=None) -
     elif data:
         pm.loadFromData(data)
     if key is not None and not pm.isNull():
-        if len(_cache) > 600:
-            _cache.clear()
+        while len(_cache) >= FULL_CACHE:
+            _cache.pop(next(iter(_cache)))
         _cache[key] = pm
     return pm
+
+
+def decode_scaled(path: str, w: int, h: int) -> QImage:
+    """Worker: decode an image file straight to a `w`×`h` cover-cropped QImage.
+
+    Never holds the full-size image longer than the decode itself, so a
+    300-game wall costs a few megabytes instead of hundreds.
+    """
+    reader = QImageReader(path)
+    reader.setAutoTransform(True)
+    size = reader.size()
+    if size.isValid() and w > 0 and h > 0:
+        scale = max(w / size.width(), h / size.height())
+        reader.setScaledSize(QSize(max(w, round(size.width() * scale)), max(h, round(size.height() * scale))))
+    img = reader.read()
+    if img.isNull():
+        return img
+    x = (img.width() - w) // 2
+    y = (img.height() - h) // 2
+    return img.copy(x, y, w, h)
+
+
+class ScaledCache:
+    """Thumbnails decoded off the GUI thread, keyed by path, mtime and size.
+
+    `get` returns the pixmap if ready; otherwise it starts the decode and
+    returns None, and calls `on_ready` later so the view can repaint.
+    """
+
+    def __init__(self, limit: int = 2000):
+        self.ready: dict[tuple, QPixmap] = {}
+        self.pending: set[tuple] = set()
+        self.limit = limit
+
+    def get(self, path: Path, size: QSize, on_ready=None) -> QPixmap | None:
+        try:
+            key = (str(path), path.stat().st_mtime_ns, size.width(), size.height())
+        except OSError:
+            return QPixmap()
+        pm = self.ready.get(key)
+        if pm is not None:
+            return pm
+        if key in self.pending:
+            return None
+        self.pending.add(key)
+
+        def done(img: QImage, key=key):
+            self.pending.discard(key)
+            if len(self.ready) >= self.limit:
+                self.ready.clear()
+            self.ready[key] = QPixmap.fromImage(img)  # null if the file wasn't an image
+            if on_ready:
+                on_ready()
+
+        workers.run(decode_scaled, key[0], size.width(), size.height(), on_done=done,
+                    on_error=lambda _m, key=key: done(QImage(), key))
+        return None
+
+    def forget(self, path: Path):
+        s = str(path)
+        for k in [k for k in self.ready if k[0] == s]:
+            del self.ready[k]
 
 
 def fill_rect(pm: QPixmap, target: QSize) -> QPixmap:
@@ -68,12 +132,12 @@ def draw_dashed_empty(p: QPainter, rect: QRectF, text: str, plus: bool = True, f
     p.drawRoundedRect(rect.adjusted(1, 1, -1, -1), 3, 3)
     p.setPen(q("text2"))
     f = QFont(p.font())
-    f.setPointSizeF(9.5)
+    f.setPointSizeF(theme.pt("control"))
     f.setWeight(QFont.Weight.DemiBold)
     p.setFont(f)
     if plus:
         pf = QFont(f)
-        pf.setPointSizeF(15)
+        pf.setPointSizeF(theme.pt("title"))
         pf.setWeight(QFont.Weight.Light)
         p.setFont(pf)
         p.setPen(q("blue_ink"))
@@ -90,11 +154,12 @@ def draw_dashed_empty(p: QPainter, rect: QRectF, text: str, plus: bool = True, f
 def draw_badge(p: QPainter, rect: QRectF, text: str = "IN USE"):
     p.save()
     f = QFont(p.font())
-    f.setPointSizeF(7)
+    f.setPointSizeF(theme.pt("tag"))
     f.setWeight(QFont.Weight.Bold)
     p.setFont(f)
     w = p.fontMetrics().horizontalAdvance(text) + 10
-    r = QRectF(rect.left() + 4, rect.bottom() - 20, w, 16)
+    h = p.fontMetrics().height() + 4
+    r = QRectF(rect.left() + 4, rect.bottom() - h - 4, w, h)
     p.fillRect(r, q("blue"))
     p.setPen(QColor("#0b1a26"))
     p.drawText(r, Qt.AlignmentFlag.AlignCenter, text)
@@ -136,6 +201,12 @@ class ArtView(QWidget):
         self.setCursor(Qt.CursorShape.PointingHandCursor)
         self.setFocusPolicy(Qt.FocusPolicy.StrongFocus)
         self.setAttribute(Qt.WidgetAttribute.WA_Hover)
+        self.setAccessibleName(empty_text or "Artwork")
+        self.setAccessibleDescription("Press Enter to open the options")
+
+    def describe(self, text: str):
+        """What a screen reader says for this piece."""
+        self.setAccessibleName(text)
 
     def set_pixmap(self, pm: QPixmap | None, backdrop: QPixmap | None = None):
         self.pixmap = pm or QPixmap()
@@ -197,6 +268,24 @@ class ArtView(QWidget):
             super().keyPressEvent(e)
 
 
+class IconLabel(QWidget):
+    """A drawn SVG icon at a fixed logical size, sharp at any device pixel ratio."""
+
+    def __init__(self, name: str, size: int = 20, color=None, parent=None):
+        super().__init__(parent)
+        self.name, self.color, self.icon_size = name, color, size
+        self.setFixedSize(size, size)
+        self.setAttribute(Qt.WidgetAttribute.WA_TransparentForMouseEvents)
+
+    def set(self, name: str, color=None):
+        self.name, self.color = name, color
+        self.update()
+
+    def paintEvent(self, _):
+        p = QPainter(self)
+        p.drawPixmap(0, 0, icons.pixmap(self.name, self.icon_size, self.color, self.devicePixelRatioF()))
+
+
 class Notice(QFrame):
     """A full-width strip under the header."""
 
@@ -205,7 +294,7 @@ class Notice(QFrame):
         self.setObjectName("notice")
         lay = QHBoxLayout(self)
         lay.setContentsMargins(24, 8, 16, 8)
-        self.icon = QLabel()
+        self.icon = IconLabel("info", 20)
         lay.addWidget(self.icon)
         self.text = QLabel()
         self.text.setWordWrap(True)
@@ -220,8 +309,7 @@ class Notice(QFrame):
         self.setProperty("tone", tone)
         self.style().unpolish(self)
         self.style().polish(self)
-        self.icon.setText("⚠" if tone == "warn" else "ⓘ")
-        self.icon.setStyleSheet(f"color: {C['warn'] if tone == 'warn' else C['blue_ink']}; font-size: 13pt;")
+        self.icon.set("warning" if tone == "warn" else "info", C["warn"] if tone == "warn" else C["blue_ink"])
         self.text.setText(text)
         while self.buttons.count():
             w = self.buttons.takeAt(0).widget()
@@ -245,6 +333,7 @@ class Toast(QFrame):
         self.label = QLabel()
         lay.addWidget(self.label)
         self.action = QPushButton("Undo")
+        self.action.setToolTip("Undo (Ctrl+Z)")
         self.action.clicked.connect(self._act)
         lay.addWidget(self.action)
         self._fn = None
@@ -267,6 +356,11 @@ class Toast(QFrame):
         self.hide()
         if fn:
             fn()
+
+    def undo_now(self):
+        """Ctrl+Z: run the toast's Undo while it is still showing."""
+        if self.isVisible() and self._fn:
+            self._act()
 
 
 class FlowLayout(QLayout):

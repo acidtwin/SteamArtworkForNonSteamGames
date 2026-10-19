@@ -20,6 +20,7 @@ from PySide6.QtWidgets import (
 )
 
 from ..artwork import SLOTS
+from . import icons, theme
 from .theme import q
 from .widgets import FlowLayout, draw_badge, draw_checker, fill_rect, label
 
@@ -46,7 +47,7 @@ class OptionDelegate(QStyledItemDelegate):
 
     def sizeHint(self, option, index):
         s = thumb_size(self.tray.slot.key)
-        return QSize(s.width() + 8, s.height() + 26)
+        return QSize(s.width() + 8, s.height() + QFontMetrics(option.font).height() + 12)
 
     def paint(self, p: QPainter, option, index):
         p.save()
@@ -78,12 +79,13 @@ class OptionDelegate(QStyledItemDelegate):
             p.drawRoundedRect(r.adjusted(1, 1, -1, -1), 3, 3)
         a = index.data(ROLE_ASSET)
         f = QFont(option.font)
-        f.setPointSizeF(8)
+        f.setPointSizeF(theme.pt("label"))
         p.setFont(f)
         p.setPen(q("text3"))
         cap = f"by {a.author or 'unknown'}" + (f" · {a.style}" if a.style else "")
         cap = QFontMetrics(f).elidedText(cap, Qt.TextElideMode.ElideRight, s.width())
-        p.drawText(QRectF(r.left(), r.bottom() + 4, s.width(), 16), Qt.AlignmentFlag.AlignLeft, cap)
+        p.drawText(QRectF(r.left(), r.bottom() + 4, s.width(), QFontMetrics(f).height() + 2),
+                   Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignVCenter, cap)
         p.restore()
 
 
@@ -100,7 +102,8 @@ class OptionTray(QWidget):
         self.slot = SLOTS["grid"]
         self.setObjectName("tray")
         self.setAttribute(Qt.WidgetAttribute.WA_StyledBackground)
-        self.setFixedWidth(370)
+        # Wide enough for the five tabs in a row at the user's font size.
+        self.setFixedWidth(max(370, theme.text_width("Cover Wide cover Banner Logo Icon") + 180))
         lay = QVBoxLayout(self)
         lay.setContentsMargins(16, 14, 16, 14)
         lay.setSpacing(10)
@@ -108,8 +111,10 @@ class OptionTray(QWidget):
         self.title = label("", "heading")
         head.addWidget(self.title, 1)
         x = QToolButton()
-        x.setText("✕")
+        x.setIcon(icons.icon("close", 18, theme.C["text2"]))
+        x.setIconSize(QSize(18, 18))
         x.setToolTip("Close (Esc)")
+        x.setAccessibleName("Close options")
         x.clicked.connect(self.close_tray)
         head.addWidget(x)
         lay.addLayout(head)
@@ -128,6 +133,7 @@ class OptionTray(QWidget):
         self.chips.buttonClicked.connect(lambda *_: self._filter())
         lay.addWidget(self.chip_host)
         self.list = QListWidget()
+        self.list.setAccessibleName("Options")
         self.list.setViewMode(QListView.ViewMode.IconMode)
         self.list.setResizeMode(QListView.ResizeMode.Adjust)
         self.list.setMovement(QListView.Movement.Static)
@@ -195,8 +201,9 @@ class OptionTray(QWidget):
         self.assets += assets
         applied = self.win.config.get_applied(appid, slot.key)
         in_use = applied.get("id") if applied and self.win.slot_path(self.win.current_shortcut(), slot) else None
-        for a in assets:
-            it = QListWidgetItem()
+        for i, a in enumerate(assets):
+            it = QListWidgetItem(f"{slot.label} option {len(self.assets) - len(assets) + i + 1}, by {a.author or 'unknown'}"
+                                 + (f", {a.style}" if a.style else "") + (", in use" if a.id == in_use else ""))
             it.setData(ROLE_ASSET, a)
             it.setData(ROLE_INUSE, a.id == in_use)
             it.setToolTip(f"{a.width} × {a.height} · {a.style or 'style unknown'} · by {a.author or 'unknown'}")

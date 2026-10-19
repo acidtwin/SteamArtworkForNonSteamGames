@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 
-from PySide6.QtCore import QSize, Qt, Signal
+from PySide6.QtCore import QEvent, QSize, Qt, Signal
 from PySide6.QtWidgets import (
     QBoxLayout,
     QCheckBox,
@@ -18,6 +18,7 @@ from PySide6.QtWidgets import (
 
 from ..artwork import SLOTS, Slot
 from ..sgdb import Asset
+from . import theme
 from .widgets import ArtView, label, load_pixmap, quiet_button
 
 
@@ -65,6 +66,7 @@ class ArtworkRow(QWidget):
         left.addWidget(label(info.where, "muted", wrap=True))
         left.addWidget(label(info.size, "faint"))
         self.on_banner = None
+        self.missing.setAccessibleName("Missing")
         if slot.key == "logo":
             self.on_banner = QCheckBox("Show it on the banner")
             self.on_banner.setChecked(win.config.data.get("logo_on_banner", True))
@@ -75,7 +77,8 @@ class ArtworkRow(QWidget):
         left.setContentsMargins(0, 0, 0, 0)
         lw = QWidget()
         lw.setLayout(left)
-        lw.setFixedWidth(196)
+        self.left_width = max(196, theme.text_width("The wide image at the top of") + 12)  # fits the copy at any font size
+        lw.setFixedWidth(self.left_width)
         self.left_col = lw
         lay.addWidget(lw)
 
@@ -83,6 +86,7 @@ class ArtworkRow(QWidget):
         mid.setSpacing(6)
         self.art = ArtView(info.art, info.empty, checker=slot.key == "logo")
         self.art.setToolTip(f"See all {slot.label.lower()} options")
+        self.art.setAccessibleName(f"{slot.label} in use")
         self.art.clicked.connect(lambda: self.open_tray.emit(self.slot))
         mid.addWidget(self.art)
         self.caption = label("", "faint")
@@ -102,6 +106,7 @@ class ArtworkRow(QWidget):
         self.count.setTextFormat(Qt.TextFormat.RichText)
         top.addWidget(self.count, 1)
         self.see_all = quiet_button("See all", lambda: self.open_tray.emit(self.slot))
+        self.see_all.setAccessibleName(f"See all {slot.label.lower()} options")
         top.addWidget(self.see_all)
         right.addLayout(top)
         self.message = label("", "empty", wrap=True)
@@ -119,6 +124,8 @@ class ArtworkRow(QWidget):
         scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
         scroll.setMinimumWidth(80)
         scroll.setFixedHeight(info.thumb.height() + 6)
+        self._viewport = scroll.viewport()
+        self._viewport.installEventFilter(self)
         self.scroll = scroll
         right.addWidget(scroll)
         right.addStretch(1)
@@ -126,7 +133,31 @@ class ArtworkRow(QWidget):
 
         self.assets: list[Asset] = []
         self.thumbs: list[ArtView] = []
+        self.total = 0
         self._previewing = False
+
+    def eventFilter(self, obj, e):
+        if e.type() == QEvent.Type.Resize and obj is self._viewport:
+            self._fit()
+        return super().eventFilter(obj, e)
+
+    def _fit(self):
+        """Show only the options that fit; the count on "See all" covers the rest.
+
+        Nothing is ever clipped: on a 1280 px screen a wide-cover row shows
+        two whole options and "See all 12", not two and a half.
+        """
+        if not self.thumbs:
+            return
+        info = INFO[self.slot.key]
+        gap = self.strip.spacing()
+        width = self.scroll.viewport().width()
+        n = max(1, (width + gap) // (info.thumb.width() + gap))
+        for i, v in enumerate(self.thumbs):
+            v.setVisible(i < n)
+        hidden = self.total - min(n, len(self.thumbs))
+        shown = f"{self.total}+" if self.total >= 50 else str(self.total)
+        self.see_all.setText(f"See all {shown}" if hidden <= 0 else f"See {hidden} more")
 
     def set_compact(self, compact: bool):
         """Stack name, art and options when the page is narrow (tray open, small window)."""
@@ -139,7 +170,7 @@ class ArtworkRow(QWidget):
             self.left_col.setMinimumWidth(0)
             self.left_col.setMaximumWidth(16777215)
         else:
-            self.left_col.setFixedWidth(196)
+            self.left_col.setFixedWidth(self.left_width)
 
     # -- current art -------------------------------------------------------
 
@@ -160,6 +191,7 @@ class ArtworkRow(QWidget):
             self.caption.setText(f"In use · by {applied['author']}")
         else:
             self.caption.setText("In use")
+        self.art.describe(f"{self.slot.label}: {'nothing set' if path is None else self.caption.text()}")
         for view, a in zip(self.thumbs, self.assets):
             view.badge = bool(applied and applied.get("id") == a.id and path is not None)
             view.update()
@@ -191,20 +223,25 @@ class ArtworkRow(QWidget):
             return
         self.message.hide()
         self.scroll.show()
+        self.total = n if not more else 50
         shown = f"{n}+" if more else str(n)
         self.count.setText(f"<b>{shown} option{'s' if n != 1 else ''}</b> on SteamGridDB")
         self.see_all.setText(f"See all {shown}")
         self.see_all.show()
         info = INFO[self.slot.key]
-        for a in self.assets:
+        for i, a in enumerate(self.assets):
             v = ArtView(info.thumb, "", checker=self.slot.key == "logo")
             v.setToolTip(f"{a.width} × {a.height} · {a.style or 'style unknown'} · by {a.author or 'unknown'}\n"
                          "Click to use it")
+            v.describe(f"{self.slot.label} option {i + 1} of {len(self.assets)}, by {a.author or 'unknown'}"
+                       + (f", {a.style}" if a.style else ""))
+            v.setAccessibleDescription("Press Enter to use it")
             v.clicked.connect(lambda a=a: self.choose.emit(self.slot, a))
             v.hovered.connect(lambda on, a=a, v=v: self._preview(on, v))
             self.strip.insertWidget(self.strip.count() - 1, v)
             self.thumbs.append(v)
             self.win.load_thumb(a, v)
+        self._fit()
         self.show_current()
 
     def _preview(self, on: bool, view: ArtView):
@@ -249,6 +286,7 @@ class GamePage(QWidget):
         self.title.setTextInteractionFlags(Qt.TextInteractionFlag.TextSelectableByMouse)
         top.addWidget(self.title, 1)
         self.fill_btn = QPushButton("Fill missing")
+        self.fill_btn.setAccessibleDescription("Downloads the top-rated option for every missing piece of this game")
         self.fill_btn.clicked.connect(self.fill.emit)
         top.addWidget(self.fill_btn, 0, Qt.AlignmentFlag.AlignTop)
         lay.addLayout(top)
@@ -262,6 +300,21 @@ class GamePage(QWidget):
         meta.addStretch(1)
         lay.addSpacing(6)
         lay.addLayout(meta)
+
+        # Shown instead of five identical row messages when there is no API key yet.
+        self.keybar = QWidget()
+        self.keybar.setObjectName("keybar")
+        self.keybar.setAttribute(Qt.WidgetAttribute.WA_StyledBackground)
+        kb = QHBoxLayout(self.keybar)
+        kb.setContentsMargins(16, 10, 10, 10)
+        kb.addWidget(label("To see artwork options you need a free SteamGridDB API key.", "", wrap=True), 1)
+        self.key_btn = QPushButton("Add API key")
+        self.key_btn.setProperty("kind", "confirm")
+        self.key_btn.clicked.connect(win.ask_api_key)
+        kb.addWidget(self.key_btn)
+        self.keybar.hide()
+        lay.addSpacing(12)
+        lay.addWidget(self.keybar)
 
         self.rows: dict[str, ArtworkRow] = {}
         for key in ("grid", "wide", "hero", "logo", "icon"):
@@ -296,11 +349,12 @@ class GamePage(QWidget):
 
     def update_match(self):
         sc = self.win.current_shortcut()
-        m = self.win.config.get_match(sc.appid)
+        m = self.win.match_info(sc)
         status = self.win.status.get(sc.appid)
         if m:
             extra = "  <span style='color:#e3b341'>(best guess, please check)</span>" if status == "check" else ""
-            self.match.setText(f"Matched to <b>{m['name']}</b> on SteamGridDB{extra}")
+            year = f" ({m['year']})" if m.get("year") else ""
+            self.match.setText(f"Matched to <b>{m['name']}</b>{year} on SteamGridDB{extra}")
             self.match_btn.setText("Not this game?")
         elif status == "notfound":
             self.match.setText("<span style='color:#ef7b6c'>Not found on SteamGridDB</span>")
@@ -318,5 +372,11 @@ class GamePage(QWidget):
         self.fill_btn.setVisible(missing > 0)
 
     def set_all_messages(self, text: str):
+        self.keybar.hide()
         for row in self.rows.values():
             row.set_message(text)
+
+    def show_key_prompt(self):
+        self.keybar.show()
+        for row in self.rows.values():
+            row.set_message("Options appear here once a key is added.")

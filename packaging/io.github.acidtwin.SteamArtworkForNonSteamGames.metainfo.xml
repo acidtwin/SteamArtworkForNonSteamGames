@@ -1,0 +1,42 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<component type="desktop-application">
+  <id>io.github.acidtwin.SteamArtworkForNonSteamGames</id>
+  <metadata_license>CC0-1.0</metadata_license>
+  <!-- Set this once a LICENSE file is chosen for the repo; Flathub needs a real SPDX id. -->
+  <project_license>LicenseRef-proprietary</project_license>
+  <name>Steam Artwork for Non-Steam Games</name>
+  <summary>Artwork and icons for your non-Steam games</summary>
+  <developer id="io.github.acidtwin"><name>acidtwin</name></developer>
+  <description>
+    <p>Gives the games you added to Steam yourself (emulators, GOG, itch.io, Heroic and Lutris installs) the same artwork as the rest of your library: cover, wide cover, banner, logo and icon, from SteamGridDB.</p>
+    <p>It finds your Steam install on its own, lists every non-Steam shortcut, and fills in whatever is missing in one click. You can swap any piece from a visual picker and undo any change. Steam's shortcut list is backed up before every write.</p>
+    <p>Works on desktop Linux and on the Steam Deck in desktop mode. Needs a free SteamGridDB API key. Not affiliated with Valve or SteamGridDB.</p>
+  </description>
+  <launchable type="desktop-id">io.github.acidtwin.SteamArtworkForNonSteamGames.desktop</launchable>
+  <url type="homepage">https://github.com/acidtwin/steam-artwork-for-non-steam-games</url>
+  <url type="bugtracker">https://github.com/acidtwin/steam-artwork-for-non-steam-games/issues</url>
+  <screenshots>
+    <screenshot type="default">
+      <caption>The start page: your non-Steam games as a cover wall</caption>
+      <image>https://raw.githubusercontent.com/acidtwin/steam-artwork-for-non-steam-games/main/docs/screenshot.png</image>
+    </screenshot>
+    <screenshot>
+      <caption>A game's page with every piece of artwork and its options</caption>
+      <image>https://raw.githubusercontent.com/acidtwin/steam-artwork-for-non-steam-games/main/docs/game-page.png</image>
+    </screenshot>
+  </screenshots>
+  <content_rating type="oars-1.1"/>
+  <releases>
+    <release version="0.1.0" date="2026-10-19"/>
+  </releases>
+  <requires>
+    <display_length compare="ge">1280</display_length>
+    <control>pointing</control>
+    <control>keyboard</control>
+    <control>touch</control>
+  </requires>
+  <categories>
+    <category>Game</category>
+    <category>Utility</category>
+  </categories>
+</component>

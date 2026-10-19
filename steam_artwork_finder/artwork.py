@@ -6,8 +6,9 @@ import time
 from dataclasses import dataclass, field
 from pathlib import Path
 
-from .shortcuts import Shortcut, ShortcutsFile
+from .shortcuts import Shortcut, ShortcutsChanged, ShortcutsFile
 
+KEEP_REPLACED_DAYS = 30
 IMAGE_EXTS = (".png", ".jpg", ".jpeg", ".webp", ".ico")
 MIME_EXT = {
     "image/png": ".png",
@@ -71,6 +72,44 @@ class Change:
     new_file: Path | None
     moved: list[tuple[Path, Path]]  # (original path, where it was moved to)
     old_icon: str | None = None
+    reloaded: bool = False  # shortcuts.vdf had changed on disk and was re-read
+
+
+def prune_replaced(grid_dir: Path, days: int = KEEP_REPLACED_DAYS):
+    """Drop set-aside artwork older than `days`; undo only needs recent files."""
+    old_dir = grid_dir / ".replaced"
+    cutoff = time.time() - days * 86400
+    try:
+        for p in old_dir.iterdir():
+            try:
+                if p.is_file() and p.stat().st_mtime < cutoff:
+                    p.unlink()
+            except OSError:
+                pass
+    except OSError:
+        pass
+
+
+def set_icon(shortcuts_file: ShortcutsFile, shortcut: Shortcut, path: str) -> bool:
+    """Point the shortcut's icon at `path` and save.
+
+    If Steam rewrote shortcuts.vdf meanwhile, the fresh list is loaded and
+    the change is redone on it. Returns True when the list was reloaded, so
+    the caller can rebuild anything that indexes into it.
+    """
+    try:
+        shortcut.set_icon(path)
+        shortcuts_file.save()
+        return False
+    except ShortcutsChanged:
+        shortcuts_file.reload()
+        fresh = shortcuts_file.find(shortcut.appid)
+        if fresh is None:
+            raise
+        fresh.set_icon(path)
+        shortcuts_file.save()
+        shortcut.icon = path
+        return True
 
 
 def _set_aside(grid_dir: Path, stem: str) -> list[tuple[Path, Path]]:
@@ -106,8 +145,7 @@ def save_asset(
     change = Change(slot, shortcut, dest, moved)
     if slot.key == "icon" and shortcuts_file is not None:
         change.old_icon = shortcut.icon
-        shortcut.set_icon(str(dest))
-        shortcuts_file.save()
+        change.reloaded = set_icon(shortcuts_file, shortcut, str(dest))
     return change
 
 
@@ -119,8 +157,7 @@ def remove_asset(
     change = Change(slot, shortcut, None, moved)
     if slot.key == "icon" and shortcuts_file is not None and shortcut.icon:
         change.old_icon = shortcut.icon
-        shortcut.set_icon("")
-        shortcuts_file.save()
+        change.reloaded = set_icon(shortcuts_file, shortcut, "")
     return change
 
 
@@ -131,8 +168,7 @@ def undo(change: Change, shortcuts_file: ShortcutsFile | None = None):
         if aside.exists():
             aside.replace(original)
     if change.old_icon is not None and shortcuts_file is not None:
-        change.shortcut.set_icon(change.old_icon)
-        shortcuts_file.save()
+        change.reloaded = set_icon(shortcuts_file, change.shortcut, change.old_icon)
 
 
 def _sniff_ext(data: bytes) -> str:

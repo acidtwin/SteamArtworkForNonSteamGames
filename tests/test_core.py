@@ -136,3 +136,42 @@ def test_restore_backup(steam_root, sample_bytes):
     assert path.read_bytes() == sample_bytes
     assert sf.shortcuts[0].icon == ""
     assert len(sf.backups()) == 2
+
+
+def test_alt_end_marker_round_trips():
+    raw = b"\x00shortcuts\x00\x000\x00\x01AppName\x00G\x00\x0b\x0b\x0b"
+    assert binvdf.dumps(binvdf.loads(raw)) == raw
+
+
+def test_save_refuses_when_steam_rewrote_the_file(steam_root, sample_bytes):
+    from steam_artwork_finder.shortcuts import ShortcutsChanged
+
+    path = steam_root / "userdata/12345678/config/shortcuts.vdf"
+    sf = ShortcutsFile(path)
+    # Steam rewrites the list with one more game while the app is open.
+    import os
+    from conftest import SAMPLE_ENTRIES, make_entry, make_shortcuts
+    newer = make_shortcuts([make_entry(*e) for e in SAMPLE_ENTRIES] + [make_entry(-5, "New Game", '"/n"')])
+    path.write_bytes(newer)
+    os.utime(path, ns=(1, 1))
+    sf.shortcuts[0].set_icon("/x.png")
+    with pytest.raises(ShortcutsChanged):
+        sf.save()
+    assert path.read_bytes() == newer  # nothing was overwritten
+
+
+def test_icon_change_is_redone_on_fresh_list(steam_root):
+    import os
+    from conftest import SAMPLE_ENTRIES, make_entry, make_shortcuts
+
+    path = steam_root / "userdata/12345678/config/shortcuts.vdf"
+    sf = ShortcutsFile(path)
+    sc = sf.shortcuts[1]
+    newer = make_shortcuts([make_entry(*e) for e in SAMPLE_ENTRIES] + [make_entry(-5, "New Game", '"/n"')])
+    path.write_bytes(newer)
+    os.utime(path, ns=(1, 1))
+    change = save_asset(path.parent / "grid", sc, SLOTS["icon"], PNG, "image/png", sf)
+    assert change.reloaded
+    again = ShortcutsFile(path)
+    assert len(again.shortcuts) == 4  # Steam's new game survived
+    assert again.shortcuts[1].icon == str(change.new_file)
