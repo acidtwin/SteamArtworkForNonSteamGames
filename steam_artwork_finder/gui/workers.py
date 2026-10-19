@@ -3,9 +3,12 @@
 from __future__ import annotations
 
 import hashlib
+import os
+import tempfile
 import traceback
 
 from PySide6.QtCore import QObject, QRunnable, QThreadPool, Signal
+from PySide6.QtGui import QImage
 
 from ..config import cache_dir
 
@@ -59,8 +62,23 @@ def cached_download(url: str, fetch) -> bytes:
     d = cache_dir() / "thumbs"
     d.mkdir(parents=True, exist_ok=True)
     p = d / hashlib.sha1(url.encode()).hexdigest()
-    if p.exists():
-        return p.read_bytes()
+    try:
+        data = p.read_bytes()
+        if not QImage.fromData(data).isNull():
+            return data
+        p.unlink(missing_ok=True)  # cut off or broken: fetch it again
+    except OSError:
+        pass
     data = fetch(url)
-    p.write_bytes(data)
+    # Written aside then renamed, so another thread never reads half a file.
+    fd, tmp = tempfile.mkstemp(prefix=p.name + ".", suffix=".part", dir=d)
+    try:
+        with os.fdopen(fd, "wb") as f:
+            f.write(data)
+        os.replace(tmp, p)
+    except OSError:
+        try:
+            os.unlink(tmp)
+        except OSError:
+            pass
     return data

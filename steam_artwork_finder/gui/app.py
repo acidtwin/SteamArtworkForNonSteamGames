@@ -5,7 +5,7 @@ from __future__ import annotations
 import sys
 from pathlib import Path
 
-from PySide6.QtCore import QPoint, QTimer, QUrl, Qt
+from PySide6.QtCore import QObject, QPoint, QTimer, QUrl, Qt, Signal
 from PySide6.QtGui import QAction, QDesktopServices, QKeySequence, QPixmap
 from PySide6.QtWidgets import (
     QApplication,
@@ -26,7 +26,7 @@ from .. import artwork
 from ..artwork import SLOTS, Slot, current_icon, existing, prune_replaced, remove_asset, save_asset, undo
 from ..config import Config
 from ..pending import Pending, Pick
-from ..sgdb import Asset, AuthError, Game, SteamGridDB, clean_name, name_variants
+from ..sgdb import Asset, AuthError, Game, SGDBError, SteamGridDB, clean_name, name_variants
 from ..shortcuts import Shortcut
 from ..steam import (
     SteamUser,
@@ -62,6 +62,12 @@ def plural(n: int, word: str) -> str:
     return f"{n} {word}{'s' if n != 1 else ''}"
 
 
+class _Bridge(QObject):
+    """Carries callbacks made on worker threads over to the GUI thread."""
+
+    wait = Signal(float)  # SteamGridDB asked us to wait this many seconds
+
+
 def is_exact(sc_name: str, game_name: str) -> bool:
     """The SteamGridDB name is the shortcut's name, give or take launcher tags."""
     want = clean_name(game_name).casefold()
@@ -94,6 +100,11 @@ class MainWindow(QMainWindow):
         self.restart_needed = False
         self.conn = "disconnected"
         self._close_after_apply = False
+        self._steam_poll = False  # a background Steam check is running
+        # The rate-limit callback runs on whichever worker thread made the request.
+        self._bridge = _Bridge(self)
+        self._bridge.wait.connect(lambda secs: self._progress(f"SteamGridDB asked us to wait {int(secs)} s…"))
+        self.sgdb.on_wait = self._bridge.wait.emit
 
         central = QWidget()
         self.setCentralWidget(central)
@@ -179,7 +190,7 @@ class MainWindow(QMainWindow):
         self.popover.restart_clicked.connect(self.restart_steam_now)
 
         self.toast = Toast(central)
-        self.steam_timer = QTimer(self, interval=5000, timeout=self.update_steam_state)
+        self.steam_timer = QTimer(self, interval=5000, timeout=self._poll_steam)
         self.steam_timer.start()
         for keys, fn in ((QKeySequence.StandardKey.Find, lambda: self.game_list.search.setFocus()),
                          (QKeySequence.StandardKey.Undo, self.toast.undo_now),
@@ -373,7 +384,7 @@ class MainWindow(QMainWindow):
 
     def unstage(self, slot: Slot):
         sc = self.current_shortcut()
-        if sc:
+        if sc and self.busy != "apply":
             self.pending.drop(sc.appid, slot.key)
             self.refresh_all()
 
@@ -406,9 +417,22 @@ class MainWindow(QMainWindow):
             return
         self._account_changed(0)
 
+    def _wait_for_busy(self) -> bool:
+        """True (after saying so) while Apply, Get Artwork or a Steam restart is running."""
+        if not self.busy:
+            return False
+        self.toast.show_message({
+            "apply": "Wait until the artwork has been applied.",
+            "fetch": "Wait until Get Artwork has finished.",
+            "restart": "Wait until Steam has closed.",
+        }.get(self.busy, "Wait a moment, then try again."))
+        return True
+
     def show_folder_popover(self):
         if self.folderpop.is_open():
             return self.folderpop.dismiss()
+        if self._wait_for_busy():
+            return
         self.popover.dismiss()
         self.keypop.dismiss()
         self._sync_folder_popover()
@@ -420,7 +444,7 @@ class MainWindow(QMainWindow):
 
     def use_steam_root(self, root: Path):
         """Switch to another Steam folder (from the pop-over), remembering it for next time."""
-        if root == self.steam_root:
+        if root == self.steam_root or self._wait_for_busy():
             return
         if self.pending and not self._ask_discard():
             return
@@ -430,6 +454,8 @@ class MainWindow(QMainWindow):
         self.detect_steam([root])
 
     def choose_steam_folder(self):
+        if self._wait_for_busy():
+            return
         d = QFileDialog.getExistingDirectory(self, "Choose your Steam folder", str(Path.home()))
         if d:
             roots = find_steam_roots([Path(d)])
@@ -440,6 +466,11 @@ class MainWindow(QMainWindow):
 
     def _account_changed(self, idx: int):
         if not 0 <= idx < len(self.users):
+            return
+        if self.user is not self.users[idx] and self._wait_for_busy():
+            if self.user in self.users:
+                self.header.set_users([u.label for u in self.users], self.users.index(self.user), self._avatar())
+            self._sync_folder_popover()
             return
         if self.pending and self.user is not self.users[idx]:
             if not self._ask_discard():
@@ -462,6 +493,8 @@ class MainWindow(QMainWindow):
             QMessageBox.StandardButton.Discard | QMessageBox.StandardButton.Cancel) == QMessageBox.StandardButton.Discard
 
     def reload_shortcuts(self):
+        if self._wait_for_busy():
+            return
         if not self.user:
             return self.detect_steam()
         from ..shortcuts import ShortcutsFile
@@ -505,6 +538,30 @@ class MainWindow(QMainWindow):
 
     def steam_is_running(self) -> bool:
         return bool(self.user and steam_running(self.steam_root))
+
+    def pending_icons(self) -> dict:
+        """The current account's icons waiting for Steam to close."""
+        return self.config.pending_icons(self.user.shortcuts_path) if self.user else {}
+
+    def _poll_steam(self):
+        """The 5 s tick: check Steam in a worker (inside a Flatpak it asks the host,
+        which can take seconds), then update the status bar with that one answer."""
+        if self._steam_poll:
+            return
+        if not self.user:
+            return self.update_steam_state(False)
+        self._steam_poll = True
+        root = self.steam_root
+
+        def done(running):
+            self._steam_poll = False
+            if self.steam_root == root:
+                self.update_steam_state(bool(running))
+
+        def failed(_msg):
+            self._steam_poll = False
+
+        workers.run(steam_running, root, on_done=done, on_error=failed)
 
     @property
     def auto_restart(self) -> bool:
@@ -552,18 +609,22 @@ class MainWindow(QMainWindow):
         self.config.data["auto_restart_steam"] = on
         self.config.save()
 
-    def steam_state(self) -> str:
-        running = self.steam_is_running()
-        if running and (self.restart_needed or self.config.pending_icons):
+    def steam_state(self, running: bool | None = None) -> str:
+        if running is None:
+            running = self.steam_is_running()
+        if running and (self.restart_needed or self.pending_icons()):
             return "restart"
         return "running" if running else "closed"
 
-    def update_steam_state(self):
-        running = self.steam_is_running()
+    def update_steam_state(self, running: bool | None = None):
+        """`running` is an answer already in hand (from the tick's worker); None checks now."""
+        if running is None:
+            running = self.steam_is_running()
         if not running:
             self.restart_needed = False  # Steam loads the new artwork when it next starts
-            self.apply_pending_icons()
-        self.statusbar.set_process(self.steam_state())
+            if not self.busy:  # Apply and Restart link them themselves when they finish
+                self.apply_pending_icons(running=False)
+        self.statusbar.set_process(self.steam_state(running))
 
     def show_steam_popover(self):
         if self.popover.is_open():
@@ -571,7 +632,7 @@ class MainWindow(QMainWindow):
         self.keypop.dismiss()
         self.folderpop.dismiss()
         self.popover.set_auto_restart(self.auto_restart)
-        self.popover.show_for(self.steam_state(), self.statusbar.process_anchor(), len(self.config.pending_icons))
+        self.popover.show_for(self.steam_state(), self.statusbar.process_anchor(), len(self.pending_icons()))
 
     def restart_steam_now(self):
         root = self.steam_root
@@ -600,23 +661,34 @@ class MainWindow(QMainWindow):
 
         workers.run(work, on_done=done, on_error=lambda m: (self._set_busy(""), self.toast.show_message(m)))
 
-    def apply_pending_icons(self):
+    def apply_pending_icons(self, running: bool | None = None):
         """Link icons that were saved while Steam was running, now that it has closed."""
-        pending = dict(self.config.pending_icons)
-        if not pending or not self.sfile or self.steam_is_running():
+        if not self.sfile or not self.user:
             return
-        linked = 0
+        spath = self.user.shortcuts_path
+        pending = self.config.pending_icons(spath)
+        if not pending or self.sfile.path != spath:
+            return
+        if self.steam_is_running() if running is None else running:
+            return
+        cur = self.current_shortcut()
+        linked, reloaded = 0, False
         for key, path in pending.items():
             sc = self.sfile.find(int(key))
             if sc is not None:
                 try:
-                    artwork.set_icon(self.sfile, sc, path)
+                    if artwork.set_icon(self.sfile, sc, path):
+                        reloaded = True  # Steam rewrote the list on exit: indexes may have moved
                     linked += 1
                 except Exception as e:
-                    self.toast.show_message(f"Couldn't link the icon for {sc.name}: {e}")
-                    continue
-            self.config.set_pending_icon(int(key), None)
-        if linked:
+                    reloaded = True
+                    if self.sfile.find(int(key)) is not None:
+                        self.toast.show_message(f"Couldn't link the icon for {sc.name}: {e}")
+                        continue
+            self.config.set_pending_icon(spath, int(key), None)  # linked, or the game is gone from this list
+        if reloaded:
+            self._after_reload(cur.appid if cur else -1)
+        if linked or reloaded:
             self.refresh_all()
 
     # ---- SteamGridDB connection ---------------------------------------------
@@ -646,6 +718,8 @@ class MainWindow(QMainWindow):
             for appid, name in todo:
                 try:
                     game, n = self.sgdb.match(name)
+                except AuthError:
+                    raise  # a revoked key: stop now rather than fail every game
                 except Exception:
                     continue  # tried again next start, or when the game is opened
                 progress((appid, game, n))
@@ -664,8 +738,14 @@ class MainWindow(QMainWindow):
 
         def finished(*_):
             self._matching = False
+            if self.sfile is not sfile:  # another account loaded meanwhile: match its games too
+                QTimer.singleShot(0, self.match_all)
 
-        workers.run(work, on_progress=got, on_done=finished, on_error=finished)
+        def failed(msg):
+            self._matching = False
+            self._key_problem(msg)
+
+        workers.run(work, on_progress=got, on_done=finished, on_error=failed)
 
     def check_connection(self):
         if not self.config.api_key:
@@ -889,29 +969,32 @@ class MainWindow(QMainWindow):
             return
         self.pending.drop(sc.appid)
         jobs = [(sc, k, Pick(None)) for k in ORDER if self.slot_path(sc, SLOTS[k]) is not None]
-        done, errors = self._write(jobs, self.steam_is_running())
+        done, errors = self._write(jobs, self.steam_is_running(), self.user.grid_dir, self.sfile)
         self._after_write(done, errors, f"Removed all artwork from {sc.name}.")
 
     # ---- writing changes ------------------------------------------------------------
 
-    def _write(self, jobs, defer_icons: bool):
-        """Save or clear each (shortcut, slot key, Pick); returns the undo records and errors."""
+    def _write(self, jobs, defer_icons: bool, grid_dir: Path, sfile):
+        """Save or clear each (shortcut, slot key, Pick) into `grid_dir` and `sfile`, the
+        account the jobs were made for; returns the undo records and errors."""
         done, errors = [], []
         for sc, key, pick in jobs:
             slot = SLOTS[key]
             before = self.config.get_applied(sc.appid, key)
             defer = key == "icon" and defer_icons
+            old_icon = sc.icon
             try:
                 if pick.clears:
-                    change = remove_asset(self.user.grid_dir, sc, slot, None if defer else self.sfile)
+                    change = remove_asset(grid_dir, sc, slot, None if defer else sfile)
                 else:
-                    change = save_asset(self.user.grid_dir, sc, slot, pick.data, pick.asset.mime,
-                                        None if defer else self.sfile)
+                    change = save_asset(grid_dir, sc, slot, pick.data, pick.asset.mime,
+                                        None if defer else sfile)
             except Exception as e:
                 errors.append(f"{sc.name} {slot.label.lower()}: {e}")
                 continue
             if defer:
-                self.config.set_pending_icon(sc.appid, "" if pick.clears else str(change.new_file))
+                change.old_icon = old_icon  # so Undo can put the field back once the icon is linked
+                self.config.set_pending_icon(sfile.path, sc.appid, "" if pick.clears else str(change.new_file))
             if pick.clears:
                 self.config.set_applied(sc.appid, key, None)
             else:
@@ -936,15 +1019,33 @@ class MainWindow(QMainWindow):
         if not done:
             return
 
+        spath = self.sfile.path if self.sfile else None
+
         def revert():
+            if self._wait_for_busy():
+                return
+            sfile = self.sfile
+            if sfile is None or sfile.path != spath:
+                self.toast.show_message("Couldn't undo: another account or Steam folder is open now.")
+                return
+            # With Steam open, a write to shortcuts.vdf is undone when Steam exits, so
+            # the icon field goes back through the queue that waits for Steam to close.
+            running = self.steam_is_running()
             for change, before, defer in reversed(done):
                 try:
-                    undo(change, self.sfile)
+                    undo(change, None if running else sfile)
                 except Exception as e:
                     self.toast.show_message(f"Couldn't undo: {e}")
                     return
-                if defer:
-                    self.config.set_pending_icon(change.shortcut.appid, None)
+                if change.old_icon is not None:
+                    queued = None
+                    if running:
+                        sc = sfile.find(change.shortcut.appid)
+                        if sc is not None and sc.icon != change.old_icon:
+                            queued = change.old_icon  # already linked: point it back once Steam closes
+                    self.config.set_pending_icon(sfile.path, change.shortcut.appid, queued)
+                elif defer:
+                    self.config.set_pending_icon(sfile.path, change.shortcut.appid, None)
                 self.config.set_applied(change.shortcut.appid, change.slot.key, before)
                 if change.reloaded:
                     self._after_reload(change.shortcut.appid)
@@ -956,40 +1057,58 @@ class MainWindow(QMainWindow):
 
         self.toast.show_message(message, undo=revert)
 
-    def apply_all(self):
-        self.apply_games(self.pending.games())
+    def apply_all(self) -> bool:
+        return self.apply_games(self.pending.games())
 
-    def apply_games(self, appids: list[int]):
+    def apply_games(self, appids: list[int]) -> bool:
+        """Start applying the waiting picks for `appids`; False if nothing was started."""
         if self.busy or not self.sfile:
-            return
+            return False
         jobs = [(self.sfile.find(a), k, p) for a in appids for k, p in self.pending.for_game(a).items()]
         jobs = [j for j in jobs if j[0] is not None]
         if not jobs:
-            return
-        root = self.steam_root
+            return False
+        # The account the picks were made for, even if another is opened before the writes.
+        root, grid_dir, sfile = self.steam_root, self.user.grid_dir, self.sfile
         restart = self.steam_is_running() and self.auto_restart
-        games = len({j[0].appid for j in jobs})
-        self._set_busy("apply", "Closing Steam…" if restart else f"Applying artwork for {plural(games, 'game')}…")
+        todo = [p for _, _, p in jobs if not p.clears and p.data is None]
+        self._set_busy("apply", f"Downloading artwork  1 of {len(todo)}" if todo else
+                       "Closing Steam…" if restart else
+                       f"Applying artwork for {plural(len({j[0].appid for j in jobs}), 'game')}…")
 
         def work(progress):
+            # Download first, so Steam is only closed once the files are in hand,
+            # and one bad download doesn't cancel the rest.
+            failures = {}
+            for i, pick in enumerate(todo):
+                progress(("download", i))
+                try:
+                    pick.data = self.sgdb.download(pick.asset.url)
+                except AuthError:
+                    raise
+                except SGDBError as e:
+                    failures[id(pick)] = str(e)
             closed = False
-            if restart:
+            if restart and len(failures) < len(jobs):
+                progress(("close", 0))
                 shutdown_steam(root)
                 closed = wait_until_closed(root)
-            todo = [p for _, _, p in jobs if not p.clears and p.data is None]
-            for i, pick in enumerate(todo):
-                progress(i)
-                pick.data = self.sgdb.download(pick.asset.url)
-            return closed
+            return closed, failures
 
-        def on_progress(i):
-            total = sum(1 for _, _, p in jobs if not p.clears and p.data is None) or 1
-            self.progress_text = f"Downloading artwork  {i + 1} of {total}"
+        def on_progress(ev):
+            kind, i = ev
+            self.progress_text = (f"Downloading artwork  {i + 1} of {len(todo)}" if kind == "download"
+                                  else "Closing Steam…")
             self.update_chrome()
 
-        def done(closed):
+        def done(result):
+            closed, failures = result
+            errors = [f"{sc.name} {SLOTS[k].label.lower()}: {failures[id(p)]}"
+                      for sc, k, p in jobs if id(p) in failures]
+            ready = [j for j in jobs if id(j[2]) not in failures]  # failed picks stay waiting
             running = self.steam_is_running()
-            written, errors = self._write(jobs, running)
+            written, write_errors = self._write(ready, running, grid_dir, sfile)
+            errors += write_errors
             self._set_busy("")
             if restart and closed:
                 self.apply_pending_icons()
@@ -1002,18 +1121,24 @@ class MainWindow(QMainWindow):
             else:
                 note = ""
             self.update_steam_state()
+            games = len({c.shortcut.appid for c, _, _ in written})
             self._after_write(written, errors, f"Applied new artwork to {plural(games, 'game')}.{note}")
             if self._close_after_apply:
-                self.close()
+                self._close_after_apply = False
+                if not self.pending:  # some pieces failed: stay open so the user sees why
+                    self._close_after_apply = True
+                    self.close()
 
         def failed(msg):
             self._set_busy("")
             self._close_after_apply = False
-            if restart:
+            if restart and not self.steam_is_running():
                 start_steam(root)
+            self._key_problem(msg)
             self.toast.show_message(f"Couldn't apply the artwork: {msg}")
 
         workers.run(work, on_progress=on_progress, on_done=done, on_error=failed)
+        return True
 
     # ---- SteamGridDB key and matching ---------------------------------------
 
@@ -1060,7 +1185,7 @@ class MainWindow(QMainWindow):
 
     def change_match(self):
         sc = self.current_shortcut()
-        if not sc or not self.ensure_key():
+        if not sc or self.busy == "apply" or not self.ensure_key():
             return
         dlg = MatchDialog(self, self.sgdb, sc.name, sc.exe)
         if dlg.exec() and dlg.selected():
@@ -1129,7 +1254,6 @@ class MainWindow(QMainWindow):
                                     f"Nothing to fill in: {plural(skipped, 'game')} not found on SteamGridDB.")
             return
         total = len(jobs)
-        self.sgdb.on_wait = lambda secs: self._progress(f"SteamGridDB asked us to wait {int(secs)} s…")
         self._set_busy("fetch", f"Getting artwork  1 of {plural(total, 'game')}")
 
         def on_progress(ev):
@@ -1215,6 +1339,7 @@ class MainWindow(QMainWindow):
         self.busy = busy
         self.progress_text = text
         self.header.setEnabled(not busy)
+        self.statusbar.steam.setEnabled(not busy)  # no switching account or Steam folder mid-change
         self.update_chrome()
 
     def _summary_notice(self, text: str):
@@ -1254,18 +1379,24 @@ class MainWindow(QMainWindow):
             if not closed:
                 self.toast.show_message("Steam didn't close, so nothing was restored. Close it, then try again.")
                 return
-            self._restore(path)
+            restored = self._restore(path)
+            if self.auto_restart:
+                start_steam(root)
+                if restored:
+                    self.toast.show_message("Game list restored, and Steam is starting again. "
+                                            "The list you had before is saved as a copy too.")
 
         workers.run(work, on_done=done, on_error=lambda m: (self._set_busy(""), self.toast.show_message(m)))
 
-    def _restore(self, path: Path):
+    def _restore(self, path: Path) -> bool:
         try:
             self.sfile.restore(path)
         except Exception as e:
             QMessageBox.warning(self, APP_NAME, f"Couldn't restore that copy: {e}")
-            return
+            return False
         self.reload_shortcuts()
         self.toast.show_message("Game list restored. The list you had before is saved as a copy too.")
+        return True
 
     def open_grid_folder(self):
         if self.user:
@@ -1290,15 +1421,20 @@ class MainWindow(QMainWindow):
             self._close_after_apply = True
             e.ignore()
             return
+        if self.busy in ("fetch", "restart"):
+            # Quitting now would drop the artwork being fetched, or leave Steam closed.
+            e.ignore()
+            self._wait_for_busy()
+            return
         if self.pending and not self._close_after_apply:
             choice = "apply" if self.apply_on_quit else self._ask_on_quit()
             if choice is None:
                 e.ignore()
                 return
             if choice == "apply":
-                self._close_after_apply = True
                 e.ignore()
-                self.apply_all()
+                if self.apply_all():
+                    self._close_after_apply = True
                 return
         super().closeEvent(e)
 

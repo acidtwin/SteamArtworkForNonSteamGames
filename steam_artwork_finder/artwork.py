@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import os
+import re
 import time
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -75,6 +77,20 @@ class Change:
     reloaded: bool = False  # shortcuts.vdf had changed on disk and was re-read
 
 
+_ASIDE_STAMP = re.compile(r"\.(\d{8}-\d{6})-\d+\.[^.]+$")
+
+
+def _set_aside_time(p: Path) -> float:
+    """When a file was set aside: the time in its name, else its mtime."""
+    m = _ASIDE_STAMP.search(p.name)
+    if m:
+        try:
+            return time.mktime(time.strptime(m.group(1), "%Y%m%d-%H%M%S"))
+        except (ValueError, OverflowError):
+            pass
+    return p.stat().st_mtime
+
+
 def prune_replaced(grid_dir: Path, days: int = KEEP_REPLACED_DAYS):
     """Drop set-aside artwork older than `days`; undo only needs recent files."""
     old_dir = grid_dir / ".replaced"
@@ -82,7 +98,7 @@ def prune_replaced(grid_dir: Path, days: int = KEEP_REPLACED_DAYS):
     try:
         for p in old_dir.iterdir():
             try:
-                if p.is_file() and p.stat().st_mtime < cutoff:
+                if p.is_file() and _set_aside_time(p) < cutoff:
                     p.unlink()
             except OSError:
                 pass
@@ -93,23 +109,32 @@ def prune_replaced(grid_dir: Path, days: int = KEEP_REPLACED_DAYS):
 def set_icon(shortcuts_file: ShortcutsFile, shortcut: Shortcut, path: str) -> bool:
     """Point the shortcut's icon at `path` and save.
 
-    If Steam rewrote shortcuts.vdf meanwhile, the fresh list is loaded and
-    the change is redone on it. Returns True when the list was reloaded, so
-    the caller can rebuild anything that indexes into it.
+    The change is always made on the live list, found by appid, so a
+    `Shortcut` held from before a reload still lands in the saved file. If
+    Steam rewrote shortcuts.vdf meanwhile, the fresh list is loaded first.
+    Returns True when the list was reloaded (or `shortcut` was stale), so the
+    caller can rebuild anything that indexes into it.
     """
-    try:
-        shortcut.set_icon(path)
-        shortcuts_file.save()
-        return False
-    except ShortcutsChanged:
+    reloaded = False
+    if shortcuts_file.changed_on_disk():
         shortcuts_file.reload()
-        fresh = shortcuts_file.find(shortcut.appid)
-        if fresh is None:
-            raise
-        fresh.set_icon(path)
+        reloaded = True
+    live = shortcuts_file.find(shortcut.appid)
+    if live is None:
+        raise ShortcutsChanged(f"{shortcut.name} is no longer in Steam's game list")
+    live.set_icon(path)
+    try:
         shortcuts_file.save()
-        shortcut.icon = path
-        return True
+    except ShortcutsChanged:  # Steam wrote between the check and the save
+        shortcuts_file.reload()
+        reloaded = True
+        live = shortcuts_file.find(shortcut.appid)
+        if live is None:
+            raise
+        live.set_icon(path)
+        shortcuts_file.save()
+    shortcut.icon = path
+    return reloaded or live is not shortcut
 
 
 def _set_aside(grid_dir: Path, stem: str) -> list[tuple[Path, Path]]:
@@ -121,8 +146,15 @@ def _set_aside(grid_dir: Path, stem: str) -> list[tuple[Path, Path]]:
             old_dir.mkdir(exist_ok=True)
             dest = old_dir / f"{stem}.{time.strftime('%Y%m%d-%H%M%S')}-{time.monotonic_ns() % 10**6}{e}"
             old.replace(dest)
+            os.utime(dest)  # the 30 days start now, not when the file was first made
             moved.append((old, dest))
     return moved
+
+
+def _put_back(moved: list[tuple[Path, Path]]):
+    for original, aside in moved:
+        if aside.exists():
+            aside.replace(original)
 
 
 def save_asset(
@@ -137,15 +169,25 @@ def save_asset(
     grid_dir.mkdir(parents=True, exist_ok=True)
     ext = MIME_EXT.get(mime) or _sniff_ext(data)
     stem = f"{shortcut.appid}{slot.suffix}"
-    moved = _set_aside(grid_dir, stem)
     dest = grid_dir / (stem + ext)
     tmp = dest.with_name(dest.name + ".part")
-    tmp.write_bytes(data)
-    tmp.replace(dest)
-    change = Change(slot, shortcut, dest, moved)
-    if slot.key == "icon" and shortcuts_file is not None:
-        change.old_icon = shortcut.icon
-        change.reloaded = set_icon(shortcuts_file, shortcut, str(dest))
+    try:
+        tmp.write_bytes(data)  # written before anything is moved, so a full disk loses nothing
+    except BaseException:
+        tmp.unlink(missing_ok=True)
+        raise
+    moved = _set_aside(grid_dir, stem)
+    try:
+        tmp.replace(dest)
+        change = Change(slot, shortcut, dest, moved)
+        if slot.key == "icon" and shortcuts_file is not None:
+            change.old_icon = shortcut.icon
+            change.reloaded = set_icon(shortcuts_file, shortcut, str(dest))
+    except BaseException:
+        dest.unlink(missing_ok=True)
+        tmp.unlink(missing_ok=True)
+        _put_back(moved)
+        raise
     return change
 
 
@@ -155,18 +197,20 @@ def remove_asset(
     """Take a piece of artwork away (kept in grid/.replaced/ for undo)."""
     moved = _set_aside(grid_dir, f"{shortcut.appid}{slot.suffix}")
     change = Change(slot, shortcut, None, moved)
-    if slot.key == "icon" and shortcuts_file is not None and shortcut.icon:
-        change.old_icon = shortcut.icon
-        change.reloaded = set_icon(shortcuts_file, shortcut, "")
+    try:
+        if slot.key == "icon" and shortcuts_file is not None and shortcut.icon:
+            change.old_icon = shortcut.icon
+            change.reloaded = set_icon(shortcuts_file, shortcut, "")
+    except BaseException:
+        _put_back(moved)
+        raise
     return change
 
 
 def undo(change: Change, shortcuts_file: ShortcutsFile | None = None):
     if change.new_file is not None and change.new_file.exists():
         change.new_file.unlink()
-    for original, aside in change.moved:
-        if aside.exists():
-            aside.replace(original)
+    _put_back(change.moved)
     if change.old_icon is not None and shortcuts_file is not None:
         change.reloaded = set_icon(shortcuts_file, change.shortcut, change.old_icon)
 

@@ -51,16 +51,28 @@ class Config:
         self.data.setdefault("matches", {})[str(appid)] = {"id": game_id, "name": name, "year": year}
         self.save()
 
-    @property
-    def pending_icons(self) -> dict:
-        """appid -> icon path (or "" to clear), waiting until Steam closes."""
-        return self.data.setdefault("pending_icons", {})
+    def pending_icons(self, shortcuts_path) -> dict:
+        """appid -> icon path (or "" to clear) waiting until Steam closes, for
+        the account whose shortcuts.vdf is `shortcuts_path`."""
+        queues = self.data.get("pending_icons")
+        if not isinstance(queues, dict):
+            return {}
+        queue = queues.get(str(shortcuts_path))
+        return dict(queue) if isinstance(queue, dict) else {}
 
-    def set_pending_icon(self, appid: int, path: str | None):
+    def set_pending_icon(self, shortcuts_path, appid: int, path: str | None):
+        queues = self.data.get("pending_icons")
+        if not isinstance(queues, dict):
+            queues = self.data["pending_icons"] = {}
+        for k in [k for k, v in queues.items() if not isinstance(v, dict)]:
+            del queues[k]  # the old format, not tied to an account
+        queue = queues.setdefault(str(shortcuts_path), {})
         if path is None:
-            self.pending_icons.pop(str(appid), None)
+            queue.pop(str(appid), None)
+            if not queue:
+                del queues[str(shortcuts_path)]
         else:
-            self.pending_icons[str(appid)] = path
+            queue[str(appid)] = path
         self.save()
 
     def get_applied(self, appid: int, slot: str) -> dict | None:
@@ -77,7 +89,17 @@ class Config:
     def save(self):
         self.path.parent.mkdir(parents=True, exist_ok=True)
         tmp = self.path.with_suffix(".tmp")
-        tmp.write_text(json.dumps(self.data, indent=2))
-        if sys.platform != "win32":
-            os.chmod(tmp, 0o600)  # holds the API key
-        os.replace(tmp, self.path)
+        # Created private (it holds the API key) and synced, so a power cut
+        # never leaves an empty config.json behind.
+        fd = os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+        try:
+            with os.fdopen(fd, "w", encoding="utf-8") as f:
+                f.write(json.dumps(self.data, indent=2))
+                f.flush()
+                os.fsync(f.fileno())
+            if sys.platform != "win32":
+                os.chmod(tmp, 0o600)  # an older .tmp left behind may have other bits
+            os.replace(tmp, self.path)
+        except BaseException:
+            tmp.unlink(missing_ok=True)
+            raise

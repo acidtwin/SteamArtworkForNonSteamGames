@@ -214,7 +214,13 @@ def list_users(root: Path) -> list[SteamUser]:
     return sorted(users, key=rank)
 
 
+FLATPAK_STEAM = "com.valvesoftware.Steam"
+STEAM_COMMS = ("steam", "steam.exe")  # /proc/<pid>/comm of the Steam client itself
+
+
 def steam_running(root: Path | None = None) -> bool:
+    """Whether a Steam client is running. Can block for a few seconds inside a
+    Flatpak (it asks the host), so the window calls it from a worker each tick."""
     if sys.platform == "win32":
         try:
             import winreg
@@ -225,8 +231,9 @@ def steam_running(root: Path | None = None) -> bool:
                 return int(winreg.QueryValueEx(k, "pid")[0]) != 0
         except OSError:
             return False
-    pid_files = [Path.home() / ".steam/steam.pid",
-                 Path.home() / ".var/app/com.valvesoftware.Steam/.steam/steam.pid"]
+    home = Path.home()
+    pid_files = [home / ".steam/steam.pid",
+                 home / "snap/steam/common/.steam/steam.pid"]  # Snap: Steam's $HOME is ~/snap/steam/common
     for pf in pid_files:
         try:
             pid = int(pf.read_text().strip())
@@ -234,6 +241,17 @@ def steam_running(root: Path | None = None) -> bool:
             continue
         if _pid_is_steam(pid):
             return True
+    flatpak_pid = home / f".var/app/{FLATPAK_STEAM}/.steam/steam.pid"
+    if flatpak_pid.exists():
+        # Flatpak Steam's pid is from its own PID namespace, so it means nothing
+        # here: ask Flatpak instead, and only trust the pid if Flatpak can't say.
+        running = _flatpak_steam_running()
+        if running is not None:
+            return running
+        try:
+            return _pid_is_steam(int(flatpak_pid.read_text().strip()))
+        except (OSError, ValueError):
+            return False
     return False
 
 
@@ -241,22 +259,43 @@ def in_flatpak() -> bool:
     return Path("/.flatpak-info").exists()
 
 
-def _pid_is_steam(pid: int) -> bool:
+def _host(cmd: list[str]) -> list[str]:
+    return ["flatpak-spawn", "--host", *cmd] if in_flatpak() else cmd
+
+
+def _flatpak_steam_running() -> bool | None:
+    """Whether Flatpak lists Steam as running; None if `flatpak ps` couldn't be asked."""
     try:
-        return "steam" in Path(f"/proc/{pid}/comm").read_text().lower()
-    except OSError:
-        pass
+        r = subprocess.run(_host(["flatpak", "ps", "--columns=application"]),
+                           capture_output=True, text=True, timeout=3)
+    except (OSError, subprocess.SubprocessError):
+        return None
+    if r.returncode != 0:
+        return None
+    return any(line.strip() == FLATPAK_STEAM for line in r.stdout.splitlines())
+
+
+def _is_steam_comm(comm: str) -> bool:
+    # An exact name: "steam" in comm would also match this app ("steam-artwork-f").
+    return comm.strip().lower() in STEAM_COMMS
+
+
+def _pid_is_steam(pid: int) -> bool:
     if in_flatpak():
-        # Host processes are invisible inside the sandbox; ask the host if allowed.
+        # Host processes are invisible inside the sandbox, and a pid seen here
+        # belongs to the sandbox's own namespace: ask the host, if allowed.
         try:
             r = subprocess.run(
                 ["flatpak-spawn", "--host", "cat", f"/proc/{pid}/comm"],
                 capture_output=True, text=True, timeout=3,
             )
-            return r.returncode == 0 and "steam" in r.stdout.lower()
+            return r.returncode == 0 and _is_steam_comm(r.stdout)
         except (OSError, subprocess.SubprocessError):
             return False
-    return False
+    try:
+        return _is_steam_comm(Path(f"/proc/{pid}/comm").read_text())
+    except OSError:
+        return False
 
 
 def avatar_path(root: Path, account_id: str) -> Path | None:

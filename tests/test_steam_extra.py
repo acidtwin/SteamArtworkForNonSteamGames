@@ -98,3 +98,98 @@ def test_match_counts_results():
 def test_match_nothing_found():
     s = FakeSession({"/search/autocomplete/": FakeResp(200, {"success": True, "data": []})})
     assert SteamGridDB("k", s).match("Nope") == (None, 0)
+
+
+class _Run:
+    """Fake subprocess.run: answers by the command's first words."""
+
+    def __init__(self, answers):
+        self.answers, self.calls = answers, []
+
+    def __call__(self, cmd, **kw):
+        self.calls.append(cmd)
+        for prefix, out in self.answers.items():
+            if tuple(cmd[:len(prefix)]) == prefix:
+                if isinstance(out, BaseException):
+                    raise out
+                return steam.subprocess.CompletedProcess(cmd, 0, out, "")
+        raise FileNotFoundError(cmd[0])
+
+
+@pytest.fixture
+def home(linux, monkeypatch, tmp_path):
+    monkeypatch.setattr(steam.Path, "home", classmethod(lambda cls: tmp_path))
+    comms = {}
+    real_read = Path.read_text
+
+    def read_text(self, *a, **kw):
+        s = self.as_posix()
+        if s.startswith("/proc/"):
+            pid = int(s.split("/")[2])
+            if pid not in comms:
+                raise FileNotFoundError(s)
+            return comms[pid] + "\n"
+        return real_read(self, *a, **kw)
+
+    monkeypatch.setattr(Path, "read_text", read_text)
+    return tmp_path, comms
+
+
+def _pid_file(path, pid):
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(f"{pid}\n")
+
+
+def test_native_steam_needs_its_exact_name(home):
+    tmp, comms = home
+    _pid_file(tmp / ".steam/steam.pid", 4242)
+    assert not steam.steam_running()
+    comms[4242] = "steam-artwork-f"  # this app's own process name
+    assert not steam.steam_running()
+    comms[4242] = "steam"
+    assert steam.steam_running()
+
+
+def test_snap_steam_pid_file(home):
+    tmp, comms = home
+    _pid_file(tmp / "snap/steam/common/.steam/steam.pid", 5000)
+    comms[5000] = "steam"
+    assert steam.steam_running()
+
+
+def test_flatpak_steam_asks_flatpak(home, monkeypatch):
+    tmp, comms = home
+    _pid_file(tmp / ".var/app/com.valvesoftware.Steam/.steam/steam.pid", 2)
+    comms[2] = "kthreadd"
+    run = _Run({("flatpak", "ps"): "org.mozilla.firefox\ncom.valvesoftware.Steam\n"})
+    monkeypatch.setattr(steam.subprocess, "run", run)
+    assert steam.steam_running()
+    run.answers[("flatpak", "ps")] = "org.mozilla.firefox\n"
+    comms[2] = "steam"  # a namespace pid that happens to be a Steam here is not trusted
+    assert not steam.steam_running()
+
+
+def test_flatpak_steam_without_flatpak_falls_back_to_the_pid(home, monkeypatch):
+    tmp, comms = home
+    _pid_file(tmp / ".var/app/com.valvesoftware.Steam/.steam/steam.pid", 77)
+    monkeypatch.setattr(steam.subprocess, "run", _Run({}))  # no flatpak command
+    assert not steam.steam_running()
+    comms[77] = "steam"
+    assert steam.steam_running()
+
+
+def test_inside_our_flatpak_the_host_is_asked(home, monkeypatch):
+    tmp, comms = home
+    monkeypatch.setattr(steam, "in_flatpak", lambda: True)
+    _pid_file(tmp / ".steam/steam.pid", 9)
+    comms[9] = "steam"  # a sandbox pid: must not be read locally
+    run = _Run({("flatpak-spawn", "--host", "cat"): "bash\n"})
+    monkeypatch.setattr(steam.subprocess, "run", run)
+    assert not steam.steam_running()
+    run.answers[("flatpak-spawn", "--host", "cat")] = "steam\n"
+    assert steam.steam_running()
+    _pid_file(tmp / ".var/app/com.valvesoftware.Steam/.steam/steam.pid", 2)
+    (tmp / ".steam/steam.pid").unlink()
+    run.answers[("flatpak-spawn", "--host", "flatpak", "ps")] = "com.valvesoftware.Steam\n"
+    assert steam.steam_running()
+    assert ["flatpak-spawn", "--host", "flatpak", "ps", "--columns=application"] in run.calls
