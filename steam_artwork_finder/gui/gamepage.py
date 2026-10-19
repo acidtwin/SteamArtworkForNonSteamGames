@@ -12,7 +12,6 @@ from PySide6.QtCore import QEvent, QPointF, QRect, QRectF, QSize, Qt, Signal
 from PySide6.QtGui import QColor, QFont, QFontMetricsF, QLinearGradient, QPainter, QPainterPath, QPen, QPixmap
 from PySide6.QtWidgets import (
     QBoxLayout,
-    QGraphicsDropShadowEffect,
     QLabel,
     QCheckBox,
     QFrame,
@@ -644,8 +643,8 @@ class MatchCard(QWidget):
         row = QHBoxLayout()
         row.setSpacing(16)
         self.cover = CoverThumb(size=QSize(72, 108))
-        shadow = QGraphicsDropShadowEffect(self, blurRadius=18, offset=QPointF(0, 6), color=QColor(0, 0, 0, 160))
-        self.cover.setGraphicsEffect(shadow)
+        # Shadows are painted by the card: a graphics effect would make the whole page
+        # repaint on every scroll step instead of sliding, which stutters.
         row.addWidget(self.cover, 0, Qt.AlignmentFlag.AlignBottom)
         info = QVBoxLayout()
         info.setSpacing(4)
@@ -658,8 +657,6 @@ class MatchCard(QWidget):
         self.title.setStyleSheet("color: white; background: transparent;")
         self.title.setTextInteractionFlags(Qt.TextInteractionFlag.TextSelectableByMouse)
         self.title.setSizePolicy(QSizePolicy.Policy.Ignored, QSizePolicy.Policy.Preferred)
-        ts = QGraphicsDropShadowEffect(self, blurRadius=12, offset=QPointF(0, 2), color=QColor(0, 0, 0, 170))
-        self.title.setGraphicsEffect(ts)
         info.addWidget(self.title)
         sub = QHBoxLayout()
         sub.setSpacing(2)
@@ -806,6 +803,12 @@ class MatchCard(QWidget):
             c.setAlpha(alpha)
             fade.setColorAt(at, c)
         p.fillRect(r, fade)
+        cv = QRectF(self.cover.geometry())
+        p.setRenderHint(QPainter.RenderHint.Antialiasing)
+        p.setPen(Qt.PenStyle.NoPen)
+        for i in range(12, 0, -2):  # the cover's soft shadow, as fading rings
+            p.setBrush(QColor(0, 0, 0, round(150 * (1 - i / 12) ** 2)))
+            p.drawRoundedRect(cv.adjusted(-i, -i + 6, i, i + 6), 3 + i, 3 + i)
         edge = {"check": QColor(WAIT), "key": q("blue"), "notfound": QColor(C["bad"])}.get(self.state)
         if edge is not None:  # a thin coloured line along the top when something needs you
             p.fillRect(QRectF(0, 0, r.width(), 3), edge)

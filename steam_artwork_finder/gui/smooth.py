@@ -2,37 +2,79 @@
 
 from __future__ import annotations
 
-from PySide6.QtCore import QEasingCurve, QEvent, QObject, Qt, QVariantAnimation
+from PySide6.QtCore import QElapsedTimer, QEvent, QObject, Qt, QTimer
 from PySide6.QtGui import QInputDevice
 from PySide6.QtWidgets import QAbstractScrollArea, QApplication, QScrollBar
 
-DURATION = 320  # ms for one wheel step to settle
 
+class _Glide(QObject):
+    """Eases one scroll bar towards a target that each wheel step pushes further.
 
-class _Glide(QVariantAnimation):
-    """Moves one scroll bar towards a target value, which more wheel steps push further."""
+    The bar follows the target like a critically damped spring: speed builds up and
+    eases off smoothly, and steps arriving mid-glide add to the motion instead of
+    restarting a curve, which is what made a plain animation feel jerky. Position is
+    kept in fractions of a pixel and frames run at the screen's refresh rate."""
+
+    OMEGA = 20.0  # spring stiffness, 1/s; settles in about 6/OMEGA seconds
 
     def __init__(self, bar: QScrollBar):
         super().__init__(bar)
         self.bar = bar
-        self.target = bar.value()
-        self.setDuration(DURATION)
-        self.setEasingCurve(QEasingCurve.Type.OutCubic)
-        self.valueChanged.connect(lambda v: self.bar.setValue(round(v)))
+        self.pos = self.target = float(bar.value())
+        self.speed = 0.0
+        self._own = False  # True while this glide is the one moving the bar
+        self.clock = QElapsedTimer()
+        self.timer = QTimer(self)
+        self.timer.setTimerType(Qt.TimerType.PreciseTimer)
+        self.timer.timeout.connect(self._frame)
         bar.sliderPressed.connect(self.stop)  # dragging the bar wins
+        bar.valueChanged.connect(self._moved)
 
-    def push(self, by: int) -> bool:
+    def running(self) -> bool:
+        return self.timer.isActive()
+
+    def stop(self):
+        self.timer.stop()
+
+    def _moved(self, v: int):
+        if not self._own and round(self.pos) != v:  # moved some other way: follow it
+            self.stop()
+            self.pos = self.target = float(v)
+            self.speed = 0.0
+
+    def push(self, by: float) -> bool:
         """Glide `by` units further. False when the bar is already at that end."""
-        start = self.target if self.state() == self.State.Running else self.bar.value()
-        target = max(self.bar.minimum(), min(self.bar.maximum(), start + by))
-        if target == self.bar.value() and self.state() != self.State.Running:
+        if not self.running():
+            self.pos = self.target = float(self.bar.value())
+            self.speed = 0.0
+        target = max(float(self.bar.minimum()), min(float(self.bar.maximum()), self.target + by))
+        if target == self.target and not self.running():
             return False
-        self.stop()
         self.target = target
-        self.setStartValue(float(self.bar.value()))
-        self.setEndValue(float(target))
-        self.start()
+        if not self.running():
+            screen = self.bar.screen()
+            hz = screen.refreshRate() if screen is not None else 60.0
+            self.timer.start(max(4, int(1000 / max(30.0, min(hz, 240.0)))))
+            self.clock.start()
         return True
+
+    def _frame(self):
+        dt = min(0.05, max(0.001, self.clock.restart() / 1000))
+        w = self.OMEGA
+        for _ in range(4):  # small steps keep the spring stable on slow frames
+            h = dt / 4
+            self.speed += (w * w * (self.target - self.pos) - 2 * w * self.speed) * h
+            self.pos += self.speed * h
+        if self.pos < self.bar.minimum() or self.pos > self.bar.maximum():
+            self.pos = max(float(self.bar.minimum()), min(float(self.bar.maximum()), self.pos))
+        if abs(self.target - self.pos) < 0.5 and abs(self.speed) < 20:
+            self.pos, self.speed = self.target, 0.0
+            self.stop()
+        v = round(self.pos)
+        if v != self.bar.value():
+            self._own = True
+            self.bar.setValue(v)
+            self._own = False
 
 
 def from_touchpad(e) -> bool:
@@ -67,7 +109,7 @@ class SmoothScroll(QObject):
             glide = _Glide(bar)
         lines = QApplication.wheelScrollLines()
         by = -notches * lines * bar.singleStep()
-        return glide.push(round(by) or (-1 if notches > 0 else 1))
+        return glide.push(by)
 
 
 def install(app: QApplication) -> SmoothScroll:

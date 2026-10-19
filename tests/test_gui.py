@@ -333,17 +333,17 @@ def test_wheel_scrolling_glides(qapp):
         wheel(-120)
         _pump(qapp, 40)
         mid = bar.value()
-        _pump(qapp, 400)
+        _pump(qapp, 800)
         step = QApplication.wheelScrollLines() * bar.singleStep()
         assert 0 < mid < step and bar.value() == step  # it glides there, it doesn't jump
         wheel(-120)
         wheel(-120)
-        _pump(qapp, 400)
+        _pump(qapp, 800)
         assert bar.value() == 3 * step  # quick notches add up
         wheel(-120, pixels=-40)  # a mouse wheel that also reports pixels (KDE on Wayland)
         _pump(qapp, 40)
         assert 3 * step < bar.value() < 4 * step
-        _pump(qapp, 400)
+        _pump(qapp, 800)
         assert bar.value() == 4 * step
         area.close()
     finally:
