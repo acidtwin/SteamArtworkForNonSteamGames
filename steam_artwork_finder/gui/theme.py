@@ -198,7 +198,7 @@ def stylesheet() -> str:
         min-height: 40px; padding: 0 14px; color: {c['text2']};
     }}
     QPushButton[kind="chip"]:checked {{ background: {c['text']}; color: {c['ground']}; }}
-    QToolButton {{ background: transparent; border: none; border-radius: 3px; min-width: 40px; min-height: 40px; }}
+    QToolButton {{ background: transparent; border: 1px solid transparent; border-radius: 3px; min-width: 40px; min-height: 40px; }}
     QToolButton:hover {{ background: {c['raised']}; }}
     QToolButton:pressed, QToolButton[open="true"] {{ background: {c['select']}; border: 1px solid {c['text3']}; }}
     QToolButton::menu-indicator {{ image: none; }}
