@@ -51,6 +51,16 @@ class Config:
         self.data.setdefault("matches", {})[str(appid)] = {"id": game_id, "name": name, "year": year}
         self.save()
 
+    def get_steam_match(self, appid: int) -> dict | None:
+        """The Steam store game picked for a shortcut's official artwork: {id, name}, id 0 for
+        "not on Steam"; None when the user hasn't picked one."""
+        m = self.data.get("steam_matches", {}).get(str(appid))
+        return m if isinstance(m, dict) else None
+
+    def set_steam_match(self, appid: int, store_appid: int, name: str = ""):
+        self.data.setdefault("steam_matches", {})[str(appid)] = {"id": store_appid, "name": name}
+        self.save()
+
     def pending_icons(self, shortcuts_path) -> dict:
         """appid -> icon path (or "" to clear) waiting until Steam closes, for
         the account whose shortcuts.vdf is `shortcuts_path`."""

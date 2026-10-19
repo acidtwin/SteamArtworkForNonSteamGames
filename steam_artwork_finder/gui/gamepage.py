@@ -32,6 +32,7 @@ from PySide6.QtWidgets import (
 
 from ..artwork import SLOTS, Slot
 from ..sgdb import Asset
+from ..steamstore import SteamAsset
 from . import icons, localfile, theme
 from .chrome import _Elided
 from .theme import C, q
@@ -68,8 +69,9 @@ def _alpha(name: str, a: int) -> QColor:
     return c
 
 
-def draw_new_tag(p: QPainter, rect: QRectF, text: str = "NEW"):
-    """The blue tag in the top-left corner of a picked piece that isn't applied yet."""
+def draw_new_tag(p: QPainter, rect: QRectF, text: str = "NEW", bg: QColor | None = None):
+    """The blue tag in the top-left corner of a picked piece that isn't applied yet
+    (or, in `bg`, another tag in the same place, like "STEAM")."""
     p.save()
     f = QFont(p.font())
     f.setPointSizeF(theme.pt("tag"))
@@ -80,17 +82,37 @@ def draw_new_tag(p: QPainter, rect: QRectF, text: str = "NEW"):
     r = QRectF(rect.left() + 8, rect.top() + 8, fm.horizontalAdvance(text) + 14, fm.height() + 4)
     p.setRenderHint(QPainter.RenderHint.Antialiasing)
     p.setPen(Qt.PenStyle.NoPen)
-    p.setBrush(QColor(NEW_BG))
+    p.setBrush(bg if bg is not None else QColor(NEW_BG))
     p.drawRoundedRect(r, 2, 2)
     p.setPen(QColor("white"))
     p.drawText(r, Qt.AlignmentFlag.AlignCenter, text)
     p.restore()
 
 
+def describe(a: Asset) -> str:
+    """An option's tooltip line: its size, style and who made it."""
+    if isinstance(a, SteamAsset):
+        return f"{a.width} × {a.height} · Steam's official artwork, from the game's store page"
+    return (f"{a.width} × {a.height} · {'animated · ' if a.animated else ''}"
+            f"{a.style or 'style unknown'} · by {a.author or 'unknown'}")
+
+
+def draw_steam_tag(p: QPainter, rect: QRectF):
+    """The dark tag marking Steam's own official artwork."""
+    draw_new_tag(p, rect, "STEAM", QColor(11, 16, 22, 215))
+
+
 class OptionView(ArtView):
     """One option in a row's strip; says when its thumbnail arrives."""
 
     loaded = Signal()
+    official = False  # Steam's own artwork: tagged "STEAM"
+
+    def paintEvent(self, e):
+        super().paintEvent(e)
+        if self.official and not self.selected:
+            p = QPainter(self)
+            draw_steam_tag(p, QRectF(self.rect()))
 
     def set_pixmap(self, pm: QPixmap | None, backdrop: QPixmap | None = None):
         super().set_pixmap(pm, backdrop)
@@ -478,6 +500,8 @@ class ArtworkRow(QWidget):
         lay.addLayout(right, 1)
 
         self.assets: list[Asset] = []
+        self.steam_assets: list[Asset] = []
+        self._sgdb: tuple = ("loading",)
         self.thumbs: list[ArtView] = []
         self.total = 0
         self._previewing = False
@@ -575,6 +599,8 @@ class ArtworkRow(QWidget):
                 self._set_caption("Nothing set")
             elif applied and applied.get("file"):
                 self._set_caption("In use · your file")
+            elif applied and applied.get("steam"):
+                self._set_caption("In use · from Steam")
             elif applied and applied.get("author"):
                 self._set_caption(f"In use · by {applied['author']}")
             else:
@@ -594,9 +620,7 @@ class ArtworkRow(QWidget):
             chosen = pick is not None and not pick.clears and pick.asset.id == a.id
             view.selected = chosen
             view.badge = pick is None and bool(applied and applied.get("id") == a.id and path is not None)
-            view.setToolTip(f"{a.width} × {a.height} · {'animated · ' if a.animated else ''}"
-                            f"{a.style or 'style unknown'} · by {a.author or 'unknown'}\n"
-                            + ("Click to un-pick it" if chosen else "Click to pick it"))
+            view.setToolTip(describe(a) + "\n" + ("Click to un-pick it" if chosen else "Click to pick it"))
             view.update()
 
     def clear_piece(self):
@@ -662,6 +686,36 @@ class ArtworkRow(QWidget):
     # -- options -----------------------------------------------------------
 
     def set_message(self, text: str, icon: str = "info"):
+        """What SteamGridDB has to say instead of options; Steam's own still show beside it."""
+        self._sgdb = ("message", text, icon)
+        self._render()
+
+    def set_loading(self):
+        self._sgdb = ("loading",)
+        self._render()
+
+    def set_assets(self, assets: list[Asset], more: bool):
+        self._sgdb = ("assets", assets, more)
+        self._render()
+
+    def set_steam(self, assets: list[Asset]):
+        """Steam's official artwork for this piece (none, or one), shown first."""
+        self.steam_assets = list(assets)
+        self._render()
+
+    def _render(self):
+        kind = self._sgdb[0]
+        sgdb = self._sgdb[1] if kind == "assets" else []
+        if self.steam_assets or sgdb:
+            self._show_assets(sgdb, kind == "assets" and self._sgdb[2])
+        elif kind == "assets":
+            self._show_message(f"No {self.slot.label.lower()} on SteamGridDB yet.")
+        elif kind == "loading":
+            self._show_message("Loading options from SteamGridDB…", "")
+        else:
+            self._show_message(self._sgdb[1], self._sgdb[2])
+
+    def _show_message(self, text: str, icon: str = "info"):
         self._clear_strip()
         self.count.setText("")
         self.count.hide()
@@ -671,30 +725,41 @@ class ArtworkRow(QWidget):
         self.message.show()
         self._right.setStretch(0, 1)
 
-    def set_loading(self):
-        self.set_message("Loading options from SteamGridDB…", "")
-
-    def set_assets(self, assets: list[Asset], more: bool):
+    def _show_assets(self, sgdb: list[Asset], more: bool):
         self._clear_strip()
-        self.assets = assets[:STRIP]
-        n = len(assets)
-        if n == 0:
-            self.set_message(f"No {self.slot.label.lower()} on SteamGridDB yet.")
-            return
+        steam = self.steam_assets
+        self.assets = (steam + sgdb)[:STRIP]
+        n = len(sgdb)
         self.message.hide()
         self._right.setStretch(0, 0)
         self.count.show()
         self.scroll.show()
-        self.total = n if not more else 50
+        self.total = len(steam) + (n if not more else 50)
         shown = f"{n}+" if more else str(n)
-        self.count.setText(f"<b>{shown} option{'s' if n != 1 else ''}</b> on SteamGridDB")
-        self.see_all.setText(f"See all {shown}")
+        parts = []
+        if steam:
+            parts.append("<b>Official</b> from Steam")
+        kind = self._sgdb[0]
+        if kind == "assets" and n:
+            parts.append(f"<b>{shown} option{'s' if n != 1 else ''}</b> on SteamGridDB")
+        elif kind == "assets":
+            parts.append("none on SteamGridDB yet")
+        elif kind == "loading":
+            parts.append("loading SteamGridDB…")
+        self.count.setText(" · ".join(parts))
+        self.count.setToolTip("")
+        if kind == "message":
+            self.count.setToolTip(self._sgdb[1])
+        total = f"{self.total}+" if more else str(self.total)
+        self.see_all.setText(f"See all {total}")
         self.see_all.show()
         info = INFO[self.slot.key]
         for i, a in enumerate(self.assets):
             v = OptionView(info.thumb, "", checker=self.slot.key == "logo")
             v.animated = a.animated
-            v.describe(f"{self.slot.label} option {i + 1} of {len(self.assets)}, by {a.author or 'unknown'}"
+            v.official = isinstance(a, SteamAsset)
+            v.describe(f"{self.slot.label} option {i + 1} of {len(self.assets)}, "
+                       + ("Steam's official artwork" if v.official else f"by {a.author or 'unknown'}")
                        + (", animated" if a.animated else "") + (f", {a.style}" if a.style else ""))
             v.setAccessibleDescription("Press Enter to pick it")
             v.clicked.connect(lambda a=a: self._option_clicked(a))
@@ -804,6 +869,7 @@ class MatchCard(QWidget):
 
     confirm = Signal()
     change = Signal()
+    steam = Signal()  # change which Steam store game the official artwork comes from
     add_key = Signal()
     home = Signal()
     get_all = Signal()
@@ -857,7 +923,10 @@ class MatchCard(QWidget):
         self.meta.setContentsMargins(0, 4, 0, 5)  # where the old one-line row with a button put it
         self.meta.setTextInteractionFlags(Qt.TextInteractionFlag.LinksAccessibleByMouse
                                           | Qt.TextInteractionFlag.LinksAccessibleByKeyboard)
-        self.meta.linkActivated.connect(lambda href: (self.confirm if href == "confirm" else self.change).emit())
+        self.meta.linkActivated.connect(
+            lambda href: {"confirm": self.confirm, "steam": self.steam}.get(href, self.change).emit())
+        self._sgdb_html = ""
+        self._steam_html = ""
         info.addWidget(self.meta)
         row.addLayout(info, 1)
 
@@ -965,7 +1034,8 @@ class MatchCard(QWidget):
             if state == "check":  # a quiet link, so Apply or Get All Artwork stays the one filled button
                 link = f"&nbsp;&nbsp;{a} href='confirm'>Yes,&nbsp;That's&nbsp;It</a>&nbsp;&nbsp;·"
             link += f"&nbsp;&nbsp;{a} href='change'>{words}</a>"
-        self.meta.setText(f"<span style='color:{colour}'>{text}</span>{link}")
+        self._sgdb_html = f"<span style='color:{colour}'>{text}</span>{link}"
+        self.meta.setText(self._sgdb_html + self._steam_html)
         self.key_btn.setVisible(state == "key")
         plain = {"exact": f"Artwork from {name} on SteamGridDB", "check": f"Check this match: {name}",
                  "notfound": "Not found on SteamGridDB", "finding": "Finding this game on SteamGridDB",
@@ -974,6 +1044,20 @@ class MatchCard(QWidget):
         self._style_get()
         self._fit()
         self.update()
+
+    def set_steam(self, state: str, name: str = ""):
+        """The line about Steam's official artwork. state: "found", "none", "finding", "error" or "off"."""
+        a = f"<a style='color:{C['blue_ink']}; text-decoration:none; font-weight:600' href='steam'>"
+        text = {
+            "found": f"Official art from <b style='color:white'>{escape(name)}</b> on Steam&nbsp;·&nbsp;&nbsp;"
+                     f"{a}Change</a>",
+            "none": f"Not matched on the Steam store&nbsp;·&nbsp;&nbsp;{a}Search&nbsp;Steam</a>",
+            "finding": "Looking on the Steam store…",
+            "error": f"Couldn't reach the Steam store&nbsp;·&nbsp;&nbsp;{a}Try&nbsp;Again</a>",
+            "off": "",
+        }[state]
+        self._steam_html = f"<br><span style='color:{C['text2']}'>{text}</span>" if text else ""
+        self.meta.setText(self._sgdb_html + self._steam_html)
 
     def resizeEvent(self, e):
         self._scaled = None
@@ -1061,6 +1145,7 @@ class GamePage(QWidget):
         self.card = MatchCard()
         self.card.confirm.connect(self.confirm_match.emit)
         self.card.change.connect(self.change_match.emit)
+        self.card.steam.connect(win.change_steam_match)
         self.card.add_key.connect(win.ask_api_key)
         self.card.home.connect(win.go_home)
         self.card.get_all.connect(win.fill_current)
@@ -1118,7 +1203,7 @@ class GamePage(QWidget):
         """The cover beside the name: the game's cover, its waiting pick, else the first option."""
         sc = self.win.current_shortcut()
         pm = self._current_art(sc, "grid") if sc else None
-        if pm is None and self.card.state in ("exact", "check"):
+        if pm is None and (self.card.state in ("exact", "check") or self.rows["grid"].steam_assets):
             pm = self.rows["grid"].first_thumb()
         self.card.cover.set_pixmap(pm, "key" if self.card.state == "key" else "")
         self._banner()

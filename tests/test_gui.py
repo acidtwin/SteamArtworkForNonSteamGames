@@ -40,6 +40,8 @@ def window(qapp, steam_root, tmp_path, monkeypatch):
 
     monkeypatch.setattr(appmod, "steam_running", lambda root=None: False)
     win = appmod.MainWindow()
+    win.steam.search = lambda term: []  # no Steam store lookups from tests unless a test sets them up
+    win.steam.assets = lambda appid: {}
     win.resize(1280, 800)
     win.show()
     win.detect_steam([steam_root])
@@ -853,3 +855,80 @@ def test_own_icon_is_copied_and_linked_from_steams_folder(qapp, window, tmp_path
     assert win.sfile.find(sc.appid).icon == str(path)  # points at the copy, never the original
     src.unlink()
     assert path.exists()
+
+
+def test_steam_official_artwork_comes_first_and_fills_without_a_key(qapp, window):
+    from steam_artwork_finder.artwork import SLOTS, existing
+    from steam_artwork_finder.steamstore import SteamAsset, StoreGame
+
+    win = window
+    win.sgdb.download = lambda url: PNG
+    official = {k: SteamAsset(-(504230 * 10 + i), f"https://cdn/{k}.jpg", f"https://cdn/{k}_s.jpg", 600, 900,
+                              "image/jpeg", 0, "official", "Steam", appid=504230)
+                for i, k in enumerate(("grid", "wide", "hero", "logo", "icon"), 1)}
+    win.steam.match = lambda name: StoreGame(504230, "Celeste") if name == "Celeste" else None
+    win.steam.assets = lambda appid: dict(official)
+    win.open_game(0)
+    _pump(qapp, 1000, until=lambda: win.page.rows["grid"].steam_assets)
+    row = win.page.rows["grid"]
+    assert row.assets[0] is official["grid"] and row.thumbs[0].official
+    assert "Official" in row.count.text()
+    assert "Celeste" in win.page.card.meta.text() and "Steam" in win.page.card.meta.text()
+    assert win.steam_option("hero") is official["hero"]
+
+    # No SteamGridDB key: Get All Artwork still fills from Steam, all but the (tiny) icon.
+    sc = win.current_shortcut()
+    win.fill_current()
+    _pump(qapp, 3000, until=lambda: not win.busy)
+    picks = win.pending.for_game(sc.appid)
+    assert sorted(picks) == ["grid", "hero", "logo", "wide"]
+    assert all(isinstance(p.asset, SteamAsset) for p in picks.values())
+    win.apply_games([sc.appid])
+    _pump(qapp, 3000, until=lambda: not win.busy)
+    assert existing(win.user.grid_dir, sc.appid, SLOTS["grid"]) is not None
+    assert win.config.get_applied(sc.appid, "grid")["steam"] == 504230
+    row.show_current()
+    assert row.caption.text() == "In use · from Steam"
+
+    # Turned off: Steam's options go, and nothing is looked up.
+    win._set_steam_art(False)
+    _pump(qapp)
+    assert not row.steam_assets and win.steam_option("grid") is None
+    win._set_steam_art(True)
+
+
+def test_steam_match_can_be_changed_or_turned_off(qapp, window, monkeypatch):
+    from steam_artwork_finder.gui import app as appmod
+    from steam_artwork_finder.steamstore import StoreGame
+
+    win = window
+    win.steam.match = lambda name: None
+    looked = []
+    win.steam.assets = lambda appid: looked.append(appid) or {}
+    win.open_game(0)
+    _pump(qapp, 1000, until=lambda: win.current_shortcut().appid in win.steam_found)
+    assert "Not matched on the Steam store" in win.page.card.meta.text()
+    sc = win.current_shortcut()
+
+    class Dlg:
+        NONE = appmod.SteamMatchDialog.NONE
+        answer = StoreGame(42, "Celeste Classic")
+
+        def __init__(self, *a):
+            pass
+
+        def exec(self):
+            return 1
+
+        def deleteLater(self):
+            pass
+
+    monkeypatch.setattr(appmod, "SteamMatchDialog", Dlg)
+    win.change_steam_match()
+    _pump(qapp, 1000, until=lambda: sc.appid in win.steam_found)
+    assert win.config.get_steam_match(sc.appid) == {"id": 42, "name": "Celeste Classic"}
+    assert looked == [42]
+    Dlg.answer = Dlg.NONE
+    win.change_steam_match()
+    _pump(qapp, 500)
+    assert win.config.get_steam_match(sc.appid)["id"] == 0 and looked == [42]

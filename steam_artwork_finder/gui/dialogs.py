@@ -17,6 +17,8 @@ from PySide6.QtWidgets import (
     QHBoxLayout,
     QLabel,
     QLineEdit,
+    QListWidget,
+    QListWidgetItem,
     QPushButton,
     QSizePolicy,
     QToolButton,
@@ -1154,3 +1156,98 @@ class RestoreDialog(QDialog):
 
     def selected(self):
         return next((r.path for r in self.rows if r.isChecked()), None)
+
+
+class SteamMatchDialog(QDialog):
+    """Pick which Steam store game a shortcut is, for Steam's official artwork, or none."""
+
+    NONE = object()  # the "Not on Steam" answer
+
+    def __init__(self, parent, store, name: str, current: str = ""):
+        from ..sgdb import name_variants
+
+        super().__init__(parent)
+        self.store = store
+        self.games = []
+        self.answer = None
+        self._run = 0
+        self._gone = False
+        self.setWindowTitle(f"Which Steam game is “{name}”?")
+        self.setMinimumSize(460, 420)
+        body, fl = _dialog_frame(self, "Official artwork from Steam")
+        why = QLabel("If this game is also sold on Steam, its store page has official artwork. "
+                     "Search for it and pick it, or choose Not on Steam."
+                     + (f" Now: {current}." if current else ""))
+        why.setWordWrap(True)
+        why.setStyleSheet(f"color: {C['text2']};")
+        body.addWidget(why)
+        variants = name_variants(name)
+        self.edit = QLineEdit(variants[-1] if variants else name)
+        self.edit.setPlaceholderText("Search the Steam store")
+        self.edit.setAccessibleName("Search the Steam store")
+        self.edit.addAction(icons.icon("search", 16, C["text3"]), QLineEdit.ActionPosition.LeadingPosition)
+        self.edit.returnPressed.connect(self.search)
+        body.addWidget(self.edit)
+        self.list = QListWidget()
+        self.list.setAccessibleName("Steam store results")
+        self.list.itemDoubleClicked.connect(lambda _it: self._use())
+        self.list.currentRowChanged.connect(lambda _r: self.use.setEnabled(self.list.currentRow() >= 0))
+        body.addWidget(self.list, 1)
+        self.note = QLabel("")
+        self.note.setStyleSheet(f"color: {C['text3']};")
+        body.addWidget(self.note)
+        none = QPushButton("Not on Steam")
+        none.setToolTip("Don't use Steam's artwork for this game")
+        none.clicked.connect(self._none)
+        fl.insertWidget(0, none)
+        cancel = QPushButton("Cancel")
+        cancel.clicked.connect(self.reject)
+        fl.addWidget(cancel)
+        self.use = QPushButton("Use This Game")
+        self.use.setProperty("kind", "confirm")
+        self.use.setEnabled(False)
+        self.use.setDefault(True)
+        self.use.clicked.connect(self._use)
+        fl.addWidget(self.use)
+        self.search()
+
+    def search(self):
+        term = self.edit.text().strip()
+        if not term:
+            return
+        self._run += 1
+        run = self._run
+        self.note.setText("Searching the Steam store…")
+
+        def done(games):
+            if self._gone or run != self._run:
+                return
+            self.games = games
+            self.list.clear()
+            for g in games:
+                it = QListWidgetItem(f"{g.name}   ·   app {g.appid}")
+                it.setToolTip(f"store.steampowered.com/app/{g.appid}")
+                self.list.addItem(it)
+            if games:
+                self.list.setCurrentRow(0)
+            self.note.setText("" if games else "Nothing on the Steam store by that name.")
+
+        def failed(msg):
+            if not self._gone and run == self._run:
+                self.note.setText(msg)
+
+        workers.run(self.store.search, term, on_done=done, on_error=failed)
+
+    def _use(self):
+        row = self.list.currentRow()
+        if 0 <= row < len(self.games):
+            self.answer = self.games[row]
+            self.accept()
+
+    def _none(self):
+        self.answer = self.NONE
+        self.accept()
+
+    def done(self, r: int):
+        self._gone = True
+        super().done(r)

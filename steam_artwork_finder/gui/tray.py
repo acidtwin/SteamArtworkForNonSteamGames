@@ -1,4 +1,4 @@
-"""The option tray: every SteamGridDB option for one piece, beside the game page."""
+"""The option tray: Steam's official piece and every SteamGridDB option for one piece, beside the game page."""
 
 from __future__ import annotations
 
@@ -23,7 +23,8 @@ from PySide6.QtWidgets import (
 from ..artwork import SLOTS
 from . import icons, theme
 from .theme import q
-from .gamepage import draw_new_tag
+from ..steamstore import SteamAsset
+from .gamepage import describe, draw_new_tag, draw_steam_tag
 from .widgets import FlowLayout, draw_animated_tag, draw_badge, draw_checker, fill_rect, label
 
 ORDER = ("grid", "wide", "hero", "logo", "icon")
@@ -98,6 +99,9 @@ class OptionDelegate(QStyledItemDelegate):
         elif index.data(ROLE_INUSE):
             draw_badge(p, r)
         a = index.data(ROLE_ASSET)
+        official = isinstance(a, SteamAsset)
+        if official and not picked:
+            draw_steam_tag(p, r)
         if a is not None and a.animated:
             draw_animated_tag(p, r)
         sel = bool(option.state & QStyle.StateFlag.State_Selected)
@@ -110,7 +114,7 @@ class OptionDelegate(QStyledItemDelegate):
         f.setPointSizeF(theme.pt("label"))
         p.setFont(f)
         p.setPen(q("text3"))
-        cap = f"by {a.author or 'unknown'}" + (f" · {a.style}" if a.style else "")
+        cap = "Official, from Steam" if official else f"by {a.author or 'unknown'}" + (f" · {a.style}" if a.style else "")
         cap = QFontMetrics(f).elidedText(cap, Qt.TextElideMode.ElideRight, s.width())
         p.drawText(QRectF(r.left(), r.bottom() + 4, s.width(), QFontMetrics(f).height() + 2),
                    Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignVCenter, cap)
@@ -237,8 +241,12 @@ class OptionTray(QWidget):
 
     def load(self):
         game = self.win.current_game()
+        steam = self.win.steam_option(self.slot.key) if self.page == 0 else None
+        if steam is not None:
+            self._add([steam])
         if game is None:
-            self.status.setText("Match this game to a SteamGridDB title first.")
+            self.status.setText("Steam's official artwork. Match this game on SteamGridDB for more options."
+                                if steam is not None else "Match this game to a SteamGridDB title first.")
             return
         self.status.setText("Loading options…")
         slot, page, appid = self.slot, self.page, self.win.current_shortcut().appid
@@ -251,19 +259,7 @@ class OptionTray(QWidget):
         if assets is None:
             self.status.setText("Couldn't load options from SteamGridDB.")
             return
-        self.assets += assets
-        in_use, picked = self._ids()
-        for i, a in enumerate(assets):
-            name = (f"{slot.label} option {len(self.assets) - len(assets) + i + 1}, by {a.author or 'unknown'}"
-                    + (f", {a.style}" if a.style else ""))
-            it = QListWidgetItem(name)
-            it.setData(ROLE_NAME, name)
-            it.setData(ROLE_ASSET, a)
-            self._mark(it, in_use, picked)
-            it.setToolTip(f"{a.width} × {a.height} · {'animated · ' if a.animated else ''}"
-                          f"{a.style or 'style unknown'} · by {a.author or 'unknown'}")
-            self.list.addItem(it)
-            self.win.load_thumb(a, it)
+        self._add(assets)
         self.more.setVisible(len(assets) >= 50)
         self._chips(sorted({a.style for a in self.assets if a.style}))
         self._filter()
@@ -275,6 +271,22 @@ class OptionTray(QWidget):
             info = SLOTS[slot.key]
             self.status.setText(f"{len(self.assets)} options. Hover to preview, then "
                                 f"“Pick This {info.label.title()}”. Apply saves your picks.")
+
+    def _add(self, assets):
+        slot = self.slot
+        self.assets += assets
+        in_use, picked = self._ids()
+        for i, a in enumerate(assets):
+            n = len(self.assets) - len(assets) + i + 1
+            name = (f"{slot.label} option {n}, Steam's official artwork" if isinstance(a, SteamAsset) else
+                    f"{slot.label} option {n}, by {a.author or 'unknown'}" + (f", {a.style}" if a.style else ""))
+            it = QListWidgetItem(name)
+            it.setData(ROLE_NAME, name)
+            it.setData(ROLE_ASSET, a)
+            self._mark(it, in_use, picked)
+            it.setToolTip(describe(a))
+            self.list.addItem(it)
+            self.win.load_thumb(a, it)
 
     def _show_empty(self, empty: bool):
         if empty and self.list.hasFocus():
@@ -292,6 +304,8 @@ class OptionTray(QWidget):
     def _chips(self, styles: list[str]):
         for b in self.chips.buttons():
             self.chips.removeButton(b)
+            self.chip_row.removeWidget(b)
+            b.hide()
             b.deleteLater()
         for name in ["all"] + styles:
             b = QPushButton(name.replace("_", " ").capitalize() if name != "all" else "All")
