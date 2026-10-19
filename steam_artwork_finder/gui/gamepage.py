@@ -44,13 +44,14 @@ class SlotInfo:
 
 
 INFO = {
-    "grid": SlotInfo("Your library grid and collections.", "600 × 900", QSize(124, 186), QSize(88, 132), "No cover"),
-    "wide": SlotInfo("Recent games shelf and Big Picture.", "920 × 430", QSize(248, 116), QSize(196, 92), "No wide cover"),
-    "hero": SlotInfo("The wide image at the top of the game's page.", "1920 × 620", QSize(300, 97), QSize(240, 78), "No banner"),
-    "logo": SlotInfo("Laid over the banner on the game's page.", "Transparent PNG", QSize(300, 97), QSize(200, 76), "No logo"),
+    "grid": SlotInfo("Your library grid and collections.", "600 × 900", QSize(124, 186), QSize(80, 120), "No cover"),
+    "wide": SlotInfo("Recent games shelf and Big Picture.", "920 × 430", QSize(230, 108), QSize(196, 92), "No wide cover"),
+    "hero": SlotInfo("The wide image at the top of the game's page.", "1920 × 620", QSize(230, 74), QSize(240, 78), "No banner"),
+    "logo": SlotInfo("Laid over the banner on the game's page.", "Transparent PNG", QSize(230, 74), QSize(140, 53), "No logo"),
     "icon": SlotInfo("The game list, and desktop shortcuts.", "256 × 256", QSize(96, 96), QSize(64, 64), "No icon"),
 }
 STRIP = 6
+ART_W = max(i.art.width() for i in INFO.values())  # every row's middle column, so the strips line up
 
 
 def _alpha(name: str, a: int) -> QColor:
@@ -235,7 +236,7 @@ class GhostStrip(QWidget):
         tw, th = self.thumb.width(), self.thumb.height()
         y = (self.height() - th) / 2
         x = 0.75
-        while x < w:
+        while x + tw <= w + 1:  # whole outlines only, like the options' strip
             # fade from 100% to nothing across the strip
             a = max(0.0, 1.0 - max(0.0, x - w * 0.3) / (w * 0.7))
             p.setBrush(_alpha("raised", round(64 * a)))
@@ -319,8 +320,9 @@ class ArtworkRow(QWidget):
         mid.setContentsMargins(0, 0, 0, 0)
         mw = QWidget()
         mw.setLayout(mid)
-        # Wide enough for the longest caption, semibold, at any font size.
-        mw.setFixedWidth(max(info.art.width(), 124, round(theme.text_width("Removed when you apply") * 0.98)))
+        # As wide as the widest piece in every row, so the strips start in line, and wide
+        # enough for the longest caption, semibold, at any font size.
+        mw.setFixedWidth(max(ART_W, round(theme.text_width("Removed when you apply") * 0.98)))
         self.mid_col = mw
         lay.addWidget(mw)
 
@@ -682,7 +684,7 @@ class MatchCard(QWidget):
         self.meta.setContentsMargins(0, 4, 0, 5)  # where the old one-line row with a button put it
         self.meta.setTextInteractionFlags(Qt.TextInteractionFlag.LinksAccessibleByMouse
                                           | Qt.TextInteractionFlag.LinksAccessibleByKeyboard)
-        self.meta.linkActivated.connect(lambda _href: self.change.emit())
+        self.meta.linkActivated.connect(lambda href: (self.confirm if href == "confirm" else self.change).emit())
         info.addWidget(self.meta)
         row.addLayout(info, 1)
 
@@ -690,18 +692,13 @@ class MatchCard(QWidget):
         acts = QHBoxLayout(self.acts)
         acts.setContentsMargins(0, 0, 0, 0)
         acts.setSpacing(8)
-        self.yes_btn = QPushButton("Yes, That's It")
-        self.yes_btn.setProperty("kind", "confirm")
-        self.yes_btn.setAccessibleDescription("Keep this SteamGridDB game as the match")
-        self.yes_btn.clicked.connect(self.confirm.emit)
-        acts.addWidget(self.yes_btn)
         self.key_btn = QPushButton("Add API Key")
         self.key_btn.setProperty("kind", "confirm")
         self.key_btn.setAccessibleDescription("Add a free SteamGridDB API key")
         self.key_btn.clicked.connect(self.add_key.emit)
         acts.addWidget(self.key_btn)
         self.get_btn = QPushButton("Get All Artwork")
-        self.get_btn.setObjectName("bannerget")
+        self.get_btn.setObjectName("bannerget")  # or "bannerghost" while something else comes first (_style_get)
         self.get_btn.setIcon(icons.icon("download", 15, "white"))
         self.get_btn.clicked.connect(self.get_all.emit)
         acts.addWidget(self.get_btn)
@@ -736,7 +733,17 @@ class MatchCard(QWidget):
         self.get_btn.setEnabled(can_get and not busy)
         self.apply_btn.setText(f"Apply ({changes} Change{'' if changes == 1 else 's'})" if changes else "Apply")
         self.apply_btn.setEnabled(bool(changes) and not busy)
+        self._style_get()
         self._fit()
+
+    def _style_get(self):
+        """One filled button at a time: Get All Artwork is green only when it's the one thing to do,
+        and a quiet ghost while there are changes to apply or a match to check."""
+        name = "bannerghost" if self.apply_btn.isEnabled() or self.state in ("check", "key") else "bannerget"
+        if self.get_btn.objectName() != name:
+            self.get_btn.setObjectName(name)
+            self.get_btn.style().unpolish(self.get_btn)
+            self.get_btn.style().polish(self.get_btn)
 
     def _fit(self):
         """Put the buttons on a row of their own, under the cover and name, when they don't fit beside them."""
@@ -781,15 +788,17 @@ class MatchCard(QWidget):
         link = ""
         if state not in ("finding", "key"):
             words = ("Search by Another Name" if state == "notfound" else "Change Game").replace(" ", "&nbsp;")
-            link = (f"&nbsp;&nbsp;<a href='change' style='color:{C['blue_ink']}; text-decoration:none;"
-                    f" font-weight:600'>{words}</a>")
+            a = f"<a style='color:{C['blue_ink']}; text-decoration:none; font-weight:600'"
+            if state == "check":  # a quiet link, so Apply or Get All Artwork stays the one filled button
+                link = f"&nbsp;&nbsp;{a} href='confirm'>Yes,&nbsp;That's&nbsp;It</a>&nbsp;&nbsp;·"
+            link += f"&nbsp;&nbsp;{a} href='change'>{words}</a>"
         self.meta.setText(f"<span style='color:{colour}'>{text}</span>{link}")
-        self.yes_btn.setVisible(state == "check")
         self.key_btn.setVisible(state == "key")
         plain = {"exact": f"Artwork from {name} on SteamGridDB", "check": f"Check this match: {name}",
                  "notfound": "Not found on SteamGridDB", "finding": "Finding this game on SteamGridDB",
                  "key": "SteamGridDB API key needed"}[state]
         self.setAccessibleName(plain)
+        self._style_get()
         self._fit()
         self.update()
 
@@ -805,12 +814,13 @@ class MatchCard(QWidget):
         key = (self.size(), dpr)
         if self._scaled is None or self._scaled[0] != key:
             if self.blurred:  # shrink then stretch: a cheap, soft blur
-                small = fill_rect(self.banner, QSize(48, max(1, round(48 * self.height() / max(1, self.width())))))
+                small = fill_rect(self.banner, QSize(48, max(1, round(48 * self.height() / max(1, self.width())))),
+                                  top=True)
                 pm = small.scaled(self.size() * dpr, Qt.AspectRatioMode.IgnoreAspectRatio,
                                   Qt.TransformationMode.SmoothTransformation)
                 pm.setDevicePixelRatio(dpr)
             else:
-                pm = fill_rect(self.banner, self.size(), dpr)
+                pm = fill_rect(self.banner, self.size(), dpr, top=True)  # Steam keeps the top of a banner
             self._scaled = (key, pm)
         return self._scaled[1]
 

@@ -398,12 +398,12 @@ class ContentBar(QWidget):
         self.buttons: list[QAbstractButton] = []
         self.show_library(None)
 
-    def show_library(self, count: int | None):
-        """Start page title: NON-STEAM GAMES (count)."""
+    def show_library(self, count: int | None, shown: int | None = None):
+        """Start page title: NON-STEAM GAMES (count), or (shown of count) while the sidebar narrows it."""
         self.title.setFont(font(1.15, QFont.Weight.Bold, 0.09))
         self.title.setText("NON-STEAM GAMES")
         self.title.setAccessibleName("Non-Steam games")
-        self.count.setText("" if count is None else f"({count})")
+        self.count.setText("" if count is None else f"({count})" if shown in (None, count) else f"({shown} of {count})")
         self.count.setVisible(count is not None)
 
     def show_game(self, name: str):

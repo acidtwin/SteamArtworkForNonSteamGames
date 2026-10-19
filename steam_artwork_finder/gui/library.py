@@ -729,18 +729,28 @@ class GameList(QWidget):
         self.filter_button.setAccessibleName(f"Show: {name}")
         self.filter_button.set_state(on=self.filter_mode != "all")
 
+    def narrowed(self) -> bool:
+        """Whether the search or the filter hides any games (the start page shows the same games)."""
+        return bool(self.search.text().strip()) or self.filter_mode != "all"
+
+    def matches(self, sc) -> bool:
+        """Whether the search and the filter let this game through."""
+        term = self.search.text().strip().casefold()
+        if term and term not in sc.name.casefold():
+            return False
+        if self.filter_mode == "missing":
+            return not all(self.win.coverage(sc))
+        if self.filter_mode == "check":
+            return needs_check(self.win, sc)
+        return True
+
     def apply_filter(self):
         term = self.search.text().strip().casefold()
-        mode = self.filter_mode
         shown = 0
         for row in range(self.list.count()):
             it = self.list.item(row)
             sc = self.win.sfile.shortcuts[it.data(ROLE_INDEX)]
-            show = self.empty_reason is None and (not term or term in sc.name.casefold())
-            if mode == "missing":
-                show = show and not all(self.win.coverage(sc))
-            elif mode == "check":
-                show = show and needs_check(self.win, sc)
+            show = self.empty_reason is None and self.matches(sc)
             it.setHidden(not show)
             shown += show
         self._show_empty(term, shown)
@@ -1291,6 +1301,17 @@ class StartPage(QWidget):
         self.note.hide()
         lay.addWidget(self.note)
         lay.addSpacing(10)
+        self.empty = QWidget()  # when the sidebar's search or filter (and a chip) leave no games
+        el = QHBoxLayout(self.empty)
+        el.setContentsMargins(0, 6, 0, 0)
+        el.setSpacing(4)
+        empty_text = QLabel("No games match this filter.")
+        empty_text.setStyleSheet(f"color: {C['text2']};")
+        el.addWidget(empty_text)
+        el.addWidget(quiet_button("Show all games", self._show_everything))
+        el.addStretch(1)
+        self.empty.hide()
+        lay.addWidget(self.empty)
         self.wall = CoverWall(WallDelegate, win)
         self.delegate = self.wall.delegate
         self.wall.itemClicked.connect(lambda it: self.picked.emit(it.data(ROLE_INDEX)))
@@ -1303,7 +1324,12 @@ class StartPage(QWidget):
 
     def set_view(self, view: str):
         self.wall.set_view(view)
-        self.header.setVisible(view == "details")
+        self.header.setVisible(view == "details" and self.empty.isHidden())
+
+    def _show_everything(self):
+        self.win.game_list.search.clear()
+        self.win.game_list.set_filter("all")
+        self.set_piece(None)
 
     def rebuild(self):
         self.wall.clear()
@@ -1342,9 +1368,11 @@ class StartPage(QWidget):
             if idx >= n:
                 continue
             set_spoken(it, spoken(win, idx))
-            show = self.piece is None or not cov[idx][self.piece]
+            show = (self.piece is None or not cov[idx][self.piece]) and win.game_list.matches(win.sfile.shortcuts[idx])
             it.setHidden(not show)
             shown += show
+        self.empty.setVisible(n > 0 and not shown)
+        self.header.setVisible(self.wall.view == "details" and shown > 0)
         if self.piece is None:
             self.note.hide()
         else:

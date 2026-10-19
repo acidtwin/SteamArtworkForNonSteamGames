@@ -133,6 +133,9 @@ class MainWindow(QMainWindow):
         self.game_list = GameList(self)
         self.game_list.setMinimumWidth(260)
         self.game_list.picked.connect(self.show_index)
+        # The start page shows the games the sidebar's search and filter leave.
+        for changed in (self.game_list.search.textChanged, self.game_list.filter_changed):
+            changed.connect(self._library_narrowed)
         self.split.addWidget(self.game_list)
 
         col = QWidget()
@@ -816,7 +819,9 @@ class MainWindow(QMainWindow):
             self.page.card.set_game(sc.name or "(unnamed)")
             self.page.card.set_actions(bool(self._unstaged_missing(sc)), self.pending.count(sc.appid), bool(self.busy))
         else:
-            self.cbar.show_library(len(games) if self.users else None)
+            gl = self.game_list
+            self.cbar.show_library(len(games) if self.users else None,
+                                   sum(map(gl.matches, games)) if gl.narrowed() else None)
             need = sum(1 for g in games if self._unstaged_missing(g) and self.status.get(g.appid) != "notfound")
             ready = len(self.pending.games())
             specs = []
@@ -849,6 +854,11 @@ class MainWindow(QMainWindow):
             if self.tray.isVisible():
                 self.tray.mark_in_use()
         self.update_chrome()
+
+    def _library_narrowed(self, *_):
+        if self.sfile and self.sfile.shortcuts:
+            self.start.refresh()
+            self.update_chrome()
 
     # ---- navigation -------------------------------------------------------
 

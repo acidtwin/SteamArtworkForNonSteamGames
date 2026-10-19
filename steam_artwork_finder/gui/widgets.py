@@ -127,15 +127,16 @@ class ScaledCache:
             del self.ready[k]
 
 
-def fill_rect(pm: QPixmap, target: QSize, dpr: float = 1.0) -> QPixmap:
+def fill_rect(pm: QPixmap, target: QSize, dpr: float = 1.0, top: bool = False) -> QPixmap:
     """Scale to cover target, cropping the overflow (like CSS object-fit: cover).
 
-    With `dpr` above 1 the result has that many more pixels, for sharp HiDPI drawing."""
+    With `dpr` above 1 the result has that many more pixels, for sharp HiDPI drawing.
+    `top` keeps the top of the image and crops only the bottom, as Steam does with a banner."""
     target = QSize(round(target.width() * dpr), round(target.height() * dpr))
     s = pm.scaled(target, Qt.AspectRatioMode.KeepAspectRatioByExpanding,
                   Qt.TransformationMode.SmoothTransformation)
     x = (s.width() - target.width()) // 2
-    y = (s.height() - target.height()) // 2
+    y = 0 if top else (s.height() - target.height()) // 2
     out = s.copy(x, y, target.width(), target.height())
     out.setDevicePixelRatio(dpr)
     return out

@@ -689,3 +689,73 @@ def test_details_columns_never_overlap_the_names(qapp):
         assert status_x is None and end >= NAME_X + 40  # the status column moves into the tooltip
         assert centres[0] - col / 2 >= end
     assert detail_columns(640 + STATUS_W)[2] is not None
+
+
+def test_sidebar_search_and_filter_reach_the_wall(qapp, window):
+    win, start = window, window.start
+
+    def on_wall():
+        return [start.wall.item(r).text() for r in range(start.wall.count()) if not start.wall.item(r).isHidden()]
+
+    assert len(on_wall()) == 3 and win.cbar.count.text() == "(3)"
+    win.game_list.search.setText("celeste")
+    assert on_wall() == ["Celeste"] and win.cbar.count.text() == "(1 of 3)"
+    start.set_piece(0)  # the chips still narrow it further
+    assert on_wall() == ["Celeste"] and start.note.isVisibleTo(start)
+    win.game_list.search.setText("zzz")
+    assert on_wall() == [] and start.empty.isVisibleTo(start) and win.cbar.count.text() == "(0 of 3)"
+    start._show_everything()
+    assert len(on_wall()) == 3 and not start.empty.isVisibleTo(start) and start.piece is None
+    win.status[win.sfile.shortcuts[1].appid] = "check"
+    win.game_list.set_filter("check")
+    assert on_wall() == [win.sfile.shortcuts[1].name] and win.cbar.count.text() == "(1 of 3)"
+    win.game_list.set_filter("all")
+    assert len(on_wall()) == 3
+
+
+def test_banner_header_has_one_filled_button(qapp, window):
+    win = window
+    win.config.data["api_key"] = "x"
+    win.sgdb.match = lambda name: (None, 0)
+    win.sgdb.assets = lambda *a, **k: []
+    win.open_game(0)
+    _pump(qapp)
+    card = win.page.card
+
+    def filled():
+        return [b.text() for b in card.acts.findChildren(type(card.apply_btn)) if b.isVisibleTo(card) and b.isEnabled()
+                and (b.objectName() == "bannerget" or b.property("kind") in ("go", "confirm"))]
+
+    for state, changes, want in (("exact", 0, ["Get All Artwork"]), ("exact", 2, ["Apply (2 Changes)"]),
+                                 ("check", 0, []), ("check", 1, ["Apply (1 Change)"])):
+        card.set_state(state, "Celeste", "2018", 3)
+        card.set_actions(True, changes, False)
+        assert filled() == want, (state, changes)
+    assert "href='confirm'" in card.meta.text()  # "Yes, That's It" is a quiet link beside "Change Game"
+    confirmed = []
+    card.confirm.connect(lambda: confirmed.append(True))
+    card.meta.linkActivated.emit("confirm")
+    assert confirmed
+
+
+def test_option_strips_line_up_and_banners_keep_their_top(qapp, window):
+    from PySide6.QtCore import QSize
+    from PySide6.QtGui import QColor, QPainter, QPixmap
+
+    from steam_artwork_finder.gui.widgets import fill_rect
+
+    win = window
+    win.open_game(0)
+    _pump(qapp)
+    rows = win.page.rows.values()
+    assert len({r.mid_col.geometry().right() for r in rows}) == 1  # every strip starts at the same x
+
+    pm = QPixmap(100, 200)
+    pm.fill(QColor("red"))
+    p = QPainter(pm)
+    p.fillRect(0, 100, 100, 100, QColor("blue"))  # red top half, blue bottom half
+    p.end()
+    centred = fill_rect(pm, QSize(100, 50)).toImage()
+    assert QColor(centred.pixel(50, 0)) == QColor("red") and QColor(centred.pixel(50, 49)) == QColor("blue")
+    top = fill_rect(pm, QSize(100, 50), top=True).toImage()
+    assert QColor(top.pixel(50, 0)) == QColor("red") and QColor(top.pixel(50, 49)) == QColor("red")
