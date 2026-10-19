@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from PySide6.QtCore import QPoint, QRect, QRectF, QSize, Qt, QTimer, Signal
+from PySide6.QtCore import QBuffer, QByteArray, QIODevice, QPoint, QPointF, QRect, QRectF, QSize, Qt, QTimer, Signal
 from PySide6.QtGui import QColor, QFont, QImage, QImageReader, QPainter, QPainterPath, QPen, QPixmap
 from PySide6.QtWidgets import QFrame, QHBoxLayout, QLabel, QLayout, QPushButton, QSizePolicy, QWidget
 
@@ -13,6 +13,34 @@ from .theme import C, q
 
 _cache: dict[tuple, QPixmap] = {}
 FULL_CACHE = 80  # full-size pixmaps kept (the open game's pieces, recent thumbnails)
+
+
+def _largest_frame(reader: QImageReader) -> None:
+    """Point the reader at the biggest image in the file. An .ico holds several
+    sizes and Qt reads the first, often 16 or 32 px, which blurs when scaled up."""
+    if reader.imageCount() <= 1:
+        return
+    best, area = 0, -1
+    for i in range(reader.imageCount()):
+        if not reader.jumpToImage(i):
+            break
+        s = reader.size()
+        if s.width() * s.height() > area:
+            best, area = i, s.width() * s.height()
+    reader.jumpToImage(best)
+
+
+def _read_image(path: Path | None, data: bytes | None) -> QImage:
+    if path is not None:
+        reader = QImageReader(str(path))
+    else:
+        buf = QBuffer()
+        buf.setData(QByteArray(data))
+        buf.open(QIODevice.OpenModeFlag.ReadOnly)
+        reader = QImageReader(buf)
+    reader.setAutoTransform(True)
+    _largest_frame(reader)
+    return reader.read()
 
 
 def load_pixmap(path: Path | None = None, data: bytes | None = None, key=None) -> QPixmap:
@@ -24,11 +52,7 @@ def load_pixmap(path: Path | None = None, data: bytes | None = None, key=None) -
             return QPixmap()
     if key is not None and key in _cache:
         return _cache[key]
-    pm = QPixmap()
-    if path is not None:
-        pm.load(str(path))
-    elif data:
-        pm.loadFromData(data)
+    pm = QPixmap.fromImage(_read_image(path, data)) if path is not None or data else QPixmap()
     if key is not None and not pm.isNull():
         while len(_cache) >= FULL_CACHE:
             _cache.pop(next(iter(_cache)))
@@ -44,6 +68,7 @@ def decode_scaled(path: str, w: int, h: int) -> QImage:
     """
     reader = QImageReader(path)
     reader.setAutoTransform(True)
+    _largest_frame(reader)
     size = reader.size()
     if size.isValid() and w > 0 and h > 0:
         scale = max(w / size.width(), h / size.height())
@@ -68,9 +93,11 @@ class ScaledCache:
         self.pending: set[tuple] = set()
         self.limit = limit
 
-    def get(self, path: Path, size: QSize, on_ready=None) -> QPixmap | None:
+    def get(self, path: Path, size: QSize, on_ready=None, dpr: float = 1.0) -> QPixmap | None:
+        """`dpr` is the screen's scale, so the decode has enough pixels to stay sharp."""
+        w, h = round(size.width() * dpr), round(size.height() * dpr)
         try:
-            key = (str(path), path.stat().st_mtime_ns, size.width(), size.height())
+            key = (str(path), path.stat().st_mtime_ns, w, h)
         except OSError:
             return QPixmap()
         pm = self.ready.get(key)
@@ -84,11 +111,13 @@ class ScaledCache:
             self.pending.discard(key)
             if len(self.ready) >= self.limit:
                 self.ready.clear()
-            self.ready[key] = QPixmap.fromImage(img)  # null if the file wasn't an image
+            pm = QPixmap.fromImage(img)  # null if the file wasn't an image
+            pm.setDevicePixelRatio(dpr)
+            self.ready[key] = pm
             if on_ready:
                 on_ready()
 
-        workers.run(decode_scaled, key[0], size.width(), size.height(), on_done=done,
+        workers.run(decode_scaled, key[0], w, h, on_done=done,
                     on_error=lambda _m, key=key: done(QImage(), key))
         return None
 
@@ -98,13 +127,18 @@ class ScaledCache:
             del self.ready[k]
 
 
-def fill_rect(pm: QPixmap, target: QSize) -> QPixmap:
-    """Scale to cover target, cropping the overflow (like CSS object-fit: cover)."""
+def fill_rect(pm: QPixmap, target: QSize, dpr: float = 1.0) -> QPixmap:
+    """Scale to cover target, cropping the overflow (like CSS object-fit: cover).
+
+    With `dpr` above 1 the result has that many more pixels, for sharp HiDPI drawing."""
+    target = QSize(round(target.width() * dpr), round(target.height() * dpr))
     s = pm.scaled(target, Qt.AspectRatioMode.KeepAspectRatioByExpanding,
                   Qt.TransformationMode.SmoothTransformation)
     x = (s.width() - target.width()) // 2
     y = (s.height() - target.height()) // 2
-    return s.copy(x, y, target.width(), target.height())
+    out = s.copy(x, y, target.width(), target.height())
+    out.setDevicePixelRatio(dpr)
+    return out
 
 
 def draw_checker(p: QPainter, rect: QRectF, size: int = 10):
@@ -225,18 +259,21 @@ class ArtView(QWidget):
             return
         p.setClipPath(clip)
         if not self.backdrop.isNull():
-            p.drawPixmap(self.rect(), fill_rect(self.backdrop, self.size()))
+            p.drawPixmap(self.rect(), fill_rect(self.backdrop, self.size(), self.devicePixelRatioF()))
         elif self.checker:
             draw_checker(p, r)
         if not self.pixmap.isNull():
             if self.checker or not self.backdrop.isNull():
                 # Logos keep their shape, centred with a margin.
-                box = self.size() * (0.7 if not self.backdrop.isNull() else 0.86)
+                dpr = self.devicePixelRatioF()
+                box = self.size() * (0.7 if not self.backdrop.isNull() else 0.86) * dpr
                 s = self.pixmap.scaled(box, Qt.AspectRatioMode.KeepAspectRatio,
                                        Qt.TransformationMode.SmoothTransformation)
-                p.drawPixmap((self.width() - s.width()) // 2, (self.height() - s.height()) // 2, s)
+                s.setDevicePixelRatio(dpr)
+                w, h = s.width() / dpr, s.height() / dpr
+                p.drawPixmap(QPointF((self.width() - w) / 2, (self.height() - h) / 2), s)
             else:
-                p.drawPixmap(self.rect(), fill_rect(self.pixmap, self.size()))
+                p.drawPixmap(self.rect(), fill_rect(self.pixmap, self.size(), self.devicePixelRatioF()))
         elif not self.backdrop.isNull():
             p.fillRect(r, QColor(0, 0, 0, 90))
         p.setClipping(False)
@@ -346,7 +383,7 @@ class Toast(QFrame):
         self.action.setVisible(undo is not None)
         self.adjustSize()
         par = self.parentWidget()
-        self.move((par.width() - self.width()) // 2, par.height() - self.height() - 28)
+        self.move((par.width() - self.width()) // 2, par.height() - self.height() - 52)  # above the status bar
         self.raise_()
         self.show()
         self.timer.start(ms)

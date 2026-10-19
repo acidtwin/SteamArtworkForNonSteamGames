@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from pathlib import Path
+
 from PySide6.QtGui import QColor, QFontMetrics, QGuiApplication, QPalette
 
 C = {
@@ -26,6 +28,10 @@ C = {
     "info_ground": "#1f3346",
     "bad": "#ef7b6c",
     "input": "#14181e",
+    "bar": "#202935",
+    "ok": "#90ba3c",
+    "wait": "#e3b341",
+    "off": "#ef5b4c",
 }
 
 
@@ -59,6 +65,7 @@ def text_width(text: str) -> int:
 
 def stylesheet() -> str:
     c = C
+    tick = (Path(__file__).parent / "icons" / "tick.svg").as_posix()
     return f"""
     QWidget {{ color: {c['text']}; }}
     QMainWindow, #header, QDialog, QMenu {{ background: {c['ground']}; }}
@@ -77,6 +84,7 @@ def stylesheet() -> str:
     QPushButton:focus {{ outline: none; border: 2px solid {c['blue']}; }}
     QPushButton[kind="go"] {{ background: {c['go']}; color: white; padding: 0 18px; font-size: {pt('go')}pt; }}
     QPushButton[kind="go"]:hover {{ background: {c['go_hover']}; }}
+    QPushButton[kind="go"]:disabled {{ background: #242c37; color: {c['text3']}; }}
     QPushButton[kind="confirm"] {{ background: {c['action']}; color: white; }}
     QPushButton[kind="confirm"]:hover {{ background: {c['action_hover']}; }}
     QPushButton[kind="confirm"]:disabled {{ background: #242c37; color: {c['text3']}; }}
@@ -102,7 +110,7 @@ def stylesheet() -> str:
     QComboBox QAbstractItemView {{ background: {c['raised']}; selection-background-color: {c['select']}; }}
     QCheckBox {{ color: {c['text2']}; spacing: 8px; min-height: 40px; }}
     QCheckBox::indicator {{ width: 22px; height: 22px; border-radius: 3px; background: {c['raised']}; border: 1px solid {c['line']}; }}
-    QCheckBox::indicator:checked {{ background: {c['action']}; border-color: {c['action']}; }}
+    QCheckBox::indicator:checked {{ background: {c['action']}; border-color: {c['action']}; image: url("{tick}"); }}
 
     QMenu {{ border: 1px solid {c['line']}; padding: 4px; }}
     QMenu::item {{ padding: 8px 18px; border-radius: 3px; }}
@@ -135,7 +143,6 @@ def stylesheet() -> str:
     #faint {{ color: {c['text3']}; font-size: {pt('faint')}pt; }}
     #label {{ color: {c['text3']}; font-size: {pt('label')}pt; font-weight: 700; letter-spacing: 1px; }}
     #tagmiss {{ background: #3b2422; color: {c['bad']}; border-radius: 2px; padding: 2px 6px; font-size: {pt('label')}pt; font-weight: 700; }}
-    #keybar {{ background: {c['info_ground']}; border-radius: 3px; }}
     #summary {{ background: {c['input']}; border-radius: 3px; }}
     #notice[tone="warn"] {{ background: {c['warn_ground']}; }}
     #notice[tone="info"] {{ background: {c['info_ground']}; }}
@@ -143,6 +150,15 @@ def stylesheet() -> str:
     #toast QLabel {{ color: {c['ground']}; font-weight: 600; }}
     #toast QPushButton {{ background: transparent; color: #0f5aa0; min-height: 40px; }}
     #rowline {{ background: {c['line']}; max-height: 1px; }}
+    #spop {{ background: {c['ground']}; border: 1px solid {c['line']}; border-radius: 4px; }}
+    #spop QPushButton {{ min-height: 36px; padding: 0 12px; }}
+    #spopcheck {{ color: {c['text']}; spacing: 10px; }}
+    #fseg {{ background: {c['panel']}; border-radius: 4px; }}
+    #fseg QPushButton {{ background: transparent; color: {c['text2']}; min-height: 34px; border-radius: 3px; }}
+    #fseg QPushButton:hover {{ color: {c['text']}; }}
+    #fseg QPushButton:checked {{ background: {c['select']}; color: {c['text']}; }}
+    #facct {{ background: {c['panel']}; border-radius: 3px; }}
+    #spopcheck::indicator {{ width: 18px; height: 18px; }}
     #empty {{ background: {c['raised']}; border-radius: 3px; color: {c['text2']}; padding: 12px; }}
     """
 

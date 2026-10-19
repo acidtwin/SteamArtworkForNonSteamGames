@@ -175,6 +175,29 @@ class ShortcutsFile:
         self._stamp = self._disk_stamp()
 
 
+@dataclass
+class Difference:
+    """How a backup differs from the list now: what restoring it would change."""
+
+    back: list[str]  # games in the backup that aren't in the list now (they'd come back)
+    gone: list[str]  # games in the list now that aren't in the backup (they'd go)
+    renamed: int
+    icons: int
+
+
+def compare(backup: Path, now: list[Shortcut]) -> Difference:
+    then = ShortcutsFile(backup).shortcuts
+    old = {s.appid: s for s in then}
+    new = {s.appid: s for s in now}
+    both = old.keys() & new.keys()
+    return Difference(
+        back=[old[a].name for a in old if a not in new],
+        gone=[new[a].name for a in new if a not in old],
+        renamed=sum(1 for a in both if old[a].name != new[a].name),
+        icons=sum(1 for a in both if old[a].icon != new[a].icon),
+    )
+
+
 def _shortcut_maps(root) -> list:
     for k, v in root.items():
         if k.lower() == "shortcuts" and isinstance(v, dict):
