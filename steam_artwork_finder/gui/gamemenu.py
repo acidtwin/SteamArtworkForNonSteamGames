@@ -48,6 +48,11 @@ class PopupRow(QAbstractButton):
     def keyPressEvent(self, e):
         self.window().keyPressEvent(e)  # the menu handles arrows, Enter and Esc
 
+    def leaveEvent(self, e):
+        if self.hasFocus():  # pointing at a greyed-out row, a separator or outside: nothing stays lit
+            self.window().setFocus(Qt.FocusReason.MouseFocusReason)
+        super().leaveEvent(e)
+
 
 class MenuRow(PopupRow):
     def __init__(self, item: Item, parent=None):

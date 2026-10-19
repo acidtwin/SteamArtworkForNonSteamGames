@@ -234,6 +234,11 @@ def test_more_menu_has_sections_and_switches(qapp, window):
     quit_row.click()
     assert win.apply_on_quit and win.popover.on_quit.isChecked() and menu.isVisible()  # a switch keeps it open
     assert win.header.more.property("open")  # drawn pressed while its menu shows
+    from PySide6.QtCore import QEvent
+    reload_row = rows["Reload Game List"]
+    reload_row.setFocus()
+    qapp.sendEvent(reload_row, QEvent(QEvent.Type.Leave))  # the mouse moves off it, e.g. onto a greyed-out row
+    assert not reload_row.hasFocus()
     menu.close()
     _pump(qapp, 50)
     assert not win.header.more.property("open")
