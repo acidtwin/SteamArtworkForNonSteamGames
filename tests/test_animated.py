@@ -204,16 +204,22 @@ def test_see_all_slides_over_the_page_without_squeezing_it(qapp, window, monkeyp
     monkeypatch.setattr(win.tray, "load", lambda: None)
     before = win.page.width()
     win.open_tray(S["grid"])
-    _pump(qapp, 400)
     t = win.tray
+    assert t.is_open() and t._ghost.isVisible() and not t.isVisible()  # a picture of it slides in
+    _pump(qapp, 400)
     assert t.is_open() and win.page.width() == before  # lies over the page
     stage = win.stage.geometry()
     assert t.geometry().right() == stage.right() and t.geometry().top() == stage.top()
-    assert not t._fx.isEnabled()  # no effect once it has settled
+    assert t.isVisible() and not t._ghost.isVisible()  # the real panel once it has settled
     # a click elsewhere in the window closes it, sliding out
     from PySide6.QtCore import QPoint
     from PySide6.QtTest import QTest
     QTest.mouseClick(win.header, Qt.MouseButton.LeftButton, pos=QPoint(400, 10))
     assert not t.is_open()
     _pump(qapp, 400)
-    assert not t.isVisible() and win.page.width() == before
+    assert not t.isVisible() and not t._ghost.isVisible() and win.page.width() == before
+
+    win.open_tray(S["grid"])  # going home mid-slide leaves nothing behind
+    win.go_home()
+    _pump(qapp, 400)
+    assert not t.is_open() and not t.isVisible() and not t._ghost.isVisible()

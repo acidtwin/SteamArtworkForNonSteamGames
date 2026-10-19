@@ -7,7 +7,6 @@ from PySide6.QtGui import QColor, QFont, QFontMetrics, QLinearGradient, QPainter
 from PySide6.QtWidgets import (
     QApplication,
     QButtonGroup,
-    QGraphicsOpacityEffect,
     QHBoxLayout,
     QLabel,
     QListView,
@@ -26,6 +25,7 @@ from ..artwork import SLOTS
 from . import icons, theme
 from .theme import q
 from .gamepage import draw_new_tag
+from .widgets import _cache as pixmap_cache
 from .widgets import FlowLayout, draw_animated_tag, draw_badge, draw_checker, fill_rect, label
 
 ORDER = ("grid", "wide", "hero", "logo", "icon")
@@ -139,6 +139,22 @@ class _Shadow(QWidget):
         p.fillRect(self.rect(), g)
 
 
+class _Ghost(QWidget):
+    """A still picture of the tray that slides and fades in its place, so nothing inside the
+    tray (its list, thumbnails still arriving, hover previews) lays out or repaints mid-slide."""
+
+    def __init__(self, parent):
+        super().__init__(parent)
+        self.setAttribute(Qt.WidgetAttribute.WA_TransparentForMouseEvents)
+        self.pm = QPixmap()
+        self.opacity = 1.0
+
+    def paintEvent(self, _):
+        p = QPainter(self)
+        p.setOpacity(self.opacity)
+        p.drawPixmap(0, 0, self.pm)
+
+
 class OptionTray(QWidget):
     closed = Signal()
     use = Signal(object, object)  # slot, Asset (no longer emitted: picks stage through win.stage_pick)
@@ -154,9 +170,11 @@ class OptionTray(QWidget):
         self.setAttribute(Qt.WidgetAttribute.WA_StyledBackground)
         self.area: QWidget | None = None  # the part of the window it lies over (set by place_over)
         self._shadow: _Shadow | None = None
-        self._fx = QGraphicsOpacityEffect(self, opacity=1.0)
-        self._fx.setEnabled(False)  # only while sliding: an effect makes every repaint go through it
-        self.setGraphicsEffect(self._fx)
+        self._ghost: _Ghost | None = None
+        self._open = False  # shown, or sliding in
+        self._swapping = False  # hiding the tray behind its ghost, not closing it
+        self._entering = False  # filling or sliding in: thumbnails wait until it's in place
+        self._held: list[tuple] = []  # (asset, item) whose thumbnails wait
         self._t = 1.0  # 0 = out of sight on the right, 1 = in place
         self._anim = QVariantAnimation(self)
         self._anim.valueChanged.connect(self._step)
@@ -262,10 +280,16 @@ class OptionTray(QWidget):
         self._show_empty(False)
         self._chips([])
         self.more.hide()
-        self._appear()
         self._update_buttons()
+        self._held.clear()
+        if not self.is_open() and self.area is not None:
+            self._entering = True  # fill it before picturing it, holding back what's slow
+            self.load()
+            self._appear()
+        else:
+            self._appear()
+            self.load()
         self.slot_changed.emit(slot)
-        self.load()
 
     def load(self):
         game = self.win.current_game()
@@ -295,7 +319,7 @@ class OptionTray(QWidget):
             it.setToolTip(f"{a.width} × {a.height} · {'animated · ' if a.animated else ''}"
                           f"{a.style or 'style unknown'} · by {a.author or 'unknown'}")
             self.list.addItem(it)
-            self.win.load_thumb(a, it)
+            self._thumb(a, it)
         self.more.setVisible(len(assets) >= 50)
         self._chips(sorted({a.style for a in self.assets if a.style}), any(a.animated for a in self.assets))
         self._filter()
@@ -307,6 +331,18 @@ class OptionTray(QWidget):
             info = SLOTS[slot.key]
             self.status.setText(f"{len(self.assets)} options{self._animated_count()}. Hover to preview, then "
                                 f"“Pick This {info.label.title()}”. Apply saves your picks.")
+
+    def _thumb(self, a, it):
+        """Load an option's thumbnail; while the tray slides in, only ones already to hand, as
+        decoding the rest (or starting video) mid-slide would make it stutter."""
+        if not self._entering:
+            self.win.load_thumb(a, it)
+            return
+        pm = None if a.animated else pixmap_cache.get(("thumb", a.thumb))
+        if pm is not None:
+            it.setData(ROLE_PIX, pm)
+        else:
+            self._held.append((a, it))
 
     def _animated_count(self) -> str:
         """", 3 animated" (or ", none animated") where SteamGridDB was asked for animated options."""
@@ -332,6 +368,8 @@ class OptionTray(QWidget):
     def _chips(self, styles: list[str], animated: bool = False):
         for b in self.chips.buttons():
             self.chips.removeButton(b)
+            self.chip_row.removeWidget(b)  # out of the layout now, not when it's deleted
+            b.hide()
             b.deleteLater()
         for name in ["all"] + (["animated"] if animated else []) + styles:
             b = QPushButton(name.replace("_", " ").capitalize() if name != "all" else "All")
@@ -429,7 +467,7 @@ class OptionTray(QWidget):
         self._update_buttons()
 
     def close_tray(self):
-        if self._leaving or not self.isVisible():
+        if self._leaving or not self._open:
             return
         self.preview.emit(self.slot, None, None)
         self._disappear()
@@ -444,22 +482,42 @@ class OptionTray(QWidget):
         self.setParent(area.parentWidget())
         self._shadow = _Shadow(area.parentWidget())
         self._shadow.hide()
+        self._ghost = _Ghost(area.parentWidget())
+        self._ghost.hide()
         area.installEventFilter(self)
         self.hide()
 
     def is_open(self) -> bool:
-        return self.isVisible() and not self._leaving
+        if self.area is None:
+            return self.isVisible()
+        return self._open and not self._leaving
 
     def _place(self):
+        """The tray sits in place; its ghost and shadow follow the slide."""
         if self.area is None:
             return
         r = self.area.geometry()
-        x = r.right() + 1 - self.width() + round((1 - self._t) * (self.width() + SHADOW_W))
+        x = r.right() + 1 - self.width()
         self.setGeometry(x, r.y(), self.width(), r.height())
-        if self._shadow is not None:
-            self._shadow.setGeometry(x - SHADOW_W, r.y(), SHADOW_W, r.height())
-            self._shadow.strength = self._t
-            self._shadow.update()
+        x += round((1 - self._t) * (self.width() + SHADOW_W))
+        self._ghost.setGeometry(x, r.y(), self.width(), r.height())
+        self._shadow.setGeometry(x - SHADOW_W, r.y(), SHADOW_W, r.height())
+        self._shadow.strength = self._t
+        self._shadow.update()
+
+    def _snapshot(self):
+        """Picture the tray as it will look, for its ghost to slide."""
+        self._place()
+        # A hidden tray lays itself out lazily; settle everything first so the picture is right.
+        QApplication.sendPostedEvents(None, QEvent.Type.LayoutRequest.value)
+        self.layout().activate()
+        self.list.doItemsLayout()
+        self._ghost.pm = self.grab()
+
+    def _hide_quietly(self):
+        self._swapping = True
+        self.hide()
+        self._swapping = False
 
     def _appear(self):
         if self.area is None:
@@ -469,13 +527,16 @@ class OptionTray(QWidget):
             self.raise_()
             return
         self._leaving = False
-        if not self.isVisible():
+        if not self._open:
             self._t = 0.0
-            self._place()
-            self._shadow.show()
-            self.show()
+        self._open = True
+        self._snapshot()
+        self._hide_quietly()
+        self._step(self._t)
+        self._shadow.show()
+        self._ghost.show()
         self._shadow.raise_()
-        self.raise_()
+        self._ghost.raise_()
         self._run(1.0, SLIDE_IN, QEasingCurve.Type.OutCubic)
         QApplication.instance().installEventFilter(self)
 
@@ -485,6 +546,11 @@ class OptionTray(QWidget):
             return
         self._leaving = True
         QApplication.instance().removeEventFilter(self)
+        if self.isVisible():
+            self._ghost.pm = self.grab()
+            self._hide_quietly()
+            self._ghost.show()
+            self._ghost.raise_()
         self._run(0.0, SLIDE_OUT, QEasingCurve.Type.InCubic)
 
     def _run(self, end: float, ms: int, curve):
@@ -493,27 +559,51 @@ class OptionTray(QWidget):
         self._anim.setEasingCurve(curve)
         self._anim.setStartValue(self._t)
         self._anim.setEndValue(end)
-        self._fx.setEnabled(True)
         self._anim.start()
 
     def _step(self, v):
         self._t = float(v)
-        self._fx.setOpacity(self._t)
-        self._place()
+        self._ghost.opacity = self._t
+        self._place()  # a move only: the ghost just redraws its picture
 
     def _settled(self):
-        self._fx.setEnabled(False)
+        self._ghost.hide()
+        self._ghost.pm = QPixmap()
         if self._leaving:
-            self._leaving = False
+            self._leaving = self._open = self._entering = False
+            self._held.clear()
+            self._shadow.hide()
+        else:
+            self._place()
+            self.show()
+            self.raise_()
+            self._shadow.raise_()
+            self._entering = False
+            held, self._held = self._held, []
+            for a, it in held:
+                self.win.load_thumb(a, it)
+
+    def close_now(self):
+        """Gone at once, no slide (leaving the game page)."""
+        if self.isVisible():
             self.hide()
+        else:
+            self._reset()
+
+    def _reset(self):
+        self._anim.stop()
+        self._entering = False
+        self._held.clear()
+        self._open = self._leaving = False
+        self._t = 0.0
+        for w in (self._shadow, self._ghost):
+            if w is not None:
+                w.hide()
+        QApplication.instance().removeEventFilter(self)
 
     def hideEvent(self, e):
-        self._anim.stop()
-        self._fx.setEnabled(False)
-        self._leaving = False
-        if self._shadow is not None:
-            self._shadow.hide()
-        QApplication.instance().removeEventFilter(self)
+        if not self._swapping:  # closed outright
+            self._reset()
         super().hideEvent(e)
 
     def eventFilter(self, obj, e):

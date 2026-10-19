@@ -963,7 +963,7 @@ class MainWindow(QMainWindow):
         if 0 <= idx < len(self.sfile.shortcuts):
             self.forget_files(self.sfile.shortcuts[idx].appid)  # the page shows what's on disk now
         if idx < 0:
-            self.tray.hide()
+            self.tray.close_now()
             self.stage.setCurrentWidget(self.start)
             self.start.refresh()
             self.update_chrome()
