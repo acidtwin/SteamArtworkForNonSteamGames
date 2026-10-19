@@ -556,7 +556,10 @@ class MainWindow(QMainWindow):
 
     def _clear_note(self):
         self._note = None
-        self._show_status()
+        if self.busy or self._matching:
+            self._show_status()
+        else:
+            self.statusbar.fade_message()
 
     def _show_status(self):
         """The left of the status bar: running work, then the startup match, then a short note."""

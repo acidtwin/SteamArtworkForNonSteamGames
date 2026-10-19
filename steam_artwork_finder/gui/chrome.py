@@ -575,6 +575,8 @@ CONNECTION = {"connected": ("Connected", "ok"), "connecting": ("Connecting", "wa
 class StatusBar(QWidget):
     """The 36 px bar at the bottom: a message on the left, Steam and SteamGridDB state on the right."""
 
+    MESSAGE_FADE_MS = 400  # slower than a menu's fade, so a message you were reading is seen to go
+
     steam_clicked = Signal()
     process_clicked = Signal()
     connection_clicked = Signal()
@@ -613,6 +615,12 @@ class StatusBar(QWidget):
         left.setSizePolicy(QSizePolicy.Policy.Ignored, QSizePolicy.Policy.Preferred)
         lay.addWidget(left, 1)
         self.left = left
+        self._msg_fx = QGraphicsOpacityEffect(left, opacity=1.0)
+        self._msg_fx.setEnabled(False)  # only while fading, so the text stays crisp otherwise
+        left.setGraphicsEffect(self._msg_fx)
+        self._msg_fade = QVariantAnimation(self, duration=self.MESSAGE_FADE_MS, startValue=1.0, endValue=0.0)
+        self._msg_fade.valueChanged.connect(lambda v: self._msg_fx.setOpacity(float(v)))
+        self._msg_fade.finished.connect(lambda: self.set_message(None, ""))
 
         self.steam = StatusItem()
         self.steam.clicked.connect(self.steam_clicked)
@@ -642,8 +650,23 @@ class StatusBar(QWidget):
         self.set_process("closed")
         self.set_connection("disconnected")
 
+    def fade_message(self):
+        """Fade the message out, then leave the left side empty."""
+        if self._msg_fade.state() == QVariantAnimation.State.Running:
+            return
+        if not self.message.text():
+            return self.set_message(None, "")
+        self._msg_fx.setEnabled(True)
+        self._msg_fade.start()
+
     def set_message(self, kind: str | None, text: str = ""):
         """Left side: "busy" (spinner), "info", "done" (green check) or None (empty)."""
+        if self._msg_fade.state() == QVariantAnimation.State.Running:
+            if kind is None:
+                return  # already fading to empty
+            self._msg_fade.stop()
+        self._msg_fx.setOpacity(1.0)
+        self._msg_fx.setEnabled(False)
         self.kind = kind
         self.spinner.setVisible(kind == "busy")
         self.done_icon.setVisible(kind == "done")

@@ -158,7 +158,11 @@ def test_status_bar_shows_matching_and_reloads(qapp, window, monkeypatch):
     win.reload_game_list()
     assert win.statusbar.message.accessibleName() == "Game list reloaded · 3 games, 1 new"
     win._note_timer.timeout.emit()
-    assert win.statusbar.message.text() == ""
+    assert win.statusbar.message.text()  # it fades out, rather than vanishing
+    win.refresh_all()  # a refresh meanwhile doesn't cut the fade short
+    assert win.statusbar.message.text()
+    _pump(qapp, 1000, until=lambda: not win.statusbar.message.text())
+    assert win.statusbar.message.text() == "" and not win.statusbar._msg_fx.isEnabled()
 
 
 def test_game_menu_opens_the_game(qapp, window):
