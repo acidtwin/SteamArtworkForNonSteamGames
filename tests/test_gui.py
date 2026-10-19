@@ -188,3 +188,30 @@ def test_steam_folder_popover_searches_and_switches(qapp, window, tmp_path, stea
     _pump(qapp, 400)
     assert not pop.isVisible()
     assert steamfolder.tilde(tmp_path / "x") == "~/x"
+
+
+def test_quit_prompt_lists_games_and_remembers(qapp, window, monkeypatch):
+    from steam_artwork_finder.artwork import SLOTS
+    from steam_artwork_finder.gui import dialogs
+    from steam_artwork_finder.sgdb import Asset
+
+    win = window
+    win.open_game(0)
+    _pump(qapp)
+    asset = Asset(7, "https://x/cover.png", "https://x/t.png", 600, 900, "image/png", 0, "", "someone")
+    win.stage_pick(SLOTS["grid"], asset)
+    win.stage_pick(SLOTS["logo"], asset)
+    seen = {}
+
+    def fake_exec(dlg):
+        seen["text"] = [w.text() for w in dlg.findChildren(dialogs.QLabel)]
+        dlg.remember.setChecked(True)
+        dlg._done("apply")
+        return 1
+
+    monkeypatch.setattr(dialogs.QuitDialog, "exec", fake_exec)
+    assert win._ask_on_quit() == "apply"
+    assert "Celeste" in seen["text"] and "New cover and logo" in seen["text"] and "2 CHANGES" in seen["text"]
+    assert win.apply_on_quit and win.popover.on_quit.isChecked()
+    win.popover.on_quit.setChecked(False)  # turned back off from the Steam pop-over
+    assert not win.apply_on_quit

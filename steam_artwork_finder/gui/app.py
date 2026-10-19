@@ -41,13 +41,18 @@ from ..steam import (
 from . import icons, workers
 from .chrome import ContentBar, Header, StatusBar, SteamPopover
 from .steamfolder import SteamFolderPopover
-from .dialogs import KeyPopover, MatchDialog, RestoreDialog
+from .dialogs import KeyPopover, MatchDialog, QuitDialog, RestoreDialog
 from .gamepage import GamePage
 from .library import GameList, StartPage
 from .tray import ROLE_PIX, OptionTray
 from .widgets import ArtView, Notice, Toast, label, load_pixmap
 
 ORDER = ("grid", "wide", "hero", "logo", "icon")
+
+
+def _join(words: list[str]) -> str:
+    """"a", "a and b", "a, b and c"."""
+    return words[0] if len(words) == 1 else ", ".join(words[:-1]) + " and " + words[-1]
 
 
 def plural(n: int, word: str) -> str:
@@ -160,6 +165,8 @@ class MainWindow(QMainWindow):
         self.folderpop.account_chosen.connect(self._account_changed)
         self.popover.set_auto_restart(self.auto_restart)
         self.popover.auto_restart_changed.connect(self._set_auto_restart)
+        self.popover.set_apply_on_quit(self.apply_on_quit)
+        self.popover.apply_on_quit_changed.connect(self._set_apply_on_quit)
         self.popover.restart_clicked.connect(self.restart_steam_now)
 
         self.toast = Toast(central)
@@ -475,6 +482,44 @@ class MainWindow(QMainWindow):
     @property
     def auto_restart(self) -> bool:
         return self.config.data.get("auto_restart_steam", True)
+
+    @property
+    def apply_on_quit(self) -> bool:
+        return self.config.data.get("apply_on_quit", False)
+
+    def _set_apply_on_quit(self, on: bool):
+        self.config.data["apply_on_quit"] = on
+        self.config.save()
+
+    def _ask_on_quit(self) -> str | None:
+        """"apply", "discard", or None (cancel), from the quit prompt."""
+        games = []
+        for appid in self.pending.games():
+            sc = self.sfile.find(appid) if self.sfile else None
+            if sc is None:
+                continue
+            picks = self.pending.for_game(appid)
+            ordered = sorted(picks.items(), key=lambda kp: ORDER.index(kp[0]))
+            names = [SLOTS[k].label.lower() for k, _ in ordered]
+            clears = {p.clears for _, p in ordered}
+            if clears == {False}:
+                what = "new " + _join(names)
+            elif clears == {True}:
+                what = _join(names) + " removed"
+            else:
+                what = _join([f"{n} removed" if p.clears else f"new {n}" for n, (_, p) in zip(names, ordered)])
+            cover = self.pick_pixmap(sc, "grid")
+            if cover is None and not (picks.get("grid") and picks["grid"].clears):
+                path = self.cover_path(sc)
+                cover = load_pixmap(path) if path else None
+            games.append((sc.name or "(unnamed)", what[:1].upper() + what[1:], len(picks), cover))
+        dlg = QuitDialog(self, games)
+        if not dlg.exec():
+            return None
+        if dlg.choice == "apply" and dlg.remember.isChecked():
+            self._set_apply_on_quit(True)
+            self.popover.set_apply_on_quit(True)
+        return dlg.choice
 
     def _set_auto_restart(self, on: bool):
         self.config.data["auto_restart_steam"] = on
@@ -1195,18 +1240,11 @@ class MainWindow(QMainWindow):
             e.ignore()
             return
         if self.pending and not self._close_after_apply:
-            n = len(self.pending.games())
-            box = QMessageBox(QMessageBox.Icon.Question, APP_NAME,
-                              f"New artwork for {plural(n, 'game')} hasn't been applied yet.", parent=self)
-            apply = box.addButton("Apply and Quit", QMessageBox.ButtonRole.AcceptRole)
-            box.addButton("Discard", QMessageBox.ButtonRole.DestructiveRole)
-            cancel = box.addButton(QMessageBox.StandardButton.Cancel)
-            box.setDefaultButton(apply)
-            box.exec()
-            if box.clickedButton() is cancel:
+            choice = "apply" if self.apply_on_quit else self._ask_on_quit()
+            if choice is None:
                 e.ignore()
                 return
-            if box.clickedButton() is apply:
+            if choice == "apply":
                 self._close_after_apply = True
                 e.ignore()
                 self.apply_all()

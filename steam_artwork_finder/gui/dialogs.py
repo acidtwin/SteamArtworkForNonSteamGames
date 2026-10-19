@@ -5,8 +5,9 @@ from __future__ import annotations
 import time
 
 from PySide6.QtCore import QPoint, QRect, QRectF, QUrl, Qt, Signal
-from PySide6.QtGui import QColor, QDesktopServices, QFont, QGuiApplication, QLinearGradient, QPainter
+from PySide6.QtGui import QColor, QDesktopServices, QFont, QGuiApplication, QLinearGradient, QPainter, QPixmap
 from PySide6.QtWidgets import (
+    QCheckBox,
     QDialog,
     QDialogButtonBox,
     QFrame,
@@ -263,6 +264,126 @@ class MatchDialog(QDialog):
         it = self.list.currentItem()
         return it.data(Qt.ItemDataRole.UserRole) if it else None
 
+
+
+class _Cover(QWidget):
+    """A small cover, or a blank card when the game has none yet."""
+
+    def __init__(self, pm: QPixmap | None, parent=None):
+        super().__init__(parent)
+        self.pm = pm
+        self.setFixedSize(30, 45)
+
+    def paintEvent(self, _):
+        p = QPainter(self)
+        p.setRenderHint(QPainter.RenderHint.Antialiasing)
+        p.setRenderHint(QPainter.RenderHint.SmoothPixmapTransform)
+        r = QRectF(self.rect())
+        if self.pm is not None and not self.pm.isNull():
+            from PySide6.QtGui import QPainterPath
+
+            path = QPainterPath()
+            path.addRoundedRect(r, 2, 2)
+            p.setClipPath(path)
+            p.drawPixmap(r, self.pm, QRectF(self.pm.rect()))
+        else:
+            p.setPen(Qt.PenStyle.NoPen)
+            p.setBrush(QColor(C["raised"]))
+            p.drawRoundedRect(r, 2, 2)
+
+
+class QuitDialog(QDialog):
+    """Asked on quit when artwork is waiting: Apply and Quit, Discard, or Cancel,
+    with "always apply when I quit" so it needn't ask again."""
+
+    SHOWN = 3  # games listed; the rest are counted
+
+    def __init__(self, parent, games: list[tuple[str, str, int, QPixmap | None]]):
+        """games: (name, what changed, how many changes, cover) for each waiting game."""
+        super().__init__(parent)
+        self.setWindowTitle(QGuiApplication.applicationDisplayName() or "Steam Artwork for Non-Steam Games")
+        self.setMinimumWidth(460)
+        self.choice: str | None = None  # "apply", "discard", or None for cancel
+        outer = QVBoxLayout(self)
+        outer.setContentsMargins(0, 0, 0, 0)
+        outer.setSpacing(0)
+        body = QVBoxLayout()
+        body.setContentsMargins(18, 18, 18, 18)
+        body.setSpacing(12)
+        title = QLabel("Apply your new artwork before quitting?")
+        f = QFont(title.font())
+        f.setPointSizeF(theme.pt("heading"))
+        f.setWeight(QFont.Weight.Bold)
+        title.setFont(f)
+        body.addWidget(title)
+        for name, what, n, pm in games[:self.SHOWN]:
+            row = QFrame()
+            row.setObjectName("quitgame")
+            row.setStyleSheet(f"#quitgame {{ background: {C['panel']}; border-radius: 3px; }}")
+            rl = QHBoxLayout(row)
+            rl.setContentsMargins(6, 6, 10, 6)
+            rl.setSpacing(10)
+            rl.addWidget(_Cover(pm))
+            words = QVBoxLayout()
+            words.setSpacing(1)
+            nl = QLabel(name)
+            nf = QFont(nl.font())
+            nf.setWeight(QFont.Weight.DemiBold)
+            nl.setFont(nf)
+            words.addWidget(nl)
+            wl = QLabel(what)
+            wl.setStyleSheet(f"color: {C['text3']};")
+            words.addWidget(wl)
+            rl.addLayout(words, 1)
+            pill = QLabel(f"{n} CHANGE{'' if n == 1 else 'S'}")
+            pf = QFont(pill.font())
+            pf.setPointSizeF(theme.pt("tag"))
+            pf.setWeight(QFont.Weight.ExtraBold)
+            pill.setFont(pf)
+            pill.setStyleSheet(f"background: #2c3a1a; color: {C['ok']}; border-radius: 2px; padding: 0 7px;")
+            pill.setFixedHeight(20)
+            rl.addWidget(pill, 0, Qt.AlignmentFlag.AlignVCenter)
+            row.setAccessibleName(f"{name}: {what}")
+            body.addWidget(row)
+        if len(games) > self.SHOWN:
+            more = len(games) - self.SHOWN
+            ml = QLabel(f"and {more} more game{'' if more == 1 else 's'}")
+            ml.setStyleSheet(f"color: {C['text3']};")
+            body.addWidget(ml)
+        self.remember = QCheckBox("Always apply when I quit, and don't ask again")
+        self.remember.setObjectName("spopcheck")
+        self.remember.setToolTip("You can turn this off again in the Steam pop-over in the status bar")
+        body.addWidget(self.remember)
+        outer.addLayout(body)
+
+        foot = QFrame()
+        foot.setObjectName("quitfoot")
+        foot.setStyleSheet(f"#quitfoot {{ background: #1a1e25; border-top: 1px solid {C['line']}; }}")
+        fl = QHBoxLayout(foot)
+        fl.setContentsMargins(18, 12, 18, 12)
+        fl.setSpacing(8)
+        discard = QPushButton("Discard")
+        discard.setIcon(icons.icon("trash", 15, C["bad"]))
+        discard.setStyleSheet(f"QPushButton {{ background: transparent; color: {C['bad']}; padding: 0 8px; }}"
+                              f"QPushButton:hover {{ background: rgba(239,123,108,.12); }}")
+        discard.setAccessibleDescription("Quit and throw away the artwork that hasn't been applied")
+        discard.clicked.connect(lambda: self._done("discard"))
+        fl.addWidget(discard)
+        fl.addStretch(1)
+        cancel = QPushButton("Cancel")
+        cancel.clicked.connect(self.reject)
+        fl.addWidget(cancel)
+        self.apply = QPushButton("Apply and Quit")
+        self.apply.setIcon(icons.icon("check", 15, "white"))
+        self.apply.setProperty("kind", "confirm")
+        self.apply.setDefault(True)
+        self.apply.clicked.connect(lambda: self._done("apply"))
+        fl.addWidget(self.apply)
+        outer.addWidget(foot)
+
+    def _done(self, choice: str):
+        self.choice = choice
+        self.accept()
 
 
 class RestoreDialog(QDialog):

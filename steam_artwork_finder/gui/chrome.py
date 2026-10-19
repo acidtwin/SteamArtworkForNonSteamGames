@@ -784,6 +784,7 @@ class SteamPopover(Overlay):
 
     restart_clicked = Signal()
     auto_restart_changed = Signal(bool)
+    apply_on_quit_changed = Signal(bool)
 
     def __init__(self, parent):
         super().__init__(parent)
@@ -808,6 +809,10 @@ class SteamPopover(Overlay):
         self.auto.setObjectName("spopcheck")
         self.auto.toggled.connect(self.auto_restart_changed)
         lay.addWidget(self.auto)
+        self.on_quit = QCheckBox("Apply waiting artwork when I quit, without asking")
+        self.on_quit.setObjectName("spopcheck")
+        self.on_quit.toggled.connect(self.apply_on_quit_changed)
+        lay.addWidget(self.on_quit)
         row = QHBoxLayout()
         row.setSpacing(8)
         row.addStretch(1)
@@ -819,6 +824,11 @@ class SteamPopover(Overlay):
         row.addWidget(self.close_btn)
         lay.addLayout(row)
         self.state = "closed"
+
+    def set_apply_on_quit(self, on: bool):
+        self.on_quit.blockSignals(True)
+        self.on_quit.setChecked(on)
+        self.on_quit.blockSignals(False)
 
     def set_auto_restart(self, on: bool):
         self.auto.blockSignals(True)
