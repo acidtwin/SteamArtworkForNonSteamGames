@@ -158,9 +158,10 @@ def draw_checker(p: QPainter, rect: QRectF, size: int = 10):
     p.restore()
 
 
-def draw_dashed_empty(p: QPainter, rect: QRectF, text: str, plus: bool = True, focus=False):
+def draw_dashed_empty(p: QPainter, rect: QRectF, text: str, plus: bool = True, focus=False,
+                      ground: QColor | None = None):
     p.save()
-    p.fillRect(rect, QColor("#1f2a38"))
+    p.fillRect(rect, ground if ground is not None else QColor("#1f2a38"))
     pen = QPen(q("blue") if focus else QColor("#4a5666"), 1.5, Qt.PenStyle.DashLine)
     p.setPen(pen)
     p.drawRoundedRect(rect.adjusted(1, 1, -1, -1), 3, 3)
@@ -279,8 +280,19 @@ class ArtView(QWidget):
         r = QRectF(self.rect())
         clip = QPainterPath()
         clip.addRoundedRect(r, self.round, self.round)
-        if self.pixmap.isNull() and self.backdrop.isNull():
-            draw_dashed_empty(p, r, self.empty_text, focus=self.hasFocus())
+        focus = theme.kbd_focus(self)
+        if self.pixmap.isNull():
+            if not self.backdrop.isNull():
+                # An empty logo over its banner: the slot stays plainly empty, the banner faint behind it.
+                bd, _art = self._render()
+                p.setClipPath(clip)
+                p.setOpacity(0.35)
+                p.drawPixmap(self.rect(), bd)
+                p.setOpacity(1.0)
+                p.setClipping(False)
+                draw_dashed_empty(p, r, self.empty_text, focus=focus, ground=QColor(31, 42, 56, 215))
+            else:
+                draw_dashed_empty(p, r, self.empty_text, focus=focus)
             return
         p.setClipPath(clip)
         bd, art = self._render()
@@ -295,15 +307,27 @@ class ArtView(QWidget):
                 p.drawPixmap(QPointF((self.width() - w) / 2, (self.height() - h) / 2), art)
             else:
                 p.drawPixmap(self.rect(), art)
-        elif bd is not None:
-            p.fillRect(r, QColor(0, 0, 0, 90))
         p.setClipping(False)
         if self.badge:
             draw_badge(p, r)
-        if self.selected or self.hasFocus() or self.underMouse():
-            p.setPen(QPen(q("blue") if (self.selected or self.hasFocus()) else QColor("#5a6a7e"), 2))
+        # Picked: a blue outline and a ticked corner. Keyboard focus: a white ring inside it, so the
+        # option you're on never looks like a second pick.
+        if self.selected or self.underMouse():
+            p.setPen(QPen(q("blue") if self.selected else QColor("#5a6a7e"), 2))
             p.setBrush(Qt.BrushStyle.NoBrush)
             p.drawRoundedRect(r.adjusted(1, 1, -1, -1), self.round, self.round)
+        if self.selected:
+            d = 20
+            tick = QRectF(r.right() - d - 5, r.top() + 5, d, d)
+            p.setPen(Qt.PenStyle.NoPen)
+            p.setBrush(q("blue"))
+            p.drawEllipse(tick)
+            icons.draw(p, "tick", tick.adjusted(4, 4, -4, -4).toRect(), QColor("white"))
+        if focus:
+            inset = 4 if self.selected else 1
+            p.setPen(QPen(q("text"), 2))
+            p.setBrush(Qt.BrushStyle.NoBrush)
+            p.drawRoundedRect(r.adjusted(inset, inset, -inset, -inset), self.round, self.round)
 
     def enterEvent(self, e):
         self.hovered.emit(True)
@@ -386,6 +410,7 @@ class Toast(QFrame):
     def __init__(self, parent: QWidget):
         super().__init__(parent)
         self.setObjectName("toast")
+        self.center_on: QWidget | None = None  # the pane to centre on; the whole window if None
         lay = QHBoxLayout(self)
         lay.setContentsMargins(16, 4, 6, 4)
         self.label = QLabel()
@@ -403,11 +428,20 @@ class Toast(QFrame):
         self._fn = undo
         self.action.setVisible(undo is not None)
         self.adjustSize()
-        par = self.parentWidget()
-        self.move((par.width() - self.width()) // 2, par.height() - self.height() - 52)  # above the status bar
+        self.place()
         self.raise_()
         self.show()
         self.timer.start(ms)
+
+    def place(self):
+        """Bottom-centre of `center_on` (the main pane, as in Steam), else of the window, above the status bar."""
+        par = self.parentWidget()
+        area = par.rect()
+        target = self.center_on
+        if target is not None and target.isVisible():
+            area = QRect(target.mapTo(par, QPoint(0, 0)), target.size())
+        x = area.x() + (area.width() - self.width()) // 2
+        self.move(max(8, min(x, par.width() - self.width() - 8)), par.height() - self.height() - 52)
 
     def _act(self):
         fn, self._fn = self._fn, None
@@ -467,7 +501,7 @@ class FlowLayout(QLayout):
     def _do_layout(self, rect, test):
         x, y, line = rect.x(), rect.y(), 0
         for item in self._items:
-            if item.widget() is not None and not item.widget().isVisible() and not test:
+            if item.widget() is not None and item.widget().isHidden():  # hidden on purpose (not just not shown yet)
                 continue
             hint = item.sizeHint()
             if x + hint.width() > rect.right() + 1 and line > 0:

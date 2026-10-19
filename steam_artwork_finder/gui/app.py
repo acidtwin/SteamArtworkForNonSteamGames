@@ -10,6 +10,7 @@ from PySide6.QtGui import QAction, QDesktopServices, QKeySequence, QPixmap
 from PySide6.QtWidgets import (
     QApplication,
     QFileDialog,
+    QHBoxLayout,
     QListWidgetItem,
     QMainWindow,
     QMenu,
@@ -38,10 +39,10 @@ from ..steam import (
     steam_running,
     wait_until_closed,
 )
-from . import icons, workers
+from . import icons, theme, workers
 from .chrome import ContentBar, Header, StatusBar, SteamPopover
 from .steamfolder import SteamFolderPopover
-from .dialogs import KeyPopover, MatchDialog, QuitDialog, RestoreDialog
+from .dialogs import AboutDialog, ConfirmDialog, KeyPopover, MatchDialog, QuitDialog, RestoreDialog
 from .gamepage import GamePage
 from .library import GameList, StartPage
 from .tray import ROLE_PIX, OptionTray
@@ -77,6 +78,7 @@ def is_exact(sc_name: str, game_name: str) -> bool:
 class MainWindow(QMainWindow):
     def __init__(self):
         super().__init__()
+        theme.track_focus()
         self.setWindowTitle(APP_NAME)
         self.setWindowIcon(icons.app_icon())
         self.resize(1280, 800)  # Steam Deck screen; main() maximises on screens that small
@@ -101,6 +103,7 @@ class MainWindow(QMainWindow):
         self.last_errors: list[str] = []
         self.current = -1
         self.busy = ""  # "" | "fetch" | "apply" | "restart"
+        self._stop_fill = False  # the user asked a Get Artwork run to stop
         self.progress_text = ""
         self.restart_needed = False
         self.conn = "disconnected"
@@ -168,12 +171,14 @@ class MainWindow(QMainWindow):
         self.statusbar.steam_clicked.connect(self.show_folder_popover)
         self.statusbar.process_clicked.connect(self.show_steam_popover)
         self.statusbar.connection_clicked.connect(self.ask_api_key)
+        self.statusbar.stop_clicked.connect(self.stop_fill)
         cl.addWidget(self.statusbar)
         self.split.addWidget(col)
 
         self.tray = OptionTray(self)
         self.tray.hide()
         self.tray.preview.connect(self._tray_preview)
+        self.tray.slot_changed.connect(self._show_row)
         self.split.addWidget(self.tray)
         self.split.setStretchFactor(1, 1)
         self.split.setSizes([300, 980, 0])
@@ -195,6 +200,7 @@ class MainWindow(QMainWindow):
         self.popover.restart_clicked.connect(self.restart_steam_now)
 
         self.toast = Toast(central)
+        self.toast.center_on = self.stage
         self.steam_timer = QTimer(self, interval=5000, timeout=self._poll_steam)
         self.steam_timer.start()
         for keys, fn in ((QKeySequence.StandardKey.Find, lambda: self.game_list.search.setFocus()),
@@ -222,7 +228,7 @@ class MainWindow(QMainWindow):
             "Settings",
             Item("Steam Folder…", "folder", self.show_folder_popover),
             Item("SteamGridDB API Key…", "key", self.ask_api_key),
-            Item("Restart Steam When I Apply", "restart", self._menu_auto_restart, toggle=self.auto_restart),
+            Item("Restart Steam When I Apply", "power", self._menu_auto_restart, toggle=self.auto_restart),
             Item("Apply When I Quit", "check", self._menu_apply_on_quit, toggle=self.apply_on_quit),
             "Help",
             Item("Report a Problem", "bug", lambda: QDesktopServices.openUrl(QUrl(ISSUES_URL)), external=True),
@@ -247,26 +253,38 @@ class MainWindow(QMainWindow):
         w = QWidget()
         lay = QVBoxLayout(w)
         lay.addStretch(1)
+        # A fixed-width column: word-wrapped labels only get the height they need when the layout
+        # gives them their full width (an alignment flag squeezes them to their narrow hint).
+        column = QWidget()
+        column.setFixedWidth(460)
+        cl = QVBoxLayout(column)
+        cl.setContentsMargins(0, 0, 0, 0)
+        cl.setSpacing(8)
         for t, name in ((title, "title"), (text, "muted"), (hint, "faint")):
             if t:
                 lab = label(t, name, wrap=True)
                 lab.setAlignment(Qt.AlignmentFlag.AlignCenter)
-                lab.setMaximumWidth(460)
-                lay.addWidget(lab, 0, Qt.AlignmentFlag.AlignHCenter)
-        lay.addSpacing(12)
+                cl.addWidget(lab)
+        cl.addSpacing(12)
+        # The button sits inside the column, out of reach of the stage background rule, which
+        # paints every widget two levels below the stack (and would flatten a button there).
         b = QPushButton(button)
         if kind:
             b.setProperty("kind", kind)
         b.clicked.connect(fn)
-        lay.addWidget(b, 0, Qt.AlignmentFlag.AlignCenter)
+        cl.addWidget(b, 0, Qt.AlignmentFlag.AlignHCenter)
+        row = QHBoxLayout()  # centred by stretches, not an alignment flag, so its height follows the wrapping
+        row.addStretch(1)
+        row.addWidget(column)
+        row.addStretch(1)
+        lay.addLayout(row)
         lay.addStretch(2)
         return w
 
     def resizeEvent(self, e):
         super().resizeEvent(e)
         if self.toast.isVisible():
-            self.toast.move((self.centralWidget().width() - self.toast.width()) // 2,
-                            self.centralWidget().height() - self.toast.height() - 52)
+            self.toast.place()
 
     # ---- state helpers used by the pages ----------------------------------
 
@@ -507,9 +525,9 @@ class MainWindow(QMainWindow):
 
     def _ask_discard(self) -> bool:
         n = len(self.pending.games())
-        return QMessageBox.question(
-            self, APP_NAME, f"New artwork for {plural(n, 'game')} hasn't been applied yet. Discard it?",
-            QMessageBox.StandardButton.Discard | QMessageBox.StandardButton.Cancel) == QMessageBox.StandardButton.Discard
+        return bool(ConfirmDialog(
+            self, "Discard the artwork you haven't applied?",
+            f"New artwork for {plural(n, 'game')} hasn't been applied yet.", "Discard", "trash", bad=True).exec())
 
     def reload_shortcuts(self):
         if self._wait_for_busy():
@@ -722,7 +740,7 @@ class MainWindow(QMainWindow):
         if not self.config.api_key:
             state = "disconnected"
         self.conn = state
-        self.statusbar.set_connection(state)
+        self.statusbar.set_connection("nokey" if not self.config.api_key else state)
         if state == "connected":
             QTimer.singleShot(0, self.match_all)
 
@@ -884,7 +902,7 @@ class MainWindow(QMainWindow):
             self._load_rows(sc, game)
             return
         if self.status.get(sc.appid) == "notfound":
-            self.page.set_all_messages("This game wasn't found on SteamGridDB. Use “Search by Another Name” above.")
+            self.page.set_all_messages("Not found on SteamGridDB.")
             return
         self.page.set_all_messages("Finding this game on SteamGridDB…")
         appid = sc.appid
@@ -929,7 +947,7 @@ class MainWindow(QMainWindow):
                 if cur is None or cur.appid != appid:
                     return
                 if assets is None:
-                    row.set_message("Couldn't reach SteamGridDB. Check your connection and open the game again.", "warning")
+                    row.set_message("Couldn't reach SteamGridDB. Check your connection.", "warning")
                 else:
                     more = len(assets) >= 50
                     row.set_assets(assets, more)
@@ -942,8 +960,17 @@ class MainWindow(QMainWindow):
         if self.current_game() is None:
             self.change_match() if self.config.api_key else self.ask_api_key()
             return
-        self.tray.open_slot(slot)
+        self.tray.open_slot(slot)  # its slot_changed brings the page's row into view
         self.tray.list.setFocus()
+
+    def _show_row(self, slot: Slot):
+        """Bring the page's row for the tray's piece into view, so its preview is seen (once the
+        page has laid itself out narrower for the tray)."""
+        def show():
+            row = self.page.rows.get(slot.key)
+            if row is not None and self.stage.currentWidget() is self.page:
+                self.page.scroll.ensureWidgetVisible(row, 0, 24)
+        QTimer.singleShot(0, show)
 
     def _tray_preview(self, slot: Slot, pm):
         row = self.page.rows.get(slot.key)
@@ -968,11 +995,11 @@ class MainWindow(QMainWindow):
         sc = self.sfile.shortcuts[idx]
         have = sum(self.coverage(sc))
         n = self.pending.count(sc.appid)
-        menu = GameMenu(sc.name or "(unnamed)", "All 5 pieces" if have == 5 else f"{have} of 5 pieces",
+        menu = GameMenu(sc.name or "(unnamed)", "All artwork" if have == 5 else f"{have} of 5",
                         self.icon_pixmap(sc), [
             Item("Get All Artwork", "download", lambda: self._run_fill([sc], single=True),
                  bool(self._unstaged_missing(sc)) and not self.busy),
-            Item("Refresh Artwork", "refresh", lambda: self.refresh_options(sc), bool(self.match_info(sc))),
+            Item("Reload Options", "refresh", lambda: self.refresh_options(sc), bool(self.match_info(sc))),
             Item("Apply", "check", lambda: self.apply_games([sc.appid]), bool(n) and not self.busy, "go", n),
             None,
             Item("Open Game Page", "game-page", lambda: self.open_game(idx)),
@@ -996,9 +1023,8 @@ class MainWindow(QMainWindow):
         self.toast.show_message(f"Refreshed the SteamGridDB options for {sc.name}.")
 
     def remove_all(self, sc: Shortcut):
-        if QMessageBox.question(
-                self, APP_NAME, f"Remove all artwork from {sc.name}? You can undo it straight after.",
-                QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.Cancel) != QMessageBox.StandardButton.Yes:
+        if not ConfirmDialog(self, f"Remove all artwork from {sc.name}?", "You can undo it straight after.",
+                             "Remove Artwork", "trash", bad=True).exec():
             return
         self.pending.drop(sc.appid)
         self.forget_files(sc.appid)  # what's on disk now
@@ -1247,8 +1273,11 @@ class MainWindow(QMainWindow):
 
     def _fetch_missing(self, jobs, progress):
         """Worker: for each (shortcut, slots, saved match, single), match and download the top pick."""
-        report = {"found": 0, "notfound": [], "gaps": 0, "errors": [], "unsure": 0}
+        report = {"found": 0, "notfound": [], "gaps": 0, "errors": [], "unsure": 0, "stopped": False}
         for i, (sc, slots, saved, single) in enumerate(jobs):
+            if self._stop_fill:  # Stop in the status bar: finish the game in hand, then stop
+                report["stopped"] = True
+                break
             progress(("step", i, sc))
             try:
                 if saved:
@@ -1295,6 +1324,7 @@ class MainWindow(QMainWindow):
                                     f"Nothing to fill in: {plural(skipped, 'game')} not found on SteamGridDB.")
             return
         total = len(jobs)
+        self._stop_fill = False
         self._set_busy("fetch", f"Getting artwork  1 of {plural(total, 'game')}")
 
         def on_progress(ev):
@@ -1336,6 +1366,8 @@ class MainWindow(QMainWindow):
                 if not report["errors"]:
                     return
             parts = [f"Found artwork for {plural(report['found'], 'game')}, ready to apply."]
+            if report.get("stopped"):
+                parts.insert(0, "Stopped.")
             if report["unsure"]:
                 parts.append(f"{plural(report['unsure'], 'game')} matched by best guess: check "
                              f"{'it' if report['unsure'] == 1 else 'them'} first.")
@@ -1376,10 +1408,20 @@ class MainWindow(QMainWindow):
         if self.busy:
             self.statusbar.set_message("busy", text)
 
+    def stop_fill(self):
+        """Stop a Get Artwork run after the game it's on; what it found stays waiting."""
+        if self.busy == "fetch":
+            self._stop_fill = True
+            self.statusbar.stop.setEnabled(False)
+            self._progress("Stopping after this game…")
+
     def _set_busy(self, busy: str, text: str = ""):
         self.busy = busy
         self.progress_text = text
-        self.header.setEnabled(not busy)
+        self.statusbar.set_stoppable(busy == "fetch")
+        # Only what would change the account or the game list mid-run; the app mark stays as it is.
+        self.header.account.setEnabled(not busy)
+        self.header.more.setEnabled(not busy)
         self.statusbar.steam.setEnabled(not busy)  # no switching account or Steam folder mid-change
         self.update_chrome()
 
@@ -1448,11 +1490,7 @@ class MainWindow(QMainWindow):
             QDesktopServices.openUrl(QUrl.fromLocalFile(str(self.user.grid_dir)))
 
     def about(self):
-        QMessageBox.about(
-            self, APP_NAME,
-            f"{APP_NAME} {__version__}<br><br>Artwork comes from "
-            "<a href='https://www.steamgriddb.com'>SteamGridDB</a> and its artists.<br>"
-            "Not affiliated with Valve or SteamGridDB.")
+        AboutDialog(self, APP_NAME, __version__).exec()
 
     def keyPressEvent(self, e):
         if e.key() == Qt.Key.Key_Escape and self.tray.isVisible():

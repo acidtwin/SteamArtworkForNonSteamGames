@@ -15,7 +15,7 @@ from .theme import q
 
 FADE_IN, FADE_OUT = 140, 120  # ms
 SHADOW = 12  # room around the menu for its shadow
-RADIUS = 6
+RADIUS = 4  # DESIGN.md: 4 px menus
 
 
 @dataclass
@@ -265,8 +265,10 @@ class FadingPopup(QFrame):
         self.show()
         self._fade.start()
         self.activateWindow()
-        if focus is not None:
-            focus.setFocus()
+        if focus is not None and theme.last_input_was_key():
+            focus.setFocus()  # opened from the keyboard: start on a row
+        else:
+            self.setFocus()  # opened with the mouse: nothing lit until you point at a row
 
     def keyPressEvent(self, e):
         rows = [r for r in self._rows() if r.isEnabled()]

@@ -14,7 +14,7 @@ from PySide6.QtWidgets import (
 )
 
 from ..steam import Place, find_steam_roots, list_users, search_places
-from . import icons, workers
+from . import icons, theme, workers
 from .chrome import Overlay, _Avatar, _label, font
 from .theme import C, q
 
@@ -58,6 +58,9 @@ def tilde(path: Path | str) -> str:
     s, home = str(path), str(Path.home())
     return "~" + s[len(home):] if s == home or s.startswith(home + "/") else s
 
+
+# The usual Steam folder, kept on one line: a word joiner after each "/" stops a break there.
+NO_BREAK_PATH = "~/.local/share/Steam".replace("/", "/\u2060")
 
 class Pulse(QWidget):
     """A round folder badge that sends out rings while searching, then turns into a tick (or a cross)."""
@@ -275,11 +278,11 @@ class DropZone(QFrame):
         super().enterEvent(e)
 
     def leaveEvent(self, e):
-        self._hot(self.hasFocus())
+        self._hot(theme.kbd_focus(self))
         super().leaveEvent(e)
 
     def focusInEvent(self, e):
-        self._hot(True)  # the keyboard's on it: lit like a hover
+        self._hot(theme.kbd_focus(self) or self.underMouse())  # the keyboard's on it: lit like a hover
         super().focusInEvent(e)
 
     def focusOutEvent(self, e):
@@ -299,10 +302,10 @@ class DropZone(QFrame):
             e.acceptProposedAction()
 
     def dragLeaveEvent(self, e):
-        self._hot(self.hasFocus())
+        self._hot(theme.kbd_focus(self))
 
     def dropEvent(self, e):
-        self._hot(self.hasFocus())
+        self._hot(theme.kbd_focus(self))
         p = self._dir_from(e)
         if p:
             e.acceptProposedAction()
@@ -552,7 +555,7 @@ class SteamFolderPopover(Overlay):
             self.hint.setText(f"<span style='color:{C['bad']}'>{error}</span>")
         else:
             self.hint.setText(f"<span style='color:{C['text3']}'>It's the folder with <b>userdata</b> inside, "
-                              f"usually <b>~/.local/share/Steam</b>.</span>")
+                              f"usually <b>{NO_BREAK_PATH}</b>.</span>")
 
     def _chosen(self, path: Path):
         roots = find_steam_roots([path])

@@ -426,7 +426,8 @@ class ArtworkRow(QWidget):
 
     def _set_caption(self, text: str, tone: str = ""):
         self.caption.setText(text)
-        style = {"new": f"color: {C['blue_ink']}; font-weight: 600;", "rm": f"color: {WAIT}; font-weight: 600;"}
+        style = {"new": f"color: {C['blue_ink']}; font-weight: 600;", "rm": f"color: {WAIT}; font-weight: 600;",
+                 "preview": f"color: {C['blue']}; font-weight: 700;"}
         self.caption.setStyleSheet(style.get(tone, ""))
 
     def show_current(self):
@@ -507,7 +508,7 @@ class ArtworkRow(QWidget):
         self.assets = assets[:STRIP]
         n = len(assets)
         if n == 0:
-            self.set_message(f"SteamGridDB has no {self.slot.label.lower()} for this game yet.")
+            self.set_message(f"No {self.slot.label.lower()} on SteamGridDB yet.")
             return
         self.message.hide()
         self._right.setStretch(0, 0)
@@ -548,7 +549,7 @@ class ArtworkRow(QWidget):
             backdrop = self.art.backdrop if self.slot.key == "logo" else None
             self.art.new = False
             self.art.set_pixmap(view.pixmap, backdrop)
-            self._set_caption("Previewing")
+            self._set_caption("Previewing", "preview")
             self._previewing = True
         elif self._previewing:
             self._previewing = False
@@ -641,7 +642,7 @@ class MatchCard(QWidget):
         self._scaled: tuple | None = None
         self.setFixedHeight(BANNER_H)
         outer = QVBoxLayout(self)
-        outer.setContentsMargins(20, 10, 24, 16)
+        outer.setContentsMargins(24, 10, 24, 16)  # in line with the rows below
         outer.setSpacing(0)
         self.back = QPushButton("Library")
         self.back.setObjectName("bannerback")
@@ -722,6 +723,7 @@ class MatchCard(QWidget):
             #bannerget {{ background: {C['get']}; color: white; }}
             #bannerget:hover {{ background: {C['get_hover']}; }}
             #bannerget:disabled {{ background: rgba(23,26,33,.5); color: {C['text3']}; }}
+            QPushButton[kind="go"]:disabled {{ background: rgba(23,26,33,.5); color: {C['text3']}; }}
         """)
 
     def set_game(self, name: str):
@@ -774,7 +776,7 @@ class MatchCard(QWidget):
                        else f"We picked {game}, the closest name we found. Is it right?") + "&nbsp;·", WAIT),
             "notfound": ("Not found on SteamGridDB&nbsp;·", C["bad"]),
             "finding": ("Finding this game on SteamGridDB…", C["text2"]),
-            "key": ("Add a free SteamGridDB API key to find this game's artwork.", C["blue_ink"]),
+            "key": ("Add a free SteamGridDB API key to find this game's artwork.", C["text2"]),
         }[state]
         link = ""
         if state not in ("finding", "key"):
@@ -948,14 +950,15 @@ class GamePage(QWidget):
         return pm if pm is not None and not pm.isNull() else None
 
     def _banner(self):
-        """The game's banner, else the first banner option, else its cover blurred."""
+        """The game's banner (or its waiting pick), else its cover blurred, else a colour sweep:
+        only artwork the game will have, never an option it hasn't picked."""
         sc = self.win.current_shortcut()
         if sc is None:
             return
-        pm = self._current_art(sc, "hero") or self.rows["hero"].first_thumb()
+        pm = self._current_art(sc, "hero")
         if pm is not None:
             return self.card.set_banner(pm)
-        self.card.set_banner(self._current_art(sc, "grid") or self.rows["grid"].first_thumb(), blurred=True)
+        self.card.set_banner(self._current_art(sc, "grid"), blurred=True)
 
     def refresh_current(self):
         for row in self.rows.values():
@@ -969,4 +972,4 @@ class GamePage(QWidget):
     def show_key_prompt(self):
         self.update_match()
         for row in self.rows.values():
-            row.set_message("Options appear here once a key is added.", "key")
+            row.set_message("Options show once a key is added.", "key")

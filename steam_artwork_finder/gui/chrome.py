@@ -535,7 +535,7 @@ class StatusItem(QAbstractButton):
             p.setPen(Qt.PenStyle.NoPen)
             p.setBrush(q("raised"))
             p.drawRoundedRect(r, 3, 3)
-        if self.hasFocus():
+        if theme.kbd_focus(self):
             p.setPen(QPen(q("blue"), 2))
             p.setBrush(Qt.BrushStyle.NoBrush)
             p.drawRoundedRect(r.adjusted(1, 1, -1, -1), 3, 3)
@@ -568,7 +568,8 @@ PROCESS = {
     "running": ("Steam Running", "play", "wait"),
     "restart": ("Restart Needed", "restart", "blue_ink"),
 }
-CONNECTION = {"connected": ("Connected", "ok"), "connecting": ("Connecting", "wait"), "disconnected": ("Disconnected", "off")}
+CONNECTION = {"connected": ("Connected", "ok"), "connecting": ("Connecting", "wait"),
+              "disconnected": ("Disconnected", "off"), "nokey": ("No API Key", "track_off")}
 
 
 class StatusBar(QWidget):
@@ -577,6 +578,7 @@ class StatusBar(QWidget):
     steam_clicked = Signal()
     process_clicked = Signal()
     connection_clicked = Signal()
+    stop_clicked = Signal()
 
     def __init__(self, parent=None):
         super().__init__(parent)
@@ -600,6 +602,14 @@ class StatusBar(QWidget):
         self.message.setFont(font(0.96))
         self.message.setSizePolicy(QSizePolicy.Policy.Ignored, QSizePolicy.Policy.Preferred)
         ll.addWidget(self.message, 1)
+        self.stop = QPushButton("Stop")  # ends a long Get Artwork run; shown while one runs
+        self.stop.setProperty("kind", "quiet")
+        self.stop.setStyleSheet("min-height: 28px; max-height: 28px;")
+        self.stop.setToolTip("Stop after this game. Artwork found so far stays waiting to be applied.")
+        self.stop.clicked.connect(self.stop_clicked)
+        self.stop.hide()
+        ll.addWidget(self.stop)
+        ll.addStretch(0)
         left.setSizePolicy(QSizePolicy.Policy.Ignored, QSizePolicy.Policy.Preferred)
         lay.addWidget(left, 1)
         self.left = left
@@ -649,6 +659,12 @@ class StatusBar(QWidget):
         else:
             self.message.setText(f"<span style='color:{C['text2']}'>{bold_numbers(text, C['text'])}</span>")
         self.message.setAccessibleName(text if kind else "")
+        # As wide as its text, so a Stop button can sit right after it; it still shrinks when narrow.
+        self.message.setMaximumWidth(self.message.sizeHint().width() + 2 if self.message.text() else 0)
+
+    def set_stoppable(self, on: bool):
+        self.stop.setVisible(on)
+        self.stop.setEnabled(on)
 
     def set_steam(self, found: bool, path_text: str = ""):
         self.steam_found = found
@@ -684,7 +700,7 @@ class StatusBar(QWidget):
         return self.process.mapToGlobal(QPoint(self.process.width() // 2, 0))
 
     def set_connection(self, state: str):
-        """"connected", "connecting" or "disconnected"."""
+        """"connected", "connecting", "disconnected" or "nokey" (no API key added yet)."""
         self.connection_state = state
         word, col = CONNECTION[state]
         self.connection.set_state(word, dot=C[col])
@@ -838,7 +854,7 @@ class SteamPopover(Overlay):
     def __init__(self, parent):
         super().__init__(parent)
         self.setAccessibleName("Steam")
-        self.setFixedWidth(340)
+        self.setFixedWidth(380)
         lay = QVBoxLayout(self)
         lay.setContentsMargins(16, 14, 16, 14)
         lay.setSpacing(10)
@@ -854,11 +870,11 @@ class SteamPopover(Overlay):
         self.body.setWordWrap(True)
         self.body.setStyleSheet(f"color: {C['text2']}; background: transparent;")
         lay.addWidget(self.body)
-        self.auto = QCheckBox("Restart Steam automatically when I click Apply")
+        self.auto = QCheckBox("Restart Steam when I apply")
         self.auto.setObjectName("spopcheck")
         self.auto.toggled.connect(self.auto_restart_changed)
         lay.addWidget(self.auto)
-        self.on_quit = QCheckBox("Apply waiting artwork when I quit, without asking")
+        self.on_quit = QCheckBox("Apply when I quit, without asking")
         self.on_quit.setObjectName("spopcheck")
         self.on_quit.toggled.connect(self.apply_on_quit_changed)
         lay.addWidget(self.on_quit)
@@ -891,7 +907,8 @@ class SteamPopover(Overlay):
         self.icon.setPixmap(icons.pixmap(ic, 16, C[col], self.devicePixelRatioF()))
         text = POPOVER_TEXT[state]
         if state == "restart" and waiting_icons > 0:
-            text += f" {waiting_icons} {'icon is' if waiting_icons == 1 else 'icons are'} waiting to be linked."
+            text += (f" {waiting_icons} {'icon' if waiting_icons == 1 else 'icons'} will be added "
+                     "when Steam closes.")
         self.body.setText(text)
         self.restart.setVisible(state != "closed")
         self.setAccessibleDescription(text)

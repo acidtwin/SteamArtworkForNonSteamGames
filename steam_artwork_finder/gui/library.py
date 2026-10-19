@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from PySide6.QtCore import QPoint, QPointF, QRect, QRectF, QSize, Qt, QTimer, Signal
+from PySide6.QtCore import QEvent, QPoint, QPointF, QRect, QRectF, QSize, Qt, QTimer, Signal
 from PySide6.QtGui import QAction, QColor, QFont, QFontMetrics, QPainter, QPainterPath, QPen, QPixmap
 from PySide6.QtWidgets import (
     QAbstractButton,
@@ -149,14 +149,19 @@ def draw_tag(p: QPainter, x: int, y: int, tag: str, text: str | None = None, bg:
     return x + w
 
 
-def draw_meta(p: QPainter, win, idx: int, x: float, y: float, base: QFont, size: str, d: float, gap: float):
-    """Coverage dots, then CHECK MATCH-style tag, else "Ready to apply", else "n of 5"."""
+def draw_meta(p: QPainter, win, idx: int, x: float, y: float, base: QFont, size: str, d: float, gap: float,
+              width: float | None = None):
+    """Coverage dots, then CHECK MATCH-style tag, else "Ready to apply", else "n of 5".
+    With `width`, it stays inside it: a tag that won't fit after the dots is drawn without them."""
     sc = win.sfile.shortcuts[idx]
     f = QFont(base)
     f.setPointSizeF(theme.pt(size))
     lh = QFontMetrics(f).height()
-    x = draw_dots(p, x, y + (lh - d) / 2, win.coverage(sc), d=d, gap=gap) + 3
     text, tag = status_text(win, idx)
+    dots_w = 5 * (d + gap) + 3
+    tag_w = QFontMetrics(tag_font(base)).horizontalAdvance((TAGS[tag][0] if tag else "").upper()) + 12
+    if not (tag and width is not None and dots_w + tag_w > width):
+        x = draw_dots(p, x, y + (lh - d) / 2, win.coverage(sc), d=d, gap=gap) + 3
     if tag:
         th = QFontMetrics(tag_font(base)).height() + 4
         draw_tag(p, int(x), int(y + (lh - th) / 2), tag)
@@ -171,6 +176,23 @@ def draw_meta(p: QPainter, win, idx: int, x: float, y: float, base: QFont, size:
     p.setFont(f)
     p.drawText(QRectF(x, y, 200, lh), Qt.AlignmentFlag.AlignVCenter, text)
     p.restore()
+
+
+def list_extra(win, sc) -> tuple[str, str]:
+    """The list view's middle line: the pieces waiting to be applied, else the SteamGridDB game it
+    matched when that has another name."""
+    picks = [(SLOTS[k].label.lower(), win.pending.get(sc.appid, k)) for k in ("grid", "wide", "hero", "logo", "icon")]
+    new = [name for name, pick in picks if pick is not None and not pick.clears]
+    gone = [name for name, pick in picks if pick is not None and pick.clears]
+    if new or gone:
+        parts = ([f"New {', '.join(new)}"] if new else []) + ([f"removing {', '.join(gone)}"] if gone else [])
+        text = "; ".join(parts)
+        return text[0].upper() + text[1:], "blue_ink"
+    m = win.match_info(sc)
+    if m and m.get("name") and m["name"].casefold() != (sc.name or "").casefold():  # only when it says something
+        year = f" ({m['year']})" if m.get("year") else ""
+        return f"SteamGridDB: {m['name']}{year}", "text3"
+    return "", "text3"
 
 
 class GameRowDelegate(QStyledItemDelegate):
@@ -194,7 +216,7 @@ class GameRowDelegate(QStyledItemDelegate):
             p.setPen(Qt.PenStyle.NoPen)
             p.setBrush(q("select") if selected else q("raised"))
             p.drawRoundedRect(QRectF(r), 3, 3)
-        if option.state & QStyle.StateFlag.State_HasFocus and self.view.hasFocus() and not selected:
+        if option.state & QStyle.StateFlag.State_HasFocus and theme.kbd_focus(self.view) and not selected:
             p.setPen(QPen(q("blue"), 1))
             p.setBrush(Qt.BrushStyle.NoBrush)
             p.drawRoundedRect(QRectF(r).adjusted(0.5, 0.5, -0.5, -0.5), 3, 3)
@@ -250,7 +272,7 @@ class FilterButton(QToolButton):
             p.setPen(Qt.PenStyle.NoPen)
             p.setBrush(q("select"))
             p.drawRoundedRect(r, 3, 3)
-        if self.hasFocus() and not self.open:
+        if theme.kbd_focus(self) and not self.open:
             p.setPen(QPen(q("blue"), 2))
             p.setBrush(Qt.BrushStyle.NoBrush)
             p.drawRoundedRect(r.adjusted(1, 1, -1, -1), 3, 3)
@@ -417,9 +439,11 @@ class SearchBox(QFrame):
         self.setStyleSheet(f"""
             #searchbox {{ background: {C['input']}; border: 1px solid transparent; border-radius: 3px; }}
             #searchbox[focus="true"] {{ border-color: {C['blue']}; }}
-            #searchbox QLineEdit {{ background: transparent; border: none; min-height: 0; padding: 0 0 0 9px; }}
+            #searchbox QLineEdit {{ background: transparent; border: none; min-height: 34px; max-height: 34px;
+                                    padding: 0 0 0 9px; }}
             #searchbox QLineEdit:disabled {{ color: {C['text3']}; }}
-            #searchbox QToolButton {{ min-width: 34px; max-width: 34px; min-height: 34px; max-height: 34px; padding: 0; }}
+            #searchbox > QToolButton {{ min-width: 34px; max-width: 34px; min-height: 34px; max-height: 34px; padding: 0; }}
+            #searchbox QLineEdit QToolButton {{ min-width: 0; min-height: 0; }}
         """)
         lay = QHBoxLayout(self)
         lay.setContentsMargins(0, 2, 2, 2)
@@ -501,7 +525,7 @@ class HomeButton(QAbstractButton):
         p.setPen(Qt.PenStyle.NoPen)
         p.setBrush(q("select") if self.on else q("raised") if hover else q("input"))
         p.drawRoundedRect(r, 3, 3)
-        if self.hasFocus():
+        if theme.kbd_focus(self):
             p.setPen(QPen(q("blue"), 2))
             p.setBrush(Qt.BrushStyle.NoBrush)
             p.drawRoundedRect(r.adjusted(1, 1, -1, -1), 3, 3)
@@ -543,7 +567,7 @@ class ViewButton(QAbstractButton):
         p.setPen(Qt.PenStyle.NoPen)
         p.setBrush(q("select") if self.open else q("raised") if hover else q("input"))
         p.drawRoundedRect(r, 3, 3)
-        if self.hasFocus() and not self.open:
+        if theme.kbd_focus(self) and not self.open:
             p.setPen(QPen(q("blue"), 2))
             p.setBrush(Qt.BrushStyle.NoBrush)
             p.drawRoundedRect(r.adjusted(1, 1, -1, -1), 3, 3)
@@ -787,7 +811,18 @@ class WallDelegate(QStyledItemDelegate):
         return self.COVER.height() + 8 + QFontMetrics(f).height() + 4 + QFontMetrics(m).height() + 4 + self.GAP
 
     def sizeHint(self, option, index):
-        return QSize(self.MIN_W, self.tile_height(option.font))
+        # As wide as the wall's cell, so clicks and hover cover the whole cell the cover moves in.
+        return QSize(max(self.MIN_W, self.view.gridSize().width()), self.tile_height(option.font))
+
+    def tile_x(self, cell: QRect) -> int:
+        """Where the cover sits in its cell: the spare width goes between the columns, so the first
+        column starts at the wall's left edge (in line with the chips) and the last ends at its right."""
+        spare = cell.width() - self.COVER.width()
+        cols = max(1, getattr(self.view, "cols", 1))
+        if cols == 1:
+            return cell.x() + spare // 2
+        col = min(cols - 1, max(0, round((cell.x() + self.view.horizontalOffset()) / max(1, cell.width()))))
+        return cell.x() + round(spare * col / (cols - 1))
 
     def paint(self, p: QPainter, option, index):
         p.save()
@@ -795,10 +830,9 @@ class WallDelegate(QStyledItemDelegate):
         p.setRenderHint(QPainter.RenderHint.SmoothPixmapTransform)
         idx = index.data(ROLE_INDEX)
         sc = self.win.sfile.shortcuts[idx]
-        x = option.rect.x() + (option.rect.width() - self.COVER.width()) // 2
-        r = QRectF(x, option.rect.y() + 2, self.COVER.width(), self.COVER.height())
+        r = QRectF(self.tile_x(option.rect), option.rect.y() + 2, self.COVER.width(), self.COVER.height())
         hover = bool(option.state & QStyle.StateFlag.State_MouseOver)
-        focus = bool(option.state & QStyle.StateFlag.State_HasFocus) and self.view.hasFocus()
+        focus = bool(option.state & QStyle.StateFlag.State_HasFocus) and theme.kbd_focus(self.view)
         pick = self.win.pending.get(sc.appid, "grid")
         new = pick is not None and not pick.clears
         if not new and (pick is not None or self.win.cover_path(sc) is None):
@@ -827,7 +861,7 @@ class WallDelegate(QStyledItemDelegate):
         name = QFontMetrics(f).elidedText(sc.name, Qt.TextElideMode.ElideRight, int(r.width()))
         p.drawText(QRectF(r.left(), r.bottom() + 8, r.width(), lh),
                    Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignVCenter, name)
-        draw_meta(p, self.win, idx, r.left(), r.bottom() + 8 + lh + 4, option.font, "label", 6, 3)
+        draw_meta(p, self.win, idx, r.left(), r.bottom() + 8 + lh + 4, option.font, "label", 6, 3, r.width())
         p.restore()
 
 
@@ -888,7 +922,7 @@ class Chip(QAbstractButton):
         p.setPen(QPen(q("text") if on else q("line"), 1))
         p.setBrush(q("text") if on else q("raised") if hover else Qt.BrushStyle.NoBrush)
         p.drawRoundedRect(r, rad, rad)
-        if self.hasFocus():
+        if theme.kbd_focus(self):
             p.setPen(QPen(q("blue"), 2))
             p.setBrush(Qt.BrushStyle.NoBrush)
             p.drawRoundedRect(r.adjusted(1, 1, -1, -1), rad - 1, rad - 1)
@@ -958,7 +992,7 @@ def draw_small_cover(p: QPainter, r: QRectF, pm: QPixmap | None, name: str):
 def draw_hover(p: QPainter, view, option, r: QRectF, fill: bool):
     """Row hover and keyboard focus, the same in the list and details views."""
     hover = bool(option.state & QStyle.StateFlag.State_MouseOver)
-    focus = bool(option.state & QStyle.StateFlag.State_HasFocus) and view.hasFocus()
+    focus = bool(option.state & QStyle.StateFlag.State_HasFocus) and theme.kbd_focus(view)
     if fill or hover:
         p.setPen(Qt.PenStyle.NoPen)
         p.setBrush(q("raised") if hover else q("panel"))
@@ -1000,8 +1034,20 @@ class ListDelegate(QStyledItemDelegate):
         p.setPen(q("text"))
         meta_x = r.right() - 190
         tx = cv.right() + 14
-        name = QFontMetrics(f).elidedText(sc.name or "(unnamed)", Qt.TextElideMode.ElideRight, int(meta_x - tx - 12))
+        fm = QFontMetrics(f)
+        name = fm.elidedText(sc.name or "(unnamed)", Qt.TextElideMode.ElideRight, int(meta_x - tx - 12))
         p.drawText(QRectF(tx, r.y(), meta_x - tx, r.height()), Qt.AlignmentFlag.AlignVCenter, name)
+        # Then, in the room the sidebar doesn't have: what's waiting, else the SteamGridDB game it matched.
+        ex = tx + fm.horizontalAdvance(name) + 18
+        room = meta_x - ex - 16
+        extra, colour = list_extra(self.win, sc)
+        if extra and room > 60:
+            ef = QFont(option.font)
+            ef.setPointSizeF(theme.pt("faint"))
+            p.setFont(ef)
+            p.setPen(q(colour))
+            p.drawText(QRectF(ex, r.y(), room, r.height()), Qt.AlignmentFlag.AlignVCenter,
+                       QFontMetrics(ef).elidedText(extra, Qt.TextElideMode.ElideRight, int(room)))
         mf = QFont(option.font)
         mf.setPointSizeF(theme.pt("label"))
         mh = QFontMetrics(mf).height()
@@ -1010,6 +1056,7 @@ class ListDelegate(QStyledItemDelegate):
 
 
 DETAIL_COLS = ("Cover", "Wide", "Banner", "Logo", "Icon")
+DETAIL_TIPS = ("Cover", "Wide cover", "Banner", "Logo", "Icon")
 DETAIL_W, STATUS_W = 64, 130
 NARROW_W = 40  # piece columns when the view is narrow
 NAME_X = 8 + 22 + 12  # where the name column starts: after the row's small cover
@@ -1107,6 +1154,19 @@ class DetailsHeader(QWidget):
         self.view = view
         self.setFixedHeight(30)
 
+    def event(self, e):
+        if e.type() == QEvent.Type.ToolTip:  # the column names are short; say the piece in full
+            x0 = self.view.viewport().x() + self.view.x() - self.x()
+            _end, centres, _status, col = detail_columns(self.view.viewport().width() - 8)
+            for name, x in zip(DETAIL_TIPS, centres):
+                if abs(e.pos().x() - (x0 + x)) <= col / 2:
+                    QToolTip.showText(e.globalPos(), name, self)
+                    return True
+            QToolTip.hideText()
+            e.ignore()
+            return True
+        return super().event(e)
+
     def paintEvent(self, _):
         p = QPainter(self)
         f = QFont(self.font())
@@ -1145,6 +1205,7 @@ class CoverWall(QListWidget):
         self.delegate = delegate_cls(win, self)
         self.delegates = {"grid": self.delegate, "list": ListDelegate(win, self), "details": DetailsDelegate(win, self)}
         self.view = ""
+        self.cols = 1  # grid columns, set by fit()
         self.set_view("grid")
 
     def set_view(self, view: str):
@@ -1172,6 +1233,7 @@ class CoverWall(QListWidget):
             return
         avail = self.width() - 2 * self.frameWidth() - self.verticalScrollBar().sizeHint().width() - 1
         cols = max(1, avail // self.delegate.MIN_W)
+        self.cols = cols
         size = QSize(max(self.delegate.MIN_W, avail // cols), self.delegate.tile_height(self.font()))
         if size != self.gridSize():
             self.setGridSize(size)
