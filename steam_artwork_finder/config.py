@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import contextlib
 import json
 import os
 import sys
@@ -43,6 +44,8 @@ class Config:
             except OSError:
                 pass
         self.data = data if isinstance(data, dict) else {}
+        self._hold = 0
+        self._dirty = False
 
     @property
     def api_key(self) -> str:
@@ -139,7 +142,22 @@ class Config:
             per_game[slot] = info
         self.save()
 
+    @contextlib.contextmanager
+    def batch(self):
+        """Save once at the end instead of after every change (Apply writes hundreds)."""
+        self._hold += 1
+        try:
+            yield
+        finally:
+            self._hold -= 1
+            if not self._hold and self._dirty:
+                self.save()
+
     def save(self):
+        if self._hold:
+            self._dirty = True
+            return
+        self._dirty = False
         self.path.parent.mkdir(parents=True, exist_ok=True)
         tmp = self.path.with_suffix(".tmp")
         # Created private (it holds the API key) and synced, so a power cut

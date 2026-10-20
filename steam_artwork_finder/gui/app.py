@@ -1651,6 +1651,10 @@ class MainWindow(QMainWindow):
     def _write(self, jobs, defer_icons: bool, grid_dir: Path, sfile):
         """Save or clear each (shortcut, slot key, Pick) into `grid_dir` and `sfile`, the
         account the jobs were made for; returns the undo records and errors."""
+        with self.config.batch():  # one config save, not one per piece
+            return self._write_each(jobs, defer_icons, grid_dir, sfile)
+
+    def _write_each(self, jobs, defer_icons: bool, grid_dir: Path, sfile):
         done, errors = [], []
         for sc, key, pick in jobs:
             slot = SLOTS[key]
@@ -1786,22 +1790,33 @@ class MainWindow(QMainWindow):
 
         def work(progress):
             # Download first, so Steam is only closed once the files are in hand,
-            # and one bad download doesn't cancel the rest.
+            # and one bad download doesn't cancel the rest. Several at a time.
+            from concurrent.futures import ThreadPoolExecutor, as_completed
+
             failures = {}
-            for i, pick in enumerate(todo):
-                progress(("download", i))
-                try:
-                    pick.data = self.sgdb.download(pick.asset.url)
-                except AuthError:
-                    raise
-                except SGDBError as e:
-                    failures[id(pick)] = str(e)
+
+            def fetch(pick):
+                pick.data = self.sgdb.download(pick.asset.url)
+
+            with ThreadPoolExecutor(max_workers=6) as ex:
+                futures = {ex.submit(fetch, pick): pick for pick in todo}
+                for i, fut in enumerate(as_completed(futures)):
+                    progress(("download", i))
+                    try:
+                        fut.result()
+                    except AuthError:
+                        for f in futures:
+                            f.cancel()
+                        raise
+                    except SGDBError as e:
+                        failures[id(futures[fut])] = str(e)
             closed = False
             if restart and (renames or len(failures) < len(jobs)):
                 progress(("close", 0))
                 shutdown_steam(root)
                 closed = wait_until_closed(root)
-            return closed, failures
+            # Asked here, off the window's thread (inside a Flatpak it can take seconds).
+            return closed, failures, bool(steam_running(root))
 
         def on_progress(ev):
             kind, i = ev
@@ -1810,11 +1825,10 @@ class MainWindow(QMainWindow):
             self.update_chrome()
 
         def done(result):
-            closed, failures = result
+            closed, failures, running = result
             errors = [f"{sc.name} {SLOTS[k].label.lower()}: {failures[id(p)]}"
                       for sc, k, p in jobs if id(p) in failures]
             ready = [j for j in jobs if id(j[2]) not in failures]  # failed picks stay waiting
-            running = self.steam_is_running()
             written, write_errors = self._write(ready, running, grid_dir, sfile)
             # Writing a game's artwork settles its match, so its proper name can come along now too.
             later = []
