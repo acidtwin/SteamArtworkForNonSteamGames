@@ -76,6 +76,9 @@ class OptionDelegate(QStyledItemDelegate):
 
     def paint(self, p: QPainter, option, index):
         p.save()
+        # Clear the whole cell first: a caption from an earlier layout (before filtering, say)
+        # mustn't show through the new one.
+        p.fillRect(option.rect, q("tray"))
         p.setRenderHint(QPainter.RenderHint.Antialiasing)
         s = thumb_size(self.tray.slot.key)
         r = QRectF(option.rect.x() + 4, option.rect.y() + 4, s.width(), s.height())
@@ -309,6 +312,8 @@ class OptionTray(QWidget):
         self.list.setSpacing(4)
         self.list.setVerticalScrollMode(QListView.ScrollMode.ScrollPerPixel)
         self.list.setItemDelegate(OptionDelegate(self))
+        self.list.itemEntered.connect(self._hover)
+        self.list.viewportEntered.connect(lambda: self.preview.emit(self.slot, None, None))
         self.list.verticalScrollBar().valueChanged.connect(lambda *_: self.playing.sweep())
         self.list.currentItemChanged.connect(self._selected)
         self.list.itemDoubleClicked.connect(lambda *_: self._use())
@@ -426,7 +431,7 @@ class OptionTray(QWidget):
             self.status.setText("")
         else:
             info = SLOTS[slot.key]
-            self.status.setText(f"{len(self.assets)} options{self._animated_count()}. Choose one, then "
+            self.status.setText(f"{len(self.assets)} options{self._animated_count()}. Hover to preview, then "
                                 f"“Pick This {info.label.title()}”. Apply saves your picks.")
 
     def _thumb(self, a, it):
@@ -494,6 +499,14 @@ class OptionTray(QWidget):
     def _tab(self, i):
         self.preview.emit(self.slot, None, None)
         self.open_slot(SLOTS[ORDER[i]])
+
+    def _hover(self, item):
+        """Hovering an option previews it on the page behind (dimmed, but in view)."""
+        self.preview.emit(self.slot, item.data(ROLE_PIX), item.data(ROLE_ASSET))
+
+    def leaveEvent(self, e):
+        self.preview.emit(self.slot, None, None)
+        super().leaveEvent(e)
 
     def _selected(self, *_):
         self._update_buttons()

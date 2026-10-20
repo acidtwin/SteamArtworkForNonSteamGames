@@ -8,7 +8,7 @@ import zlib
 from dataclasses import dataclass
 from html import escape
 
-from PySide6.QtCore import QEvent, QPointF, QRect, QRectF, QSize, Qt, Signal
+from PySide6.QtCore import QEvent, QObject, QPoint, QPointF, QRect, QRectF, QSize, Qt, Signal
 from PySide6.QtGui import QColor, QFont, QFontMetricsF, QLinearGradient, QPainter, QPainterPath, QPen, QPixmap
 from PySide6.QtWidgets import (
     QBoxLayout,
@@ -504,6 +504,7 @@ class ArtworkRow(QWidget):
         self.win.config.data["logo_on_banner"] = on
         self.win.config.save()
         self.show_current()
+        self.win.page._banner()  # the logo on the page's own banner too
 
     # -- options -----------------------------------------------------------
 
@@ -626,6 +627,41 @@ class CoverThumb(QWidget):
                 icons.draw(p, self.glyph, QRect((self.width() - 18) // 2, (self.height() - 18) // 2, 18, 18), q("text3"))
 
 
+class _Layer(QObject):
+    """One animated picture on the match card (its banner, logo or cover), played only while
+    the card is on show; `on_frame` takes each picture as it's due."""
+
+    def __init__(self, card: QWidget, on_frame):
+        super().__init__(card)
+        self.card, self.on_frame = card, on_frame
+        self.key = None
+        self.m = None
+
+    def set(self, key=None, factory=None) -> bool:
+        """Play this (`factory()` makes the Motion; no key stops). False when it's already playing."""
+        if key is not None and key == self.key:
+            return False
+        if self.m is not None:
+            self.m.stop()
+            self.m.deleteLater()
+            self.m = None
+        self.key = key if factory is not None else None
+        if self.key is not None:
+            self.m = factory()
+            self.m.frame.connect(self.on_frame)
+            if self.card.isVisible():
+                self.m.start()
+        return True
+
+    def start(self):
+        if self.m is not None:
+            self.m.start()
+
+    def stop(self):
+        if self.m is not None:
+            self.m.stop()
+
+
 BANNER_H = 210
 COMPACT_GAP = 12  # above the buttons when they move to a row of their own (the banner grows to fit)
 INFO_MIN = 280  # the least room for the name and match line beside the buttons
@@ -661,6 +697,10 @@ class MatchCard(QWidget):
         self.banner: QPixmap | None = None
         self.blurred = False
         self._scaled: tuple | None = None
+        self.logo: QPixmap | None = None  # laid over the banner, as on Steam's game page
+        self._logo_scaled: tuple | None = None
+        self.layers = {"banner": _Layer(self, self._banner_frame), "logo": _Layer(self, self._logo_frame),
+                       "cover": _Layer(self, lambda pm: self.cover.set_pixmap(pm))}
         self.setFixedHeight(BANNER_H)
         outer = QVBoxLayout(self)
         outer.setContentsMargins(24, 10, 24, 16)  # in line with the rows below
@@ -784,12 +824,66 @@ class MatchCard(QWidget):
             self.row.addWidget(self.acts, 0, Qt.AlignmentFlag.AlignBottom)
         self.setFixedHeight(BANNER_H + (COMPACT_GAP + self.apply_btn.sizeHint().height() if compact else 0))
 
-    def set_banner(self, pm: QPixmap | None, blurred: bool = False):
-        """The game's banner, or (blurred) its cover when it has no banner to show yet."""
+    def set_banner(self, pm: QPixmap | None, blurred: bool = False, spec=(None, None)):
+        """The game's banner, or (blurred) its cover when it has no banner to show yet. `spec`
+        (key, factory) plays an animated banner; the same one again carries on playing."""
+        if not self.layers["banner"].set(*spec) and self.banner is not None:
+            return  # playing on: keep the frame on show
         if pm is self.banner and blurred == self.blurred:
             return
         self.banner, self.blurred, self._scaled = pm, blurred, None
         self.update()
+
+    def _banner_frame(self, pm: QPixmap):
+        self.banner, self.blurred, self._scaled = pm, False, None
+        self.update()
+
+    def set_logo(self, pm: QPixmap | None, spec=(None, None)):
+        if not self.layers["logo"].set(*spec) and self.logo is not None:
+            return
+        self._logo_frame(pm)
+
+    def _logo_frame(self, pm: QPixmap | None):
+        self.logo, self._logo_scaled = pm, None
+        self.update()
+
+    def set_cover(self, pm: QPixmap | None, glyph: str = "", spec=(None, None)):
+        if not self.layers["cover"].set(*spec) and self.cover.pixmap is not None:
+            return
+        self.cover.set_pixmap(pm, glyph)
+
+    def showEvent(self, e):
+        for layer in self.layers.values():
+            layer.start()
+        super().showEvent(e)
+
+    def hideEvent(self, e):
+        for layer in self.layers.values():
+            layer.stop()  # nothing plays where it can't be seen
+        super().hideEvent(e)
+
+    def _logo_box(self) -> QRectF:
+        """Where the logo goes: the right of the banner, between the back button and the buttons."""
+        top = self.back.geometry().bottom() + 10
+        bottom = self.acts.mapTo(self, QPoint(0, 0)).y() - 12 if self.acts.isVisible() else self.height() - 70
+        bottom = min(bottom, self.cover.mapTo(self, QPoint(0, 0)).y() + self.cover.height())
+        w = self.width() * 0.4
+        return QRectF(self.width() - 24 - w, top, w, max(24, bottom - top))
+
+    def _logo_art(self) -> tuple[QRectF, QPixmap] | None:
+        if self.logo is None or self.logo.isNull() or self.blurred or self.banner is None:
+            return None
+        box = self._logo_box()
+        dpr = self.devicePixelRatioF()
+        key = (self.logo.cacheKey(), box.size().toSize(), dpr)
+        if self._logo_scaled is None or self._logo_scaled[0] != key:
+            pm = self.logo.scaled(box.size().toSize() * dpr, Qt.AspectRatioMode.KeepAspectRatio,
+                                  Qt.TransformationMode.SmoothTransformation)
+            pm.setDevicePixelRatio(dpr)
+            self._logo_scaled = (key, pm)
+        pm = self._logo_scaled[1]
+        w, h = pm.width() / dpr, pm.height() / dpr
+        return QRectF(box.right() - w, box.center().y() - h / 2, w, h), pm
 
     def set_state(self, state: str, name: str, year: str = "", candidates: int = 0):
         """state: "exact", "check", "notfound", "finding" or "key" (no API key yet)."""
@@ -823,6 +917,7 @@ class MatchCard(QWidget):
 
     def resizeEvent(self, e):
         self._scaled = None
+        self._logo_scaled = None
         super().resizeEvent(e)
         self._fit()
 
@@ -872,6 +967,9 @@ class MatchCard(QWidget):
             c.setAlpha(alpha)
             fade.setColorAt(at, c)
         p.fillRect(r, fade)
+        logo = self._logo_art()
+        if logo is not None:
+            p.drawPixmap(logo[0].topLeft(), logo[1])
         cv = QRectF(self.cover.geometry())
         p.setRenderHint(QPainter.RenderHint.Antialiasing)
         p.setPen(Qt.PenStyle.NoPen)
@@ -964,9 +1062,10 @@ class GamePage(QWidget):
         """The cover beside the name: the game's cover, its waiting pick, else the first option."""
         sc = self.win.current_shortcut()
         pm = self._current_art(sc, "grid") if sc else None
+        spec = self._motion(sc, "grid", self.card.cover.size()) if pm is not None else (None, None)
         if pm is None and self.card.state in ("exact", "check"):
             pm = self.rows["grid"].first_thumb()
-        self.card.cover.set_pixmap(pm, "key" if self.card.state == "key" else "")
+        self.card.set_cover(pm, "key" if self.card.state == "key" else "", spec)
         self._banner()
 
     def _current_art(self, sc, key: str) -> QPixmap | None:
@@ -985,9 +1084,27 @@ class GamePage(QWidget):
         if sc is None:
             return
         pm = self._current_art(sc, "hero")
-        if pm is not None:
-            return self.card.set_banner(pm)
-        self.card.set_banner(self._current_art(sc, "grid"), blurred=True)
+        if pm is None:
+            self.card.set_logo(None)
+            return self.card.set_banner(self._current_art(sc, "grid"), blurred=True)
+        self.card.set_banner(pm, spec=self._motion(sc, "hero", self.card.size()))
+        # Its logo over it, as Steam's game page has it (unless the Logo row says not to).
+        if self.win.config.data.get("logo_on_banner", True):
+            logo = self._current_art(sc, "logo")
+            self.card.set_logo(logo, self._motion(sc, "logo", QSize(self.card.width() * 2 // 5, 140)) if logo else (None, None))
+        else:
+            self.card.set_logo(None)
+
+    def _motion(self, sc, key: str, size: QSize) -> tuple:
+        """(key, factory) to play this piece where it's animated (a waiting pick, else what's on
+        disk), for the match card; nothing for a still or with animation turned off."""
+        if not self.win.show_animated:
+            return None, None
+        pick = self.win.pending.get(sc.appid, key)
+        if pick is not None:
+            asset = getattr(pick, "asset", None)
+            return (None, None) if pick.clears else self.win.motion_spec(asset, size)
+        return self.win.file_motion_spec(self.win.slot_path(sc, SLOTS[key]), size)
 
     def refresh_current(self):
         for row in self.rows.values():

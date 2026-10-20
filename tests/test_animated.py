@@ -305,3 +305,32 @@ def test_see_all_plays_animated_options_while_in_view(qapp, window, monkeypatch,
     win.tray.close_tray()
     _pump(qapp, 400)
     assert not t.playing.motions  # stopped once closed
+
+
+def test_game_page_banner_plays_with_its_logo_over_it(qapp, window):
+    win = window
+    sc = win.sfile.shortcuts[0]
+    grid = win.user.grid_dir
+    grid.mkdir(parents=True, exist_ok=True)
+    red, blue = (255, 0, 0, 255), (0, 0, 255, 255)
+    (grid / f"{sc.appid}_hero.png").write_bytes(
+        make_apng(192, 62, [(0, 0, 192, 62, red, 40, 0, 0), (0, 0, 192, 62, blue, 40, 0, 0)]))
+    ihdr, data = _rgba_png_parts(64, 24, (255, 255, 255, 255))
+    (grid / f"{sc.appid}_logo.png").write_bytes(PNG_SIG + _chunk(b"IHDR", ihdr) + _chunk(b"IDAT", data)
+                                                + _chunk(b"IEND", b""))
+    win.open_game(0)
+    card = win.page.card
+    _pump(qapp, 3000, until=lambda: card.layers["banner"].m is not None and card.banner is not None
+          and not card.banner.isNull() and card.banner.width() > 1)
+    assert card.layers["banner"].key is not None  # the banner plays on the page's own header
+    assert card._logo_art() is not None  # with the logo over it
+    seen = set()
+    for _ in range(15):
+        _pump(qapp, 30)
+        seen.add(card.banner.toImage().pixelColor(5, 5).name())
+    assert seen == {"#ff0000", "#0000ff"}
+
+    win.config.data["logo_on_banner"] = False
+    win.page._banner()
+    assert card._logo_art() is None
+    win.config.data["logo_on_banner"] = True
