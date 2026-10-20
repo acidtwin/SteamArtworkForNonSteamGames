@@ -6,9 +6,10 @@ from __future__ import annotations
 
 from typing import Callable
 
-from PySide6.QtCore import QEvent, QObject, Qt, QTimer, QVariantAnimation, Signal
+from PySide6.QtCore import QEvent, QEventLoop, QObject, Qt, QTimer, QVariantAnimation, Signal
 from PySide6.QtGui import QColor, QPainter
-from PySide6.QtWidgets import QApplication, QMenu, QWidget
+from PySide6.QtWidgets import QApplication, QDialog, QMenu, QWidget
+from shiboken6 import isValid
 
 DIM = 110  # alpha of the darkening, fully faded in
 FADE_MS = 140  # as the pop-overs' and menus' own fades
@@ -62,9 +63,22 @@ class Scrim(QWidget):
         self._owners = [(w, c) for w, c in self._owners if w is not owner]
         if before and not self._owners:
             self._fade(0.0)
+        elif len(self._owners) < before:
+            under = self._owners[-1][0]
+            if isValid(under) and not under.isWindow():
+                under.raise_()  # what was open under it (a pop-over under a dialog) comes back above the dim
 
     def is_covering(self) -> bool:
         return bool(self._owners)
+
+    def top(self) -> QWidget | None:
+        """What's open on top: the one a click on the dim part closes."""
+        return self._owners[-1][0] if self._owners else None
+
+    def _top_window(self) -> QWidget | None:
+        """The dialog on top, when what's on top is a window of its own."""
+        top = self.top()
+        return top if top is not None and isValid(top) and top.isWindow() and top.isVisible() else None
 
     def _fade(self, end: float):
         self._anim.stop()
@@ -109,9 +123,29 @@ class Scrim(QWidget):
         e.accept()
 
     def eventFilter(self, obj, e):
-        if obj is self.parentWidget() and e.type() == QEvent.Type.Resize:
+        if obj is not self.parentWidget():
+            return False
+        t = e.type()
+        if t == QEvent.Type.Resize:
             self.setGeometry(obj.rect())
+        elif t == QEvent.Type.WindowActivate and self._top_window() is not None:
+            # The window behind a dialog came to the front (its title bar, or the task switcher):
+            # bring the dialog back over it, so typing can't reach the dimmed page.
+            QTimer.singleShot(0, self, self._front)
+        elif t == QEvent.Type.Close and self._top_window() is not None:
+            # Closing the window behind a dialog cancels the dialog first, as a modal one would.
+            _owner, close = self._owners[-1]
+            if close is not None:
+                close()
+            e.ignore()
+            return True
         return False
+
+    def _front(self):
+        dlg = self._top_window()
+        if dlg is not None:
+            dlg.raise_()
+            dlg.activateWindow()
 
 
 def scrim_of(w: QWidget) -> Scrim | None:
@@ -129,7 +163,9 @@ class _PopupWatch(QObject):
 
     def eventFilter(self, obj, e):
         t = e.type()
-        if t == QEvent.Type.Hide and isinstance(obj, QWidget):
+        # A spontaneous hide is the window being minimised: what's open stays open (and dimmed)
+        # for when it comes back.
+        if t == QEvent.Type.Hide and isinstance(obj, QWidget) and not e.spontaneous():
             self.scrim.uncover(obj)
         elif t == QEvent.Type.Show and isinstance(obj, QWidget) and _is_menu(obj):
             parent = obj.parentWidget()
@@ -146,3 +182,40 @@ def _is_menu(w: QWidget) -> bool:
     from .gamemenu import FadingPopup
 
     return isinstance(w, (QMenu, FadingPopup))
+
+
+def run_dialog(dlg: QDialog, delete: bool = False) -> int:
+    """Show `dlg` over its window, which dims behind it; a click on the dim part cancels it, as
+    for the pop-overs and menus. Returns its result, as exec() would. `delete` deletes it after.
+
+    The dim does the blocking instead of a modal exec(): a modal dialog would keep the click on
+    the dim part from ever arriving."""
+    parent = dlg.parentWidget() if isinstance(dlg, QDialog) else None
+    scrim = scrim_of(parent) if parent is not None else None
+    if scrim is None or type(dlg).exec is not QDialog.exec:
+        result = dlg.exec()  # no window to dim, or a dialog that runs itself
+    else:
+        result = QDialog.DialogCode.Rejected.value
+        loop = QEventLoop()
+
+        def finished(r: int):
+            nonlocal result
+            result = r
+            loop.quit()
+
+        dlg.finished.connect(finished)
+        dlg.destroyed.connect(loop.quit)
+        dlg.setWindowModality(Qt.WindowModality.NonModal)
+        scrim.cover(dlg, dlg.reject)
+        dlg.show()
+        dlg.raise_()
+        dlg.activateWindow()
+        try:
+            loop.exec()
+        finally:
+            scrim.uncover(dlg)
+        if isValid(dlg):
+            dlg.finished.disconnect(finished)
+    if delete and isValid(dlg):
+        dlg.deleteLater()
+    return int(result)

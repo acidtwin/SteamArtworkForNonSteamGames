@@ -776,18 +776,13 @@ class Overlay(QFrame):
         self._anim.finished.connect(self._faded)
         self._leaving = False
         self._return_to: QWidget | None = None  # where keyboard focus goes back to on closing
+        self._anchor: tuple[QPoint, bool] | None = None  # where it opened: (global point, align_right)
         self.hide()
 
     def open_above(self, anchor: QPoint, align_right: bool = False):
         """Open above `anchor` (a global point), kept inside the window."""
-        host = self.parentWidget()
-        self.adjustSize()
-        w, h = self.width(), self.sizeHint().height()
-        a = host.mapFromGlobal(anchor)
-        x = a.x() - w + 24 if align_right else a.x() - w // 2
-        x = max(8, min(x, host.width() - w - 8))
-        y = max(8, a.y() - h - 8)
-        self.setGeometry(x, y, w, h)
+        self._anchor = (QPoint(anchor), align_right)
+        self._place()
         scrim = scrim_of(self)
         if scrim is not None:
             scrim.cover(self, self.dismiss)  # the window dims behind it, and a click there closes it
@@ -801,6 +796,37 @@ class Overlay(QFrame):
             self.show()
         self._fade(self._fx.opacity(), 1.0)
         QApplication.instance().installEventFilter(self)
+
+    def _place(self):
+        """Size it to its contents, its bottom edge just above the anchor."""
+        host = self.parentWidget()
+        anchor, align_right = self._anchor
+        self.adjustSize()
+        w = self.width()
+        h = self.heightForWidth(w) if self.hasHeightForWidth() else -1
+        h = max(h, self.sizeHint().height())
+        a = host.mapFromGlobal(anchor)
+        x = a.x() - w + 24 if align_right else a.x() - w // 2
+        x = max(8, min(x, host.width() - w - 8))
+        y = max(8, a.y() - h - 8)
+        if self.geometry() != QRect(x, y, w, h):
+            self.setGeometry(x, y, w, h)
+
+    def event(self, e):
+        if e.type() == QEvent.Type.LayoutRequest and getattr(self, "_anchor", None) is not None:
+            # Its contents changed size (an error line appeared): grow upwards, so it never
+            # squashes its contents or covers the status bar it opened from.
+            QTimer.singleShot(0, self, self._replace)
+        return super().event(e)
+
+    def _replace(self):
+        if self.is_open():
+            self._place()
+
+    def _on_top(self) -> bool:
+        """Whether it's the topmost thing open: a dialog opened over it handles clicks and Esc itself."""
+        scrim = scrim_of(self)
+        return scrim is None or scrim.top() is None or scrim.top() is self
 
     def is_open(self) -> bool:
         return self.isVisible() and not self._leaving
@@ -837,12 +863,15 @@ class Overlay(QFrame):
             scrim.uncover(self)
 
     def hideEvent(self, e):
-        self._uncover()
+        if not e.spontaneous():  # a spontaneous hide is the window being minimised: it stays open
+            self._uncover()
+            QApplication.instance().removeEventFilter(self)  # also when hidden without dismiss()
         super().hideEvent(e)
 
     def eventFilter(self, obj, e):
         t = e.type()
-        if t == QEvent.Type.MouseButtonPress and isinstance(obj, QWidget) and obj.window() is self.window():
+        if (t == QEvent.Type.MouseButtonPress and isinstance(obj, QWidget) and obj.window() is self.window()
+                and self._on_top()):
             inside = obj is self or self.isAncestorOf(obj)
             on_anchor = self.anchor_widget is not None and (
                 obj is self.anchor_widget or self.anchor_widget.isAncestorOf(obj))
@@ -852,7 +881,8 @@ class Overlay(QFrame):
             self.dismiss()  # its anchor moved
         elif (t == QEvent.Type.KeyPress and e.key() == Qt.Key.Key_Escape and self.isVisible()
               and isinstance(obj, QWidget) and obj.window() is self.window()
-              and QApplication.activePopupWidget() is None and QApplication.activeModalWidget() is None):
+              and QApplication.activePopupWidget() is None and QApplication.activeModalWidget() is None
+              and self._on_top()):
             self.dismiss()  # only Esc meant for this window: a dialog or menu over it closes itself
             return True
         return False

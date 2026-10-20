@@ -1449,3 +1449,111 @@ def test_steam_game_is_changed_in_the_game_picker(qapp, window, monkeypatch):
     win.change_match()
     _pump(qapp, 500)
     assert win.config.get_steam_match(sc.appid)["id"] == 0 and looked == [42]
+
+
+def test_dialogs_dim_the_window_and_close_on_a_dim_click(qapp, window):
+    from PySide6.QtCore import QEvent, QPoint, Qt, QTimer
+    from PySide6.QtTest import QTest
+    from PySide6.QtWidgets import QApplication
+
+    from steam_artwork_finder.gui.dialogs import ConfirmDialog
+    from steam_artwork_finder.gui.scrim import run_dialog
+
+    win = window
+    seen = {}
+
+    def click_dim():
+        dlg = win.scrim.top()
+        seen["dialog"] = dlg
+        seen["dimmed"] = win.scrim.isVisible() and isinstance(dlg, ConfirmDialog) and dlg.isVisible()
+        seen["modal"] = QApplication.activeModalWidget()
+        QTest.mouseClick(win.scrim, Qt.MouseButton.LeftButton, pos=QPoint(10, 10))
+
+    QTimer.singleShot(200, click_dim)
+    assert win._ask_discard() is False  # the dim click cancels it
+    assert seen["dimmed"] and seen["modal"] is None  # dimmed, and the dim does the blocking
+    assert not win.scrim.is_covering()
+    qapp.sendPostedEvents(None, QEvent.Type.DeferredDelete)
+    assert not win.findChildren(ConfirmDialog)  # not left behind
+
+    # The keyboard still works: Enter takes the default button, Esc cancels.
+    for key, want in ((Qt.Key.Key_Return, 1), (Qt.Key.Key_Escape, 0)):
+        dlg = ConfirmDialog(win, "Heading", "Words", "Do it")
+        QTimer.singleShot(150, lambda d=dlg, k=key: QTest.keyClick(d, k))
+        assert run_dialog(dlg, delete=True) == want
+
+    # Over a pop-over: a dim click closes the dialog only, and the pop-over comes back above the dim.
+    win.ask_api_key()
+    _pump(qapp, 200)
+    QTimer.singleShot(200, click_dim)
+    assert run_dialog(ConfirmDialog(win, "Heading", "Words", "Do it"), delete=True) == 0
+    _pump(qapp, 50)
+    assert win.keypop.is_open() and win.scrim.top() is win.keypop
+    kids = win.children()
+    assert kids.index(win.keypop) > kids.index(win.scrim)  # stacked above the dim again
+    win.keypop.dismiss()
+
+
+def test_window_shortcuts_wait_behind_the_dim(qapp, window):
+    from PySide6.QtGui import QKeySequence
+    from PySide6.QtWidgets import QApplication
+
+    win = window
+    find = next(a for a in win.actions() if a.shortcut().matches(QKeySequence(QKeySequence.StandardKey.Find)))
+    win.activateWindow()
+    win.ask_api_key()
+    _pump(qapp, 200)
+    assert win.scrim.is_covering()
+    find.trigger()
+    _pump(qapp, 50)
+    assert QApplication.focusWidget() is not win.game_list.search
+    win.keypop.dismiss()
+    _pump(qapp, 300)
+    find.trigger()
+    _pump(qapp, 50)
+    assert QApplication.focusWidget() is win.game_list.search
+
+
+def test_key_check_after_closing_doesnt_save(qapp, window, monkeypatch):
+    from steam_artwork_finder.gui import dialogs
+
+    win = window
+    calls = []
+    monkeypatch.setattr(dialogs.workers, "run", lambda fn, on_done, on_error: calls.append(on_done))
+    saved = []
+    win.keypop.saved.connect(saved.append)
+    win.ask_api_key()
+    _pump(qapp, 200)
+    pop = win.keypop
+    bottom = pop.geometry().bottom()
+    pop._say("SteamGridDB didn't accept that key. Check you copied all of it, then try again.", "red")
+    _pump(qapp, 100)
+    assert pop.geometry().bottom() == bottom  # grows upwards, still clear of the status bar
+    assert pop.height() >= pop.sizeHint().height()
+    pop.edit.setText("abc")
+    pop._check()
+    pop.dismiss()  # closed while it was being checked
+    calls[-1](True)
+    assert saved == [] and not pop.is_open()
+    win.ask_api_key()
+    _pump(qapp, 200)
+    assert pop.save.isEnabled()  # not stuck on the check that was dropped
+    pop._check()
+    calls[-1](True)
+    assert saved == ["abc"]
+
+
+def test_minimising_keeps_a_pop_over_dimmed(qapp, window):
+    win = window
+    win.ask_api_key()
+    _pump(qapp, 300)
+    pop = win.keypop
+    win.showMinimized()  # every child gets a spontaneous hide
+    _pump(qapp, 300)
+    win.showNormal()
+    _pump(qapp, 300)
+    assert pop.is_open()
+    assert win.scrim.is_covering() and win.scrim.isVisible() and win.scrim.top() is pop
+    pop.dismiss()
+    _pump(qapp, 300)
+    assert not win.scrim.is_covering()
