@@ -314,7 +314,7 @@ class MainWindow(QMainWindow):
         self.nogames = self._full_message(
             "No non-Steam games yet", "Add one in Steam, then come back here.",
             "In Steam, open Games › Add a Non-Steam Game to My Library…, pick your game, "
-            "then click Check Again below.", "Check Again", self.reload_shortcuts, "")
+            "then click Reload Game List below.", "Reload Game List", self.reload_shortcuts, "go")
         self.start = StartPage(self)
         self.start.picked.connect(self.open_game)
         bar = self.game_list.homebar
@@ -390,13 +390,13 @@ class MainWindow(QMainWindow):
         menu = GameMenu(None, "", None, [
             "Library",
             Item("Reload Game List", "refresh", self.reload_game_list, shortcut="Ctrl+R"),
-            Item("Open Artwork Folder", "images", self.open_grid_folder, bool(self.user)),
+            Item("Open Artwork Folder", "folder", self.open_grid_folder, bool(self.user)),
             Item("Restore Steam's Game List…", "history", self.restore_backup, bool(self.sfile)),
             "Settings",
             Item("Steam Folder…", "folder", self.show_folder_popover),
             Item("SteamGridDB API Key…", "key", self.ask_api_key),
             Item("Restart Steam When I Apply", "power", self._menu_auto_restart, toggle=self.auto_restart),
-            Item("Apply When I Quit", "check", self._menu_apply_on_quit, toggle=self.apply_on_quit),
+            Item("Apply When I Quit", "exit", self._menu_apply_on_quit, toggle=self.apply_on_quit),
             Item("Show Animated Artwork", "play", self._set_show_animated, toggle=self.show_animated),
             Item("Use Steam's Official Artwork", "images", self._set_steam_art, toggle=self.steam_art),
             "Help",

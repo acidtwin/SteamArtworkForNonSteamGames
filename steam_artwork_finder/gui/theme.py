@@ -263,7 +263,8 @@ def stylesheet() -> str:
     #fseg QPushButton:hover {{ color: {c['text']}; }}
     #fseg QPushButton:checked {{ background: {c['select']}; color: {c['text']}; }}
     #facct {{ background: {c['panel']}; border-radius: 3px; }}
-    #spopcheck::indicator {{ width: 18px; height: 18px; }}
+    #spopcheck::indicator {{ width: 18px; height: 18px; border-radius: 3px; border: 1px solid {c['text3']}; background: {c['raised']}; }}
+    #spopcheck::indicator:checked {{ background: {c['action']}; border-color: {c['action']}; image: url("{tick}"); }}
     #dialogfoot {{ background: {c['foot']}; border-top: 1px solid {c['line']}; }}
     #empty {{ background: {c['raised']}; border-radius: 3px; color: {c['text2']}; padding: 12px; }}
     """

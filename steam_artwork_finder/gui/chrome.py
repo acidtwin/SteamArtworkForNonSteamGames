@@ -690,9 +690,9 @@ class StatusBar(QWidget):
             self.steam.setToolTip(_tip(path_text or "Steam folder", "Click to find Steam or choose another folder"))
             self.steam.setAccessibleName("Steam Detected. Find Steam or choose another folder")
         else:
-            self.steam.set_state("Steam Undetected", "x-circle", C["off"])
+            self.steam.set_state("Steam Not Found", "x-circle", C["off"])
             self.steam.setToolTip(_tip("No Steam folder found", "Click to choose your Steam folder"))
-            self.steam.setAccessibleName("Steam Undetected. Choose the Steam folder")
+            self.steam.setAccessibleName("Steam not found. Choose the Steam folder")
         self.process.setVisible(found)
         self.div2.setVisible(found)
 

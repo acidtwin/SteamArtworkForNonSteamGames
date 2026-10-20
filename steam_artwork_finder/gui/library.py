@@ -36,7 +36,8 @@ ICON = QSize(32, 32)
 NEW_BG = C["action"]
 
 # key, name for the tooltip, text in the menu
-FILTERS = (("all", "All Games", "All"), ("missing", "Missing Art", "Missing Art"), ("check", "To Check", "To Check"))
+FILTERS = (("all", "All Games", "All"), ("missing", "Missing Artwork", "Missing Artwork"),
+           ("check", "Needs a Look", "Needs a Look"))  # a match to check, or not found
 # key, name, icon: how the library shows its games
 VIEWS = (("list", "List", "view-list"), ("grid", "Grid", "view-grid"), ("details", "Details", "view-details"))
 # key, name, icon: the order the library lists its games in
@@ -569,14 +570,15 @@ class HomeButton(QAbstractButton):
         p.setRenderHint(QPainter.RenderHint.Antialiasing)
         r = QRectF(self.rect())
         hover = self.underMouse() and self.isEnabled()
+        on = self.on and self.isEnabled()  # a disabled bar (no Steam, no games) mustn't look in use
         p.setPen(Qt.PenStyle.NoPen)
-        p.setBrush(q("select") if self.on else q("raised") if hover else q("input"))
+        p.setBrush(q("select") if on else q("raised") if hover else q("input"))
         p.drawRoundedRect(r, 3, 3)
         if theme.kbd_focus(self):
             p.setPen(QPen(q("blue"), 2))
             p.setBrush(Qt.BrushStyle.NoBrush)
             p.drawRoundedRect(r.adjusted(1, 1, -1, -1), 3, 3)
-        fg = QColor("white") if self.on else q("text") if hover else q("text2")
+        fg = (q("text3") if not self.isEnabled() else QColor("white") if on else q("text") if hover else q("text2"))
         icons.draw(p, "home", QRectF(10, r.center().y() - 8, 16, 16), fg)
         p.setPen(fg)
         p.drawText(QRectF(34, 0, r.width() - 40, r.height()), Qt.AlignmentFlag.AlignVCenter, self.text())
@@ -626,7 +628,7 @@ class ViewButton(QAbstractButton):
             p.setBrush(Qt.BrushStyle.NoBrush)
             p.drawRoundedRect(r.adjusted(0.5, 0.5, -0.5, -0.5), 3, 3)
         icon = next(i for k, _, i in self.options if k == self.view)
-        fg = QColor("white") if held else q("text") if hover else q("text2")
+        fg = q("text3") if not self.isEnabled() else QColor("white") if held else q("text") if hover else q("text2")
         icons.draw(p, icon, QRectF(r.center().x() - 8, r.center().y() - 8, 16, 16), fg)
 
 
@@ -839,7 +841,7 @@ class GameList(QWidget):
         elif term:
             text, link = f"No games match “{self.search.text().strip()}”.", True
         elif self.filter_mode == "check":
-            text = "Nothing to check. Every match was exact."
+            text = "Nothing needs a look. Every game was found and matched exactly."
         else:
             text = "No games match."
         self.empty_text.setText(text)
@@ -1247,7 +1249,7 @@ class ListDelegate(QStyledItemDelegate):
         p.restore()
 
 
-DETAIL_COLS = ("Cover", "Wide", "Banner", "Logo", "Icon")
+DETAIL_COLS = ("Cover", "Wide cover", "Banner", "Logo", "Icon")
 DETAIL_TIPS = ("Cover", "Wide cover", "Banner", "Logo", "Icon")
 DETAIL_W, STATUS_W = 64, 130
 NARROW_W = 40  # piece columns when the view is narrow
@@ -1273,7 +1275,7 @@ def detail_status(win, idx: int) -> tuple[str, QColor]:
         return TAGS[tag][0], QColor(TAGS[tag][2])
     if is_ready(win, idx):
         return "Ready to apply", q("blue_ink")
-    return ("Complete", q("text2")) if win.complete(sc) else ("Missing art", q("text3"))
+    return ("All artwork", q("text2")) if win.complete(sc) else ("Missing artwork", q("text3"))
 
 
 class DetailsDelegate(QStyledItemDelegate):
@@ -1507,10 +1509,11 @@ class StartPage(QWidget):
         el = QHBoxLayout(self.empty)
         el.setContentsMargins(0, 6, RIGHT, 0)
         el.setSpacing(4)
-        empty_text = QLabel("No games match this filter.")
+        self.empty_text = empty_text = QLabel("No games match this filter.")
         empty_text.setStyleSheet(f"color: {C['text2']};")
         el.addWidget(empty_text)
-        el.addWidget(quiet_button("Show all games", self._show_everything))
+        self.empty_button = quiet_button("Show all games", self._show_everything)
+        el.addWidget(self.empty_button)
         el.addStretch(1)
         self.empty.hide()
         lay.addWidget(self.empty)
@@ -1581,6 +1584,10 @@ class StartPage(QWidget):
             show = (self.piece is None or not cov[idx][self.piece]) and win.game_list.matches(win.sfile.shortcuts[idx])
             it.setHidden(not show)
             shown += show
+        if n > 0 and not shown:  # say it the way the sidebar does: a search isn't a filter
+            term = win.game_list.search.text().strip()
+            self.empty_text.setText(f"No games match “{term}”." if term else "No games match this filter.")
+            self.empty_button.setText("Clear search" if term else "Show all games")
         self.empty.setVisible(n > 0 and not shown)
         self.header.setVisible(self.wall.view == "details" and shown > 0)
         if self.piece is None:

@@ -97,7 +97,7 @@ class KeyPopover(Overlay):
         row.setSpacing(8)
         box = QFrame()
         box.setObjectName("keybox")
-        box.setFixedHeight(42)
+        box.setFixedHeight(40)  # level with the Paste button beside it
         box.setStyleSheet(f"""
             #keybox {{ background: {C['input']}; border: 1px solid {C['line']}; border-radius: 3px; }}
             #keybox QLineEdit {{ background: transparent; border: none; min-height: 0; padding: 0 0 0 11px; }}
@@ -459,6 +459,13 @@ class MatchDialog(QDialog):
         body = QVBoxLayout()
         body.setContentsMargins(16, 16, 16, 16)
         body.setSpacing(12)
+        heading = QLabel(f"Which game is “{name}”?")  # the same opening line as the app's other windows
+        heading.setWordWrap(True)
+        hf = QFont(heading.font())
+        hf.setPointSizeF(theme.pt("heading"))
+        hf.setWeight(QFont.Weight.Bold)
+        heading.setFont(hf)
+        body.addWidget(heading)
 
         self.terms = suggestions(name, exe)
         first = self.terms[0][0] if self.terms else name
@@ -572,7 +579,8 @@ class MatchDialog(QDialog):
             c.setSpacing(6)
             grid.addLayout(c)
         self.stats: dict[str, QLabel] = {}
-        for i, (kind, label) in enumerate((("grid", "covers"), ("hero", "banners"), ("logo", "logos"), ("icon", "icons"))):
+        for i, (kind, label) in enumerate((("grid", "covers"), ("wide", "wide covers"), ("hero", "banners"),
+                                           ("logo", "logos"), ("icon", "icons"))):
             box = QLabel()
             box.setObjectName("matchstat")
             box.setTextFormat(Qt.TextFormat.RichText)
@@ -1231,8 +1239,9 @@ class RestoreDialog(QDialog):
         scroll.setFrameShape(QFrame.Shape.NoFrame)
         scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
         scroll.setMinimumHeight(min(3, max(1, len(backups))) * 64)
+        scroll.setMaximumHeight(min(5, max(1, len(backups))) * 64 + 8)  # hugs its rows: no gap above the note
         scroll.setStyleSheet("QScrollArea, QScrollArea > QWidget > QWidget { background: transparent; }")
-        body.addWidget(scroll, 1)
+        body.addWidget(scroll)
         info = QLabel("A copy is saved before every change. Restoring puts back game names, launch options "
                       "and icons; artwork images stay. Your list now is saved as a copy first.")
         info.setWordWrap(True)
