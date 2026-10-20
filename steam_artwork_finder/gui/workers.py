@@ -27,17 +27,19 @@ class Task(QRunnable):
 
     def run(self):
         try:
-            try:
-                result = self.fn(*self.args, **self.kwargs)
-            except RuntimeError as e:
-                if "Signal source has been deleted" in str(e):
-                    return  # the app is closing: nobody is left to tell
-                raise
-            except Exception as e:  # report anything to the UI
-                traceback.print_exc()
-                self.signals.failed.emit(str(e) or type(e).__name__)
-                return
-            self.signals.done.emit(result)
+            result = self.fn(*self.args, **self.kwargs)
+        except Exception as e:  # report anything to the UI
+            if isinstance(e, RuntimeError) and "Signal source has been deleted" in str(e):
+                return  # the app is closing: nobody is left to tell
+            traceback.print_exc()
+            self._emit(self.signals.failed, str(e) or type(e).__name__)
+            return
+        self._emit(self.signals.done, result)
+
+    @staticmethod
+    def _emit(signal, value):
+        try:
+            signal.emit(value)
         except RuntimeError:  # the signals went with the closing app
             pass
 
