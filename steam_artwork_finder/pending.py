@@ -28,16 +28,30 @@ class Pick:
     """One waiting change to one piece of a game's artwork.
 
     `asset` None means "clear this piece". `data` is the downloaded file once
-    it has been fetched (Get Artwork fetches it straight away; a pick made by
-    clicking an option is downloaded when it is applied).
+    it has been fetched (Get Artwork fetches it straight away, into `file`; a pick
+    made by clicking an option is downloaded when it is applied).
     """
 
     asset: Asset | None
     data: bytes | None = None
+    file: str | None = None  # the download kept on disk instead of in memory (Get Artwork)
 
     @property
     def clears(self) -> bool:
         return self.asset is None
+
+    @property
+    def fetched(self) -> bool:
+        return self.data is not None or self.file is not None
+
+    def content(self) -> bytes | None:
+        """The downloaded file's bytes, from memory or from its spool file."""
+        if self.data is not None:
+            return self.data
+        if self.file is not None:
+            with open(self.file, "rb") as f:
+                return f.read()
+        return None
 
 
 class Pending:

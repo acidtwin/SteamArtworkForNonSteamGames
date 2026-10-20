@@ -4,6 +4,8 @@ from __future__ import annotations
 
 import itertools
 import os
+import tempfile
+from collections import OrderedDict
 import sys
 from pathlib import Path
 
@@ -54,7 +56,7 @@ from .gamepage import GamePage
 from .library import SORTS, GameList, StartPage, art_text, sorted_indices
 from .tray import ROLE_PIX, OptionTray
 from .tray import _full_for as tray_full_pixmap
-from .widgets import ArtView, Notice, Toast, label, load_pixmap
+from .widgets import ArtView, Notice, Toast, _largest_frame, label, load_pixmap
 
 ORDER = ("grid", "wide", "hero", "logo", "icon")
 EXE_STYLE = "exe"  # the style of an icon taken from the game's .exe
@@ -85,6 +87,109 @@ def is_exact(sc_name: str, game_name: str, exe: str = "") -> bool:
     want = clean_name(game_name).casefold()
     term = search_name(sc_name, exe)
     return any(v.casefold() == want for v in name_variants(sc_name) + name_variants(term))
+
+
+# The biggest a waiting pick is shown at (Steam's own sizes): its preview is decoded no larger.
+PICK_BOUND = {"grid": (600, 900), "wide": (920, 430), "hero": (1920, 620), "logo": (1280, 720), "icon": (256, 256)}
+
+
+def decode_pick(src, slot_key: str) -> QImage:
+    """Worker: a waiting pick's picture, from its file path or bytes, scaled down to PICK_BOUND."""
+    from PySide6.QtCore import QBuffer, QByteArray, QIODevice
+    from PySide6.QtGui import QImageReader
+
+    buf = None
+    if isinstance(src, (bytes, bytearray)):
+        buf = QBuffer()
+        buf.setData(QByteArray(bytes(src)))
+        buf.open(QIODevice.OpenModeFlag.ReadOnly)
+        reader = QImageReader(buf)
+    else:
+        reader = QImageReader(str(src))
+    reader.setAutoTransform(True)
+    _largest_frame(reader)
+    w, h = PICK_BOUND.get(slot_key, (1920, 1920))
+    size = reader.size()
+    if size.isValid() and (size.width() > w or size.height() > h):
+        scale = min(w / size.width(), h / size.height())
+        reader.setScaledSize(QSize(max(1, round(size.width() * scale)), max(1, round(size.height() * scale))))
+    img = reader.read()
+    del buf
+    return img
+
+
+def picks_dir() -> Path:
+    return cache_dir() / "picks" / str(os.getpid())  # this run's own: another copy of the app has its own
+
+
+def _spool_pick(data: bytes, appid: int, slot_key: str) -> tuple[str, QImage]:
+    """Worker: keep a Get Artwork download on disk until Apply (not in memory, which ran to
+    gigabytes on big libraries) and decode its preview here, at the size it's shown."""
+    d = picks_dir()
+    d.mkdir(parents=True, exist_ok=True)
+    fd, path = tempfile.mkstemp(prefix=f"{appid}-{slot_key}-", dir=d)
+    with os.fdopen(fd, "wb") as f:
+        f.write(data)
+    return path, decode_pick(data, slot_key)
+
+
+def clear_picks():
+    """Waiting picks don't outlive the app: drop the spooled downloads of past runs."""
+    import shutil
+
+    try:
+        runs = list((cache_dir() / "picks").iterdir())
+    except OSError:
+        return
+    for d in runs:
+        try:
+            pid = int(d.name)
+            if pid != os.getpid():
+                os.kill(pid, 0)  # still running: leave it alone
+                continue
+        except ProcessLookupError:
+            pass
+        except (ValueError, OSError):
+            continue
+        shutil.rmtree(d, ignore_errors=True)
+
+
+class PixmapLRU(OrderedDict):
+    """pick_pix: newest last, oldest let go once over `budget` bytes."""
+
+    def __init__(self, budget: int):
+        super().__init__()
+        self.budget, self.used = budget, 0
+
+    @staticmethod
+    def _size(pm) -> int:
+        return pm.width() * pm.height() * 4 if pm is not None else 0
+
+    def __setitem__(self, key, pm):
+        if key in self:
+            self.used -= self._size(super().pop(key))
+        super().__setitem__(key, pm)
+        self.used += self._size(pm)
+        while self.used > self.budget and len(self) > 1:
+            _, old = self.popitem(last=False)
+            self.used -= self._size(old)
+
+    def get(self, key, default=None):
+        if key in self:
+            self.move_to_end(key)
+            return super().__getitem__(key)
+        return default
+
+    def pop(self, key, *default):
+        if key in self:
+            pm = super().pop(key)
+            self.used -= self._size(pm)
+            return pm
+        return default[0] if default else None
+
+    def clear(self):
+        super().clear()
+        self.used = 0
 
 
 def _exe_icon_png(appid: int, exe_field: str) -> Path | None:
@@ -143,7 +248,8 @@ class MainWindow(QMainWindow):
         self.candidates: dict[int, int] = {}  # appid -> how many similar names SteamGridDB returned
         self.asset_cache: dict[tuple, list[Asset]] = {}
         self.pending = Pending()
-        self.pick_pix: dict[tuple[int, str], QPixmap] = {}
+        self.pick_pix = PixmapLRU(256 * 1024 * 1024)  # (appid, slot key) -> waiting pick's picture
+        self._pick_loading: set = set()
         self.motion_files: dict[int, tuple[str, str]] = {}  # animated asset id -> (kind, cached file)
         self.full_files: dict[int, str] = {}  # animated asset id -> its full file, for big places
         self._full_loading: set[int] = set()
@@ -719,7 +825,11 @@ class MainWindow(QMainWindow):
         pick = self.pending.get(sc.appid, slot_key)
         if pick is None or pick.clears:
             return None
-        return self.pick_pix.get((sc.appid, slot_key))
+        key = (sc.appid, slot_key)
+        pm = self.pick_pix.get(key)
+        if pm is None:
+            self._load_pick_pix(key, pick)  # let go to save memory: back shortly
+        return pm
 
     def _stage(self, sc: Shortcut, slot_key: str, pick: Pick, pm: QPixmap | None = None):
         self.pending.set(sc.appid, slot_key, pick)
@@ -731,11 +841,27 @@ class MainWindow(QMainWindow):
         if pm is not None:
             self.pick_pix[key] = pm
             return
-        if pick.data:
-            self.pick_pix[key] = load_pixmap(data=pick.data, key=("pick", pick.asset.id))
+        self._load_pick_pix(key, pick)
+
+    def _load_pick_pix(self, key, pick: Pick):
+        """Fill pick_pix[key] off the window's thread: decoded from the pick's file or bytes,
+        else from its option's thumbnail. Also used when the cache let it go."""
+        if key in self._pick_loading:
+            return
+        self._pick_loading.add(key)
+        if pick.fetched:
+            def decoded(img, key=key, pick=pick):
+                self._pick_loading.discard(key)
+                if self.pending.get(*key) is pick and not img.isNull():
+                    self.pick_pix[key] = QPixmap.fromImage(img)
+                    self.refresh_soon()
+
+            workers.run(decode_pick, pick.file if pick.file else pick.data, key[1], kind="cpu", on_done=decoded,
+                        on_error=lambda _m, key=key: self._pick_loading.discard(key))
             return
 
         def loaded(pm, key=key, asset=pick.asset):
+            self._pick_loading.discard(key)
             cur = self.pending.get(*key)
             full = tray_full_pixmap(asset.id)  # sharper than the thumbnail, if See all loaded it
             if full is not None:
@@ -1665,7 +1791,7 @@ class MainWindow(QMainWindow):
                 if pick.clears:
                     change = remove_asset(grid_dir, sc, slot, None if defer else sfile)
                 else:
-                    change = save_asset(grid_dir, sc, slot, pick.data, pick.asset.mime,
+                    change = save_asset(grid_dir, sc, slot, pick.content(), pick.asset.mime,
                                         None if defer else sfile)
             except Exception as e:
                 errors.append(f"{sc.name} {slot.label.lower()}: {e}")
@@ -1691,6 +1817,8 @@ class MainWindow(QMainWindow):
                 self.config.set_applied(sc.appid, key, info)
             self.pending.drop(sc.appid, key)
             self.pick_pix.pop((sc.appid, key), None)
+            if pick.file:
+                Path(pick.file).unlink(missing_ok=True)
             if change.reloaded:
                 self._after_reload(sc.appid)
             done.append((change, before, defer))
@@ -1783,7 +1911,7 @@ class MainWindow(QMainWindow):
         # The account the picks were made for, even if another is opened before the writes.
         root, grid_dir, sfile = self.steam_root, self.user.grid_dir, self.sfile
         restart = self.steam_is_running() and self.auto_restart
-        todo = [p for _, _, p in jobs if not p.clears and p.data is None]
+        todo = [p for _, _, p in jobs if not p.clears and not p.fetched]
         self._set_busy("apply", f"Downloading artwork  1 of {len(todo)}" if todo else
                        "Closing Steam…" if restart else
                        f"Applying changes to {plural(len({j[0].appid for j in jobs} | {r[0].appid for r in renames}), 'game')}…")
@@ -1994,7 +2122,7 @@ class MainWindow(QMainWindow):
                 a = official.get(slot.key)
                 if a is not None:
                     try:
-                        progress(("asset", sc, slot, self.sgdb.download(a.url), a))
+                        progress(("asset", sc, slot, *_spool_pick(self.sgdb.download(a.url), sc.appid, slot.key), a))
                         got = True
                         continue
                     except Exception:
@@ -2008,7 +2136,7 @@ class MainWindow(QMainWindow):
                         progress(("empty", sc, slot))
                         continue
                     data = self.sgdb.download(assets[0].url)
-                    progress(("asset", sc, slot, data, assets[0]))
+                    progress(("asset", sc, slot, *_spool_pick(data, sc.appid, slot.key), assets[0]))
                     got = True
                 except AuthError:
                     raise
@@ -2067,9 +2195,10 @@ class MainWindow(QMainWindow):
                 if self.current_shortcut() is sc and self.stage.currentWidget() is self.page:
                     self._show_steam(sc, found)
             elif kind == "asset":
-                _, sc, slot, data, asset = ev
+                _, sc, slot, file, img, asset = ev
                 self.config.set_no_art(sc.appid, slot.key, False)
-                self._stage(sc, slot.key, Pick(asset, data))
+                pm = QPixmap.fromImage(img) if not img.isNull() else None
+                self._stage(sc, slot.key, Pick(asset, file=file), pm)
                 self.refresh_soon()
             elif kind == "empty":
                 _, sc, slot = ev
@@ -2303,6 +2432,7 @@ def main() -> int:
 
     smooth.install(app)
     app.aboutToQuit.connect(workers.shutdown)
+    clear_picks()
     win = MainWindow()
     screen = app.primaryScreen().availableGeometry() if app.primaryScreen() else None
     if screen is not None and (screen.width() <= 1280 or screen.height() <= 800):
