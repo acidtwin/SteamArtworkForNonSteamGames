@@ -640,6 +640,30 @@ def test_content_bar_buttons_keep_focus_through_a_refresh(qapp, window):
     assert win.cbar.buttons[0] is b and b.hasFocus() and b.text() == "Get Artwork (3 Games)"
 
 
+def test_no_focus_ring_when_a_clicked_button_turns_off(qapp, window):
+    """Clicking Apply turns it off; focus must not jump to the header logo with a ring."""
+    from PySide6.QtWidgets import QApplication
+    from PySide6.QtCore import QEvent, QPointF, Qt
+    from PySide6.QtGui import QMouseEvent
+    from steam_artwork_finder.gui import theme
+    win = window
+    win.activateWindow()
+    b = win.cbar.buttons[0]
+    pos = QPointF(b.rect().center())
+    press = QMouseEvent(QEvent.Type.MouseButtonPress, pos, b.mapToGlobal(pos), Qt.MouseButton.LeftButton,
+                        Qt.MouseButton.LeftButton, Qt.KeyboardModifier.NoModifier)
+    QApplication.sendEvent(b, press)  # the last input was a click
+    b.setFocus(Qt.FocusReason.MouseFocusReason)
+    _pump(qapp, 50)
+    win.cbar.set_buttons([(b.text(), b._kind, False, None)])
+    focus = QApplication.focusWidget()
+    assert focus is win.start.wall and not theme.kbd_focus(focus)
+    assert not win.header.home.hasFocus()
+    # Qt itself moves focus on with a Tab reason; after a click that's no keyboard focus
+    win.header.home.setFocus(Qt.FocusReason.TabFocusReason)
+    assert not theme.kbd_focus(win.header.home)
+
+
 def test_popover_keeps_tab_and_esc_to_itself(qapp, window):
     from PySide6.QtCore import QEvent, Qt
     from PySide6.QtGui import QKeyEvent

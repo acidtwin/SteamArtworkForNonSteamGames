@@ -70,17 +70,6 @@ class _Click(QWidget):
         self.setFocusPolicy(Qt.FocusPolicy.TabFocus)
         self.setAttribute(Qt.WidgetAttribute.WA_Hover)
         self.hovered = False
-        self.kbd_focus = False
-
-    def focusInEvent(self, e):
-        self.kbd_focus = e.reason() in (Qt.FocusReason.TabFocusReason, Qt.FocusReason.BacktabFocusReason)
-        self.update()
-        super().focusInEvent(e)
-
-    def focusOutEvent(self, e):
-        self.kbd_focus = False
-        self.update()
-        super().focusOutEvent(e)
 
     def event(self, e):
         if e.type() in (QEvent.Type.HoverEnter, QEvent.Type.HoverLeave):
@@ -103,7 +92,7 @@ class _Click(QWidget):
             super().keyPressEvent(e)
 
     def paintEvent(self, e):
-        if self.hasFocus() and self.kbd_focus:
+        if theme.kbd_focus(self):
             p = QPainter(self)
             p.setRenderHint(QPainter.RenderHint.Antialiasing)
             p.setPen(QPen(q("blue"), 2))
@@ -396,6 +385,7 @@ class ContentBar(QWidget):
         self._btn_box.setSpacing(8)
         lay.addLayout(self._btn_box)
         self.buttons: list[QAbstractButton] = []
+        self.rest_focus = None  # puts focus on the page when a focused button turns off
         self.show_library(None)
 
     def show_library(self, count: int | None):
@@ -447,14 +437,15 @@ class ContentBar(QWidget):
             self.buttons[min(had_focus, len(self.buttons) - 1)].setFocus(Qt.FocusReason.OtherFocusReason)
         return self.buttons
 
-    @staticmethod
-    def _update(b: QAbstractButton, text: str, kind: str, enabled: bool, cb):
+    def _update(self, b: QAbstractButton, text: str, kind: str, enabled: bool, cb):
         if kind == "more":
             b.setToolTip(text or "More")
             b.setAccessibleName(text or "More")
         else:
             b.setText(text)
             b.setAccessibleName(text)
+        if not enabled and b.hasFocus() and self.rest_focus:
+            self.rest_focus()  # else Qt moves focus on to the next widget: round to the header logo
         b.setEnabled(enabled)
         b._cb = cb
 

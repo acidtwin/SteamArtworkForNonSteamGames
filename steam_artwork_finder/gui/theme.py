@@ -82,7 +82,6 @@ def text_width(text: str) -> int:
 
 # Focus rings show only for keyboard focus, as in Steam: not after a click or when the app
 # moves focus itself after a click (a pop-over closing, a page opening).
-_KEY_REASONS = (Qt.FocusReason.TabFocusReason, Qt.FocusReason.BacktabFocusReason, Qt.FocusReason.ShortcutFocusReason)
 _NAV_KEYS = {Qt.Key.Key_Left, Qt.Key.Key_Right, Qt.Key.Key_Up, Qt.Key.Key_Down, Qt.Key.Key_Home, Qt.Key.Key_End,
              Qt.Key.Key_PageUp, Qt.Key.Key_PageDown}
 
@@ -104,8 +103,10 @@ class _FocusTracker(QObject):
         elif t in (QEvent.Type.MouseButtonPress, QEvent.Type.MouseButtonDblClick, QEvent.Type.TouchBegin):
             self.last_key = False
         elif t == QEvent.Type.FocusIn and isinstance(obj, QWidget):
+            # Qt also gives Tab as the reason when it moves focus on by itself (the focused
+            # button was disabled or hidden), so only a key press counts as the keyboard.
             r = e.reason()
-            _mark(obj, r in _KEY_REASONS or (r != Qt.FocusReason.MouseFocusReason and self.last_key))
+            _mark(obj, r != Qt.FocusReason.MouseFocusReason and self.last_key)
         elif t == QEvent.Type.FocusOut and isinstance(obj, QWidget) and obj.property("kbd"):
             _mark(obj, False)
         return False

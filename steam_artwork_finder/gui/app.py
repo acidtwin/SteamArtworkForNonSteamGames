@@ -141,6 +141,7 @@ class MainWindow(QMainWindow):
         cl.setSpacing(0)
         self.cbar = ContentBar()
         self.cbar.home_clicked.connect(self.go_home)
+        self.cbar.rest_focus = self._focus_page
         cl.addWidget(self.cbar)
         self.stage = QStackedWidget()
         self.stage.setObjectName("stage")
@@ -803,6 +804,11 @@ class MainWindow(QMainWindow):
         self.toast.show_message(msg)
 
     # ---- the bars around the pages ----------------------------------------------
+
+    def _focus_page(self):
+        """Focus the page under the content bar (the cover wall on the library)."""
+        page = self.stage.currentWidget()
+        (self.start.wall if page is self.start else page).setFocus(Qt.FocusReason.OtherFocusReason)
 
     def update_chrome(self):
         """The content bar's title and buttons, and the status bar's messages."""
