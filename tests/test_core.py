@@ -369,3 +369,34 @@ def test_finds_steam_in_every_linux_install_place(tmp_path, monkeypatch):
     places = {pl.short: steam.find_steam_roots(pl.candidates) for pl in steam.search_places()}
     assert homes["snap-hidden"].resolve() in places["Snap"]
     assert homes["debian"].resolve() in places["Steam"]
+
+
+def test_damaged_vdf_raises_vdf_error():
+    import pytest
+    from steam_artwork_finder import binvdf
+
+    with pytest.raises(binvdf.VDFError):
+        binvdf.loads(b"\x00shortcuts\x00\x000\x00\x02appid\x00\x01\x02")
+
+
+def test_damaged_config_is_kept_aside(tmp_path):
+    from steam_artwork_finder.config import Config
+
+    p = tmp_path / "config.json"
+    p.write_text("{not json")
+    cfg = Config(p)
+    assert cfg.data == {}
+    assert list(tmp_path.glob("config.json.bad-*"))
+    p.write_text("[]")
+    assert Config(p).data == {}
+
+
+def test_text_download_never_replaces_artwork(tmp_path):
+    import pytest
+    from steam_artwork_finder.artwork import SLOTS, save_asset
+    from steam_artwork_finder.shortcuts import Shortcut
+
+    sc = Shortcut("0", 123, "Game", "/bin/true", "", None)
+    with pytest.raises(ValueError):
+        save_asset(tmp_path / "grid", sc, SLOTS["grid"], b"<html>Sign in to Wi-Fi</html>", "image/png")
+    assert not list((tmp_path / "grid").glob("123*")) if (tmp_path / "grid").exists() else True

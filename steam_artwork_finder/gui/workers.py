@@ -30,7 +30,7 @@ class Task(QRunnable):
             result = self.fn(*self.args, **self.kwargs)
         except Exception as e:  # report anything to the UI
             traceback.print_exc()
-            self.signals.failed.emit(str(e))
+            self.signals.failed.emit(str(e) or type(e).__name__)
             return
         self.signals.done.emit(result)
 

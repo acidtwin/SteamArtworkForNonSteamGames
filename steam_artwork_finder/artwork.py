@@ -188,6 +188,9 @@ def save_asset(
     shortcuts_file: ShortcutsFile | None = None,
 ) -> Change:
     """Write artwork into the grid folder; old files go to grid/.replaced/."""
+    if _looks_like_text(data):
+        # A captive portal or CDN error page served as 200 must not replace real artwork.
+        raise ValueError("the download isn't a picture")
     grid_dir.mkdir(parents=True, exist_ok=True)
     ext = MIME_EXT.get(mime) or _sniff_ext(data)
     if ext == ".webp":
@@ -263,9 +266,30 @@ def is_animated(data: bytes) -> bool:
 def file_is_animated(path: Path) -> bool:
     try:
         with open(path, "rb") as f:
-            return is_animated(f.read(4096))
+            head = f.read(4096)
+            if not head.startswith(b"\x89PNG\r\n\x1a\n"):
+                return is_animated(head)
+            # Walk the PNG chunk headers: large metadata chunks can push acTL past the first 4 KB.
+            pos = 8
+            for _ in range(64):
+                f.seek(pos)
+                hdr = f.read(8)
+                if len(hdr) < 8:
+                    return False
+                kind = hdr[4:]
+                if kind == b"acTL":
+                    return True
+                if kind in (b"IDAT", b"IEND"):
+                    return False
+                pos += 12 + int.from_bytes(hdr[:4], "big")
+            return False
     except OSError:
         return False
+
+
+def _looks_like_text(data: bytes) -> bool:
+    head = data[:64].lstrip()
+    return not head or head[:1] in (b"<", b"{", b"[")
 
 
 def _sniff_ext(data: bytes) -> str:

@@ -167,6 +167,24 @@ def suggestions(name: str, exe: str = "") -> list[tuple[str, str]]:
     return out
 
 
+def retrying_session() -> requests.Session:
+    """A Session that quietly retries dropped connections, read timeouts and 5xx replies
+    (429 is handled by the callers, which honour Retry-After and tell the user)."""
+    from requests.adapters import HTTPAdapter
+    from urllib3.util.retry import Retry
+
+    retry = Retry(
+        total=3, connect=3, read=2, status=2, backoff_factor=0.5,
+        status_forcelist=(500, 502, 503, 504), allowed_methods=frozenset({"GET", "HEAD"}),
+        respect_retry_after_header=False, raise_on_status=False,
+    )
+    s = requests.Session()
+    adapter = HTTPAdapter(max_retries=retry, pool_connections=4, pool_maxsize=8)
+    s.mount("https://", adapter)
+    s.mount("http://", adapter)
+    return s
+
+
 class SteamGridDB:
     def __init__(self, api_key: str, session: requests.Session | None = None):
         self.api_key = api_key
@@ -182,7 +200,7 @@ class SteamGridDB:
         s = getattr(self._local, "session", None)
         if s is None:
             # requests.Session is not thread-safe; workers each get their own.
-            s = self._local.session = requests.Session()
+            s = self._local.session = retrying_session()
             s.headers["User-Agent"] = f"steam-artwork-finder/{__version__}"
         return s
 
@@ -203,9 +221,10 @@ class SteamGridDB:
                 break
             # Rate limited: wait as long as SteamGridDB asks (capped), then retry.
             try:
-                wait = min(float(r.headers.get("Retry-After", 5)), 60.0)
+                wait = float(r.headers.get("Retry-After", 5))
             except ValueError:
                 wait = 5.0
+            wait = 5.0 if wait != wait else max(0.0, min(wait, 60.0))  # NaN, negative, huge
             if self.on_wait:
                 self.on_wait(wait)
             self.sleep(wait)
@@ -219,6 +238,8 @@ class SteamGridDB:
             body = r.json()
         except ValueError:
             raise SGDBError(f"SteamGridDB returned HTTP {r.status_code}")
+        if not isinstance(body, dict):
+            raise SGDBError(f"SteamGridDB returned an unexpected reply (HTTP {r.status_code})")
         if not r.ok or not body.get("success", False):
             errs = body.get("errors") or [f"HTTP {r.status_code}"]
             raise SGDBError("; ".join(map(str, errs)))
@@ -237,6 +258,8 @@ class SteamGridDB:
             return []
         out = []
         for g in self._get("/search/autocomplete/" + quote(term, safe="")):
+            if not isinstance(g, dict) or "id" not in g or not g.get("name"):
+                continue
             year = ""
             if g.get("release_date"):
                 year = str(datetime.datetime.fromtimestamp(g["release_date"], datetime.timezone.utc).year)
@@ -276,6 +299,8 @@ class SteamGridDB:
         data = self._get(f"/{slot.endpoint}/game/{game_id}", params)
         out = []
         for a in data:
+            if not isinstance(a, dict) or "id" not in a or not a.get("url"):
+                continue
             out.append(
                 Asset(
                     id=a["id"],

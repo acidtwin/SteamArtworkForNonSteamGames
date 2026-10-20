@@ -76,6 +76,16 @@ def _encode(text: str) -> bytes:
 
 
 def loads(data: bytes) -> VDFMap:
+    """Parse a binary VDF file. Any damage (truncation, bad text) raises VDFError."""
+    try:
+        return _loads(data)
+    except VDFError:
+        raise
+    except (struct.error, UnicodeDecodeError, IndexError, ValueError) as e:
+        raise VDFError(f"damaged file: {e}") from e
+
+
+def _loads(data: bytes) -> VDFMap:
     root = VDFMap()
     stack = [root]
     pos = 0

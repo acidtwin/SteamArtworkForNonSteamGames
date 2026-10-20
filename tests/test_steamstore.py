@@ -83,3 +83,23 @@ def test_store_calls_are_spaced_out():
     s.search("b")
     s.search("a")  # remembered: no call
     assert len(waits) == 1 and waits[0] > 4
+
+
+def test_store_failure_is_not_remembered():
+    import pytest
+    from steam_artwork_finder.steamstore import SteamStore, SteamStoreError
+
+    class Down:
+        def get(self, *a, **k):
+            import requests
+            raise requests.ConnectionError("offline")
+
+        def head(self, *a, **k):
+            import requests
+            raise requests.ConnectionError("offline")
+
+    store = SteamStore(session=Down())
+    store.sleep = lambda s: None
+    with pytest.raises(SteamStoreError):
+        store.assets(620)
+    assert 620 not in store._assets

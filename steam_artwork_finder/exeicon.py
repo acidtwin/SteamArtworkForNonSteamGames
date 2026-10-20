@@ -34,7 +34,7 @@ def exe_icon(path: Path) -> bytes | None:
     try:
         with open(path, "rb") as f:
             return _read_icon(f)
-    except (OSError, struct.error, ValueError):
+    except (OSError, struct.error, ValueError, IndexError):
         return None
 
 

@@ -71,16 +71,20 @@ class ShortcutsFile:
 
     def _disk_stamp(self):
         try:
-            st = self.path.stat()
+            return _stamp_of(self.path.stat())
         except OSError:
             return None
-        return (st.st_mtime_ns, st.st_size)
 
     def reload(self):
-        self.root = binvdf.loads(self.path.read_bytes())
+        # Stamp from the open file itself, so a rewrite between the read and
+        # the stat can't leave old contents paired with the new file's stamp.
+        with open(self.path, "rb") as f:
+            st = os.fstat(f.fileno())
+            data = f.read()
+        self.root = binvdf.loads(data)
         self.shortcuts = self._extract()
         self._backed_up = False
-        self._stamp = self._disk_stamp()
+        self._stamp = _stamp_of(st)
 
     def changed_on_disk(self) -> bool:
         """True if Steam or another tool rewrote the file since it was loaded."""
@@ -131,8 +135,13 @@ class ShortcutsFile:
         return dest
 
     def _backup_files(self) -> list[Path]:
-        files = list(self.backup_dir.glob("shortcuts-*.vdf"))
-        return sorted(files, key=lambda p: (p.stat().st_mtime_ns, p.name), reverse=True)
+        files = []
+        for p in self.backup_dir.glob("shortcuts-*.vdf"):
+            try:
+                files.append((p.stat().st_mtime_ns, p.name, p))
+            except OSError:  # removed since the glob
+                continue
+        return [p for *_, p in sorted(files, reverse=True)]
 
     def backups(self) -> list[tuple[Path, int]]:
         """Saved copies, newest first, with how many games each one lists."""
@@ -150,9 +159,7 @@ class ShortcutsFile:
         data = backup.read_bytes()
         binvdf.loads(data)  # refuse a broken backup
         self.backup(keep=backup)
-        tmp = self.path.with_name(".shortcuts-restore")
-        tmp.write_bytes(data)
-        os.replace(tmp, self.path)
+        self._atomic_write(data)
         self.reload()
 
     def save(self):
@@ -171,6 +178,13 @@ class ShortcutsFile:
         check = binvdf.loads(data)
         if len(_shortcut_maps(check)) != len(self.shortcuts):
             raise binvdf.VDFError("refusing to save: shortcut count changed")
+        stamp = self._atomic_write(data)
+        if self.path.read_bytes() != data:
+            raise OSError("shortcuts.vdf did not read back as written")
+        self._stamp = stamp
+
+    def _atomic_write(self, data: bytes):
+        """Write via a synced temp file and rename; returns the new file's stamp."""
         fd, tmp = tempfile.mkstemp(prefix=".shortcuts-", dir=self.path.parent)
         try:
             with os.fdopen(fd, "wb") as f:
@@ -179,13 +193,12 @@ class ShortcutsFile:
                 os.fsync(f.fileno())
             if self.path.exists():
                 shutil.copymode(self.path, tmp)
+            stamp = _stamp_of(os.stat(tmp))  # a rename keeps inode, mtime and size
             os.replace(tmp, self.path)
         except BaseException:
             Path(tmp).unlink(missing_ok=True)
             raise
-        if self.path.read_bytes() != data:
-            raise OSError("shortcuts.vdf did not read back as written")
-        self._stamp = self._disk_stamp()
+        return stamp
 
 
 @dataclass
@@ -209,6 +222,10 @@ def compare(backup: Path, now: list[Shortcut]) -> Difference:
         renamed=sum(1 for a in both if old[a].name != new[a].name),
         icons=sum(1 for a in both if old[a].icon != new[a].icon),
     )
+
+
+def _stamp_of(st) -> tuple:
+    return (st.st_ino, st.st_mtime_ns, st.st_size)
 
 
 def _shortcut_maps(root) -> list:

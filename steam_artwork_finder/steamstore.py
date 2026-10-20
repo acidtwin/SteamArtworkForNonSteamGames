@@ -18,7 +18,7 @@ from dataclasses import dataclass
 import requests
 
 from . import __version__
-from .sgdb import Asset, name_variants
+from .sgdb import Asset, name_variants, retrying_session
 
 SEARCH = "https://store.steampowered.com/api/storesearch/"
 ITEMS = "https://api.steampowered.com/IStoreBrowseService/GetItems/v1/"
@@ -86,22 +86,32 @@ class SteamStore:
             return self._session
         s = getattr(self._local, "session", None)
         if s is None:
-            s = self._local.session = requests.Session()
+            s = self._local.session = retrying_session()
             s.headers["User-Agent"] = AGENT
         return s
 
     def _call(self, url: str, params: dict) -> dict:
         """One request to the store, never sooner than `gap` after the last."""
         with self._lock:
-            wait = self._last + self.gap - time.monotonic()
-            if wait > 0:
-                self.sleep(wait)
-            try:
-                r = self.http.get(url, params=params, timeout=20)
-            except requests.RequestException as e:
-                raise SteamStoreError(f"Could not reach the Steam store: {e}") from e
-            finally:
-                self._last = time.monotonic()
+            for attempt in range(3):
+                wait = self._last + self.gap - time.monotonic()
+                if wait > 0:
+                    self.sleep(wait)
+                try:
+                    r = self.http.get(url, params=params, timeout=20)
+                except requests.RequestException as e:
+                    raise SteamStoreError(f"Could not reach the Steam store: {e}") from e
+                finally:
+                    self._last = time.monotonic()
+                if r.status_code != 429 or attempt == 2:
+                    break
+                # Busy: back off as asked (capped), holding the lock so every thread waits.
+                try:
+                    pause = float(r.headers.get("Retry-After", 30))
+                except ValueError:
+                    pause = 30.0
+                pause = 30.0 if pause != pause else max(1.0, min(pause, 120.0))
+                self.sleep(pause)
         if r.status_code == 429:
             raise SteamStoreError("The Steam store is busy; try again in a minute")
         if not r.ok:
@@ -158,9 +168,9 @@ class SteamStore:
         if appid in self._assets:
             return dict(self._assets[appid])
         try:
-            item = self._item(appid)
+            item, ok = self._item(appid), True
         except SteamStoreError:
-            item = {}
+            item, ok = {}, False
         listed = item.get("assets") or {}
         fmt = listed.get("asset_url_format") or f"steam/apps/{appid}/${{FILENAME}}"
 
@@ -184,5 +194,9 @@ class SteamStore:
                 thumb = url_for(listed[small]) if listed.get(small) else url_for(FALLBACK_SMALL[small])
             out[key] = SteamAsset(id=-(appid * 10 + i + 1), url=url, thumb=thumb, width=w, height=h,
                                   mime=_mime(url), score=0, style="official", author="Steam", appid=appid)
-        self._assets[appid] = out
+        if not ok and not out:
+            # Couldn't ask the store (offline, busy): don't remember "no official art".
+            raise SteamStoreError("Couldn't load the game's Steam store details")
+        if ok:
+            self._assets[appid] = out
         return dict(out)

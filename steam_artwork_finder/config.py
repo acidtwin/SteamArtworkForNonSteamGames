@@ -5,6 +5,7 @@ from __future__ import annotations
 import json
 import os
 import sys
+import time
 from pathlib import Path
 
 from . import APP_ID
@@ -31,9 +32,17 @@ class Config:
         self.path = path or config_dir() / "config.json"
         self.data: dict = {}
         try:
-            self.data = json.loads(self.path.read_text())
+            data = json.loads(self.path.read_text(encoding="utf-8"))
+        except FileNotFoundError:
+            data = {}
         except (OSError, ValueError):
-            self.data = {}
+            # Keep a damaged file aside rather than silently overwriting the API key and matches.
+            data = {}
+            try:
+                self.path.replace(self.path.with_name(f"config.json.bad-{int(time.time())}"))
+            except OSError:
+                pass
+        self.data = data if isinstance(data, dict) else {}
 
     @property
     def api_key(self) -> str:
