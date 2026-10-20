@@ -6,6 +6,7 @@ from PySide6.QtCore import Qt
 
 from steam_artwork_finder.artwork import SLOTS, is_animated, save_asset
 from steam_artwork_finder.sgdb import Asset, SteamGridDB
+from steam_artwork_finder.gui.tray import ROLE_ASSET
 from steam_artwork_finder.shortcuts import ShortcutsFile
 
 from test_sgdb import FakeResp, FakeSession
@@ -275,3 +276,32 @@ def test_see_all_fits_three_covers_to_a_row(qapp, window, monkeypatch):
         per_row[key] = ys.count(ys[0])
     assert per_row == {"grid": 3, "wide": 2, "icon": 4}
     assert win.page.width() > t.width()  # still leaves most of the page in view at 1280 wide
+
+
+def test_see_all_plays_animated_options_while_in_view(qapp, window, monkeypatch, tmp_path):
+    win = window
+    win.open_game(0)
+    _pump(qapp, 200)
+    monkeypatch.setattr(win, "current_game", lambda: object())
+    monkeypatch.setattr(win, "load_thumb", lambda a, target: None)
+    t = win.tray
+    monkeypatch.setattr(t, "load", lambda: None)
+    f = tmp_path / "anim.png"
+    f.write_bytes(make_apng(60, 90, [(0, 0, 60, 90, (255, 0, 0, 255), 40, 0, 0),
+                                     (0, 0, 60, 90, (0, 0, 255, 255), 40, 0, 0)]))
+    win.motion_files[7] = ("frames", str(f))
+    win.open_tray(SLOTS["grid"])
+    _pump(qapp, 400)
+    t._loaded(t.slot, 0, win.current_shortcut().appid,
+              [Asset(7, "https://x/7.png", "https://x/7.webm", 600, 900, "image/png", 0, "", "a"),
+               Asset(8, "https://x/8.png", "https://x/8.png", 600, 900, "image/png", 0, "", "a")])
+    _pump(qapp, 3000, until=lambda: t.playing.motions.get(7, {}).get("pm") is not None)
+    assert list(t.playing.motions) == [7]  # only the animated one
+    seen = set()
+    for _ in range(12):
+        _pump(qapp, 30)
+        seen.add(t.playing.frame(t.list.item(0).data(ROLE_ASSET)).toImage().pixelColor(5, 5).name())
+    assert seen == {"#ff0000", "#0000ff"}  # it plays
+    win.tray.close_tray()
+    _pump(qapp, 400)
+    assert not t.playing.motions  # stopped once closed

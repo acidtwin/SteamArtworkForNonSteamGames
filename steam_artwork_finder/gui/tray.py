@@ -2,7 +2,9 @@
 
 from __future__ import annotations
 
-from PySide6.QtCore import QEasingCurve, QEvent, QPoint, QPointF, QRect, QRectF, QSize, Qt, QVariantAnimation, Signal
+from PySide6.QtCore import (
+    QEasingCurve, QEvent, QObject, QPoint, QPointF, QRect, QRectF, QSize, Qt, QTimer, QVariantAnimation, Signal,
+)
 from PySide6.QtGui import QColor, QFont, QFontMetrics, QLinearGradient, QPainter, QPainterPath, QPen, QPixmap
 from PySide6.QtWidgets import (
     QApplication,
@@ -22,7 +24,7 @@ from PySide6.QtWidgets import (
 )
 
 from ..artwork import SLOTS
-from . import icons, theme
+from . import icons, motion, theme
 from .scrim import scrim_of
 from .theme import q
 from .gamepage import draw_new_tag
@@ -81,14 +83,19 @@ class OptionDelegate(QStyledItemDelegate):
         clip.addRoundedRect(r, 3, 3)
         p.setClipPath(clip)
         pm = index.data(ROLE_PIX)
+        a = index.data(ROLE_ASSET)
+        live = self.tray.playing.frame(a)  # an animated option playing: its frame now
         logo = self.tray.slot.key == "logo"
         if logo:
             draw_checker(p, r)
         else:
             p.fillRect(r, q("raised"))
+        if live is not None:
+            pm = live
         if pm is not None and not pm.isNull():
             dpr = p.device().devicePixelRatioF()
-            sp = self.scaled(pm, s, logo, dpr)
+            # Live frames change every time, so scale them as they come rather than keeping them.
+            sp = fill_rect(pm, s, dpr) if live is not None and not logo else self.scaled(pm, s, logo, dpr)
             if logo:
                 w, h = sp.width() / dpr, sp.height() / dpr
                 p.drawPixmap(QPointF(r.x() + (s.width() - w) / 2, r.y() + (s.height() - h) / 2), sp)
@@ -118,6 +125,86 @@ class OptionDelegate(QStyledItemDelegate):
         p.drawText(QRectF(r.left(), r.bottom() + 4, s.width(), QFontMetrics(f).height() + 2),
                    Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignVCenter, cap)
         p.restore()
+
+
+class _Playing(QObject):
+    """Plays the animated options the tray has on screen, as the game page's rows do.
+
+    Each one plays only while it's in view: scrolled away, filtered out, or the tray
+    closed, and it stops and lets go of its frames. Animations decoded from files go
+    through motion's one-at-a-time pool, shrunk to the thumbnail as they decode."""
+
+    MAX = 12  # at most this many at once (a full view of covers is nine)
+
+    def __init__(self, tray):
+        super().__init__(tray)
+        self.tray = tray
+        self.motions: dict[int, dict] = {}  # asset id -> {"m": Motion, "pm": latest frame}
+        self.timer = QTimer(self, interval=300)
+        self.timer.timeout.connect(self.sweep)
+
+    def frame(self, a) -> QPixmap | None:
+        e = self.motions.get(a.id) if a is not None else None
+        return e["pm"] if e is not None else None
+
+    def sweep(self):
+        t = self.tray
+        lst = t.list
+        if not (t.isVisible() and lst.isVisible() and t.win.show_animated):
+            self.stop_all()
+            return
+        view = lst.viewport().rect()
+        want: dict[int, tuple] = {}
+        for i in range(lst.count()):
+            it = lst.item(i)
+            a = it.data(ROLE_ASSET)
+            if a is None or not a.animated or it.isHidden() or len(want) >= self.MAX:
+                continue
+            src = t.win.motion_files.get(a.id)
+            if src is not None and lst.visualItemRect(it).intersects(view):
+                want[a.id] = src
+        for aid in [k for k in self.motions if k not in want]:
+            self._stop(aid)
+        dpr = lst.devicePixelRatioF()
+        size = thumb_size(t.slot.key)
+        bound = QSize(round(size.width() * dpr), round(size.height() * dpr))
+        for aid, (kind, path) in want.items():
+            if aid not in self.motions:
+                m = motion.make(kind, path, bound)
+                e = self.motions[aid] = {"m": m, "pm": None}
+                m.frame.connect(lambda pm, aid=aid: self._frame(aid, pm))
+                m.start()
+
+    def _frame(self, aid, pm):
+        e = self.motions.get(aid)
+        if e is None:
+            return
+        e["pm"] = pm
+        lst = self.tray.list
+        for i in range(lst.count()):  # repaint just that option
+            it = lst.item(i)
+            a = it.data(ROLE_ASSET)
+            if a is not None and a.id == aid:
+                lst.viewport().update(lst.visualItemRect(it))
+                break
+
+    def _stop(self, aid):
+        e = self.motions.pop(aid, None)
+        if e is not None:
+            e["m"].stop()
+            e["m"].deleteLater()
+
+    def stop_all(self):
+        for aid in list(self.motions):
+            self._stop(aid)
+
+    def start(self):
+        self.timer.start()
+        self.sweep()
+
+    def stop(self):
+        self.timer.stop()
+        self.stop_all()
 
 
 SLIDE_IN, SLIDE_OUT = 180, 140  # ms, with the fade (the app's other fades take 120 to 140)
@@ -180,6 +267,7 @@ class OptionTray(QWidget):
         self._anim = QVariantAnimation(self)
         self._anim.valueChanged.connect(self._step)
         self._anim.finished.connect(self._settled)
+        self.playing = _Playing(self)
         self._leaving = False
         # Wide enough for the five tabs in a row at the user's font size.
         self.setFixedWidth(max(self._width_for_covers(3), theme.text_width("Cover Wide cover Banner Logo Icon") + 180))
@@ -221,6 +309,7 @@ class OptionTray(QWidget):
         self.list.setSpacing(4)
         self.list.setVerticalScrollMode(QListView.ScrollMode.ScrollPerPixel)
         self.list.setItemDelegate(OptionDelegate(self))
+        self.list.verticalScrollBar().valueChanged.connect(lambda *_: self.playing.sweep())
         self.list.currentItemChanged.connect(self._selected)
         self.list.itemDoubleClicked.connect(lambda *_: self._use())
         self.list.itemActivated.connect(lambda *_: self._use())
@@ -283,6 +372,7 @@ class OptionTray(QWidget):
         self.list.setIconSize(thumb_size(slot.key))
         self.assets = []
         self.page = 0
+        self.playing.stop_all()
         self.list.clear()
         self._show_empty(False)
         self._chips([])
@@ -399,6 +489,7 @@ class OptionTray(QWidget):
                 self.list.item(i).setHidden(not a.animated)
             else:
                 self.list.item(i).setHidden(want != "all" and a.style != want)
+        QTimer.singleShot(0, self.playing.sweep)  # once the list has laid itself out again
 
     def _tab(self, i):
         self.preview.emit(self.slot, None, None)
@@ -550,6 +641,7 @@ class OptionTray(QWidget):
             return
         self._leaving = True
         self._uncover()
+        self.playing.stop()
         if self.isVisible():
             self._ghost.pm = self.grab()
             self._hide_quietly()
@@ -583,6 +675,7 @@ class OptionTray(QWidget):
             self.raise_()
             self._shadow.raise_()
             self.list.setFocus(Qt.FocusReason.PopupFocusReason)  # Esc and the arrows work straight away
+            self.playing.start()
             self._entering = False
             held, self._held = self._held, []
             for a, it in held:
@@ -597,6 +690,7 @@ class OptionTray(QWidget):
 
     def _reset(self):
         self._anim.stop()
+        self.playing.stop()
         self._entering = False
         self._held.clear()
         self._open = self._leaving = False
