@@ -222,7 +222,7 @@ def test_steam_folder_popover_searches_and_switches(qapp, window, tmp_path, stea
     shutil.copytree(steam_root, flatpak)
     h0 = None
     win.statusbar.steam.click()
-    _pump(qapp, 100)
+    _pump(qapp, 1000, until=lambda: pop.title.text() == "Using your chosen folder")
     assert pop.is_open() and pop.pages.currentIndex() == 0
     assert not pop.searching and pop.found == []  # a folder is in use, so it doesn't search by itself
     assert pop.title.text() == "Using your chosen folder"
@@ -239,10 +239,11 @@ def test_steam_folder_popover_searches_and_switches(qapp, window, tmp_path, stea
     pop.show_tab(1)
     _pump(qapp, 50)
     assert pop.height() == h0  # the tabs are the same size
-    pop._chosen(tmp_path / "nowhere")
-    assert "userdata" in pop.hint.text()
+    pop._chosen(tmp_path / "nowhere")  # checked on a worker
+    _pump(qapp, 2000, until=lambda: "userdata" in pop.hint.text() and "doesn't" in pop.hint.text())
+    assert "doesn't" in pop.hint.text()
     pop._chosen(flatpak)
-    _pump(qapp)
+    _pump(qapp, 2000, until=lambda: pop.title.text() == "Using Steam (Flatpak)")
     assert win.steam_root == flatpak.resolve()
     assert win.config.data["steam_folder"] == str(flatpak.resolve())
     assert pop.title.text() == "Using Steam (Flatpak)" and pop.pages.currentIndex() == 0
@@ -266,7 +267,7 @@ def test_steam_folder_popover_searches_only_when_no_folder_in_use(qapp, window, 
     _pump(qapp)
     for _ in range(2):  # opening it again and again never searches while a folder is in use
         win.show_folder_popover()
-        _pump(qapp, 100)
+        _pump(qapp, 1000, until=lambda: pop.title.text() == "Using Steam (Flatpak)")
         assert pop.is_open() and not pop.searching
         assert pop.title.text() == "Using Steam (Flatpak)" and pop.found[0].games == 3
         assert pop.dots.states[1] == "hit" and pop.dots.states[0] == ""  # the others weren't checked
@@ -281,6 +282,96 @@ def test_steam_folder_popover_searches_only_when_no_folder_in_use(qapp, window, 
     assert win.steam_root == flatpak.resolve()  # the search found it and put it to use
     win.show_folder_popover()
     _pump(qapp, 400)
+
+
+def test_steam_folder_popover_keeps_disk_checks_off_the_ui_thread(qapp, window, tmp_path, steam_root, monkeypatch):
+    import shutil
+    import threading
+
+    from steam_artwork_finder.gui import steamfolder
+
+    win = window
+    pop = win.folderpop
+    pop.delay = 0
+    flatpak = tmp_path / ".var/app/com.valvesoftware.Steam/.local/share/Steam"
+    shutil.copytree(steam_root, flatpak)
+    threads = []
+    real_places, real_roots = steamfolder.search_places, steamfolder.find_steam_roots
+    monkeypatch.setattr(steamfolder, "search_places",
+                        lambda: threads.append(threading.current_thread()) or real_places())
+    monkeypatch.setattr(steamfolder, "find_steam_roots",
+                        lambda c: threads.append(threading.current_thread()) or real_roots(c))
+
+    fresh = steamfolder.SteamFolderPopover(win)  # building it lists no drives
+    assert fresh.places == [] and threads == []
+    fresh.deleteLater()
+    win.use_steam_root(flatpak.resolve())  # which place it's in is looked up on a worker
+    _pump(qapp, 2000, until=lambda: pop.title.text() == "Using Steam (Flatpak)")
+    assert pop.found[0].games == 3
+    win.show_folder_popover()
+    _pump(qapp, 200)
+    pop.again.click()  # Detect Again lists the places on the worker too
+    _pump(qapp, 2000, until=lambda: not pop.searching)
+    assert [pl.short for pl in pop.places][:2] == ["Steam", "Flatpak"] and pop.dots.states[1] == "hit"
+    pop.show_tab(1)
+    pop._chosen(steam_root)
+    _pump(qapp, 2000, until=lambda: win.steam_root == steam_root.resolve())
+    assert threads and threading.main_thread() not in threads
+
+    # A folder chosen just before the pop-over closes isn't put to use once it has.
+    emitted = []
+    pop.use_root.connect(emitted.append)
+    pop.show_tab(1)
+    pop._chosen(flatpak)
+    pop.dismiss()
+    _pump(qapp, 400)
+    assert emitted == [] and win.steam_root == steam_root.resolve()
+    pop.use_root.disconnect(emitted.append)
+
+
+def test_steam_folder_popover_path_fits_on_first_open(qapp, tmp_path, monkeypatch):
+    from PySide6.QtCore import QPoint
+    from PySide6.QtWidgets import QWidget
+
+    from steam_artwork_finder.gui import steamfolder
+
+    monkeypatch.setenv("HOME", str(tmp_path))
+    host = QWidget()
+    host.resize(1000, 800)
+    host.show()
+    pop = steamfolder.SteamFolderPopover(host)
+    root = tmp_path / "Games" / "SteamLibraryOnTheBigDrive" / "Steam"
+    pop._located[root] = None  # not in any of the usual places, so no lookup
+    pop.set_current(root, ["Deck User"], 0, None)  # before it has ever been shown or laid out
+    assert "…" not in pop.sub.text()  # the full path fits; it used to be cut to 80 px
+    pop.open_above(host.mapToGlobal(QPoint(500, 700)))
+    _pump(qapp, 200)
+    assert pop._sub_room() == pop.sub.width()  # the width it worked out is the one it gets
+    pop.dismiss()
+    _pump(qapp, 300)
+    host.deleteLater()
+
+
+def test_search_dots_dont_animate_while_hidden(qapp):
+    from PySide6.QtCore import QVariantAnimation
+    from PySide6.QtWidgets import QWidget
+
+    from steam_artwork_finder.gui.steamfolder import Dots, Pulse
+
+    box = QWidget()
+    dots, pulse = Dots(box), Pulse(box)
+    dots.reset(["Steam", "Flatpak"])
+    dots.set(0, "now")  # hidden: a search going on behind a closed pop-over
+    pulse.set_state("search")
+    assert dots._anim.state() != QVariantAnimation.State.Running
+    assert pulse._anim.state() != QVariantAnimation.State.Running
+    box.show()
+    assert dots._anim.state() == QVariantAnimation.State.Running
+    assert pulse._anim.state() == QVariantAnimation.State.Running
+    box.hide()
+    dots.set(1, "now")
+    assert dots._anim.state() != QVariantAnimation.State.Running
+    box.deleteLater()
 
 
 def test_quit_prompt_lists_games_and_remembers(qapp, window, monkeypatch):
