@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from PySide6.QtCore import QEasingCurve, QEvent, QPointF, QRectF, QSize, Qt, QVariantAnimation, Signal
+from PySide6.QtCore import QEasingCurve, QEvent, QPoint, QPointF, QRect, QRectF, QSize, Qt, QVariantAnimation, Signal
 from PySide6.QtGui import QColor, QFont, QFontMetrics, QLinearGradient, QPainter, QPainterPath, QPen, QPixmap
 from PySide6.QtWidgets import (
     QApplication,
@@ -23,6 +23,7 @@ from PySide6.QtWidgets import (
 
 from ..artwork import SLOTS
 from . import icons, theme
+from .scrim import scrim_of
 from .theme import q
 from .gamepage import draw_new_tag
 from .widgets import _cache as pixmap_cache
@@ -220,8 +221,6 @@ class OptionTray(QWidget):
         self.list.setSpacing(4)
         self.list.setVerticalScrollMode(QListView.ScrollMode.ScrollPerPixel)
         self.list.setItemDelegate(OptionDelegate(self))
-        self.list.itemEntered.connect(self._hover)
-        self.list.viewportEntered.connect(lambda: self.preview.emit(self.slot, None, None))
         self.list.currentItemChanged.connect(self._selected)
         self.list.itemDoubleClicked.connect(lambda *_: self._use())
         self.list.itemActivated.connect(lambda *_: self._use())
@@ -329,7 +328,7 @@ class OptionTray(QWidget):
             self.status.setText("")
         else:
             info = SLOTS[slot.key]
-            self.status.setText(f"{len(self.assets)} options{self._animated_count()}. Hover to preview, then "
+            self.status.setText(f"{len(self.assets)} options{self._animated_count()}. Choose one, then "
                                 f"“Pick This {info.label.title()}”. Apply saves your picks.")
 
     def _thumb(self, a, it):
@@ -396,13 +395,6 @@ class OptionTray(QWidget):
     def _tab(self, i):
         self.preview.emit(self.slot, None, None)
         self.open_slot(SLOTS[ORDER[i]])
-
-    def _hover(self, item):
-        self.preview.emit(self.slot, item.data(ROLE_PIX), item.data(ROLE_ASSET))
-
-    def leaveEvent(self, e):
-        self.preview.emit(self.slot, None, None)
-        super().leaveEvent(e)
 
     def _selected(self, *_):
         self._update_buttons()
@@ -475,14 +467,16 @@ class OptionTray(QWidget):
 
     # -- lying over the page ------------------------------------------------
 
-    def place_over(self, area: QWidget):
-        """Lie over the right-hand side of `area` (a sibling), sliding in and out, without
-        taking any room from it, so the page underneath keeps its layout."""
+    def place_over(self, area: QWidget, host: QWidget | None = None):
+        """Lie over the right-hand side of `area`, sliding in and out, without taking any room
+        from it, so the page underneath keeps its layout. The tray lives in `host` (the main
+        window), above the dimmed backdrop that covers everything else while it's open."""
         self.area = area
-        self.setParent(area.parentWidget())
-        self._shadow = _Shadow(area.parentWidget())
+        self.host = host or area.window()
+        self.setParent(self.host)
+        self._shadow = _Shadow(self.host)
         self._shadow.hide()
-        self._ghost = _Ghost(area.parentWidget())
+        self._ghost = _Ghost(self.host)
         self._ghost.hide()
         area.installEventFilter(self)
         self.hide()
@@ -496,7 +490,7 @@ class OptionTray(QWidget):
         """The tray sits in place; its ghost and shadow follow the slide."""
         if self.area is None:
             return
-        r = self.area.geometry()
+        r = QRect(self.area.mapTo(self.host, QPoint(0, 0)), self.area.size())
         x = r.right() + 1 - self.width()
         self.setGeometry(x, r.y(), self.width(), r.height())
         x += round((1 - self._t) * (self.width() + SHADOW_W))
@@ -533,19 +527,21 @@ class OptionTray(QWidget):
         self._snapshot()
         self._hide_quietly()
         self._step(self._t)
+        scrim = scrim_of(self)
+        if scrim is not None:
+            scrim.cover(self, self.close_tray)  # the rest of the window dims, and a click there closes it
         self._shadow.show()
         self._ghost.show()
         self._shadow.raise_()
         self._ghost.raise_()
         self._run(1.0, SLIDE_IN, QEasingCurve.Type.OutCubic)
-        QApplication.instance().installEventFilter(self)
 
     def _disappear(self):
         if self.area is None:
             self.hide()
             return
         self._leaving = True
-        QApplication.instance().removeEventFilter(self)
+        self._uncover()
         if self.isVisible():
             self._ghost.pm = self.grab()
             self._hide_quietly()
@@ -578,6 +574,7 @@ class OptionTray(QWidget):
             self.show()
             self.raise_()
             self._shadow.raise_()
+            self.list.setFocus(Qt.FocusReason.PopupFocusReason)  # Esc and the arrows work straight away
             self._entering = False
             held, self._held = self._held, []
             for a, it in held:
@@ -599,7 +596,12 @@ class OptionTray(QWidget):
         for w in (self._shadow, self._ghost):
             if w is not None:
                 w.hide()
-        QApplication.instance().removeEventFilter(self)
+        self._uncover()
+
+    def _uncover(self):
+        scrim = scrim_of(self)
+        if scrim is not None:
+            scrim.uncover(self)
 
     def hideEvent(self, e):
         if not self._swapping:  # closed outright
@@ -607,22 +609,8 @@ class OptionTray(QWidget):
         super().hideEvent(e)
 
     def eventFilter(self, obj, e):
-        t = e.type()
-        if obj is self.area and t in (QEvent.Type.Resize, QEvent.Type.Move):
+        if obj is self.area and e.type() in (QEvent.Type.Resize, QEvent.Type.Move):
             self._place()
-        elif (t == QEvent.Type.MouseButtonPress and self.is_open() and isinstance(obj, QWidget)
-              and obj.window() is self.window() and not (obj is self or self.isAncestorOf(obj))
-              and not self._opens_tray(obj) and QApplication.activePopupWidget() is None):
-            self.close_tray()  # a click anywhere else closes it, and still does what it was for
-        return False
-
-    def _opens_tray(self, w: QWidget) -> bool:
-        """A piece's art or its "See all" on the page: those switch the tray to that piece instead."""
-        page = getattr(self.win, "page", None)
-        for row in getattr(page, "rows", {}).values():
-            for target in (row.art, row.see_all):
-                if w is target or target.isAncestorOf(w):
-                    return True
         return False
 
     def keyPressEvent(self, e):

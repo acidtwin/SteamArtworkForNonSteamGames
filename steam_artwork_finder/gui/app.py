@@ -42,6 +42,7 @@ from ..steam import (
 from . import icons, motion, theme, workers
 from .chrome import ContentBar, Header, StatusBar, SteamPopover
 from .steamfolder import SteamFolderPopover
+from .scrim import Scrim
 from .dialogs import AboutDialog, ConfirmDialog, KeyPopover, MatchDialog, QuitDialog, RestoreDialog
 from .gamepage import GamePage
 from .library import GameList, StartPage
@@ -181,13 +182,14 @@ class MainWindow(QMainWindow):
         self.split.addWidget(col)
 
         self.tray = OptionTray(self)
-        self.tray.place_over(self.stage)  # slides in over the page rather than squeezing it
+        self.tray.place_over(self.stage, self)  # slides in over the page rather than squeezing it
         self.tray.preview.connect(self._tray_preview)
         self.tray.slot_changed.connect(self._show_row)
         self.split.setStretchFactor(1, 1)
         self.split.setSizes([300, 980])
         outer.addWidget(self.split, 1)
 
+        self.scrim = Scrim(self)  # dims the window behind the tray, pop-overs and menus
         self.popover = SteamPopover(self)
         self.popover.anchor_widget = self.statusbar.process
         self.keypop = KeyPopover(self)

@@ -17,6 +17,7 @@ from PySide6.QtWidgets import (
 )
 
 from . import icons, theme
+from .scrim import scrim_of
 from .theme import C, q
 
 RING = "#57cbde"
@@ -772,6 +773,9 @@ class Overlay(QFrame):
         x = max(8, min(x, host.width() - w - 8))
         y = max(8, a.y() - h - 8)
         self.setGeometry(x, y, w, h)
+        scrim = scrim_of(self)
+        if scrim is not None:
+            scrim.cover(self, self.dismiss)  # the window dims behind it, and a click there closes it
         self.raise_()
         focus = QApplication.focusWidget()
         if focus is not None and focus is not self and not self.isAncestorOf(focus):
@@ -791,6 +795,7 @@ class Overlay(QFrame):
             return
         self._leaving = True
         QApplication.instance().removeEventFilter(self)
+        self._uncover()
         focus = QApplication.focusWidget()
         if focus is not None and (focus is self or self.isAncestorOf(focus)):
             # Back to the status item that opened it, else to wherever focus was before.
@@ -810,6 +815,15 @@ class Overlay(QFrame):
         if self._leaving:
             self._leaving = False
             self.hide()
+
+    def _uncover(self):
+        scrim = scrim_of(self)
+        if scrim is not None:
+            scrim.uncover(self)
+
+    def hideEvent(self, e):
+        self._uncover()
+        super().hideEvent(e)
 
     def eventFilter(self, obj, e):
         t = e.type()

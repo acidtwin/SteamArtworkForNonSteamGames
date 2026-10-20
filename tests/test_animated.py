@@ -208,18 +208,49 @@ def test_see_all_slides_over_the_page_without_squeezing_it(qapp, window, monkeyp
     assert t.is_open() and t._ghost.isVisible() and not t.isVisible()  # a picture of it slides in
     _pump(qapp, 400)
     assert t.is_open() and win.page.width() == before  # lies over the page
-    stage = win.stage.geometry()
+    from PySide6.QtCore import QPoint, QRect
+    from PySide6.QtTest import QTest
+    stage = QRect(win.stage.mapTo(win, QPoint(0, 0)), win.stage.size())
     assert t.geometry().right() == stage.right() and t.geometry().top() == stage.top()
     assert t.isVisible() and not t._ghost.isVisible()  # the real panel once it has settled
-    # a click elsewhere in the window closes it, sliding out
-    from PySide6.QtCore import QPoint
-    from PySide6.QtTest import QTest
-    QTest.mouseClick(win.header, Qt.MouseButton.LeftButton, pos=QPoint(400, 10))
+    # the rest of the window is dimmed, and the mouse reaches only the panel
+    assert win.scrim.isVisible() and win.scrim.is_covering()
+    page_point = win.page.mapTo(win, QPoint(40, 40))
+    assert win.childAt(page_point) is win.scrim
+    assert t.isAncestorOf(win.childAt(t.mapTo(win, QPoint(t.width() // 2, t.height() // 2))))
+    # a click on the dimmed part closes it, sliding out
+    QTest.mouseClick(win.scrim, Qt.MouseButton.LeftButton, pos=page_point)
     assert not t.is_open()
     _pump(qapp, 400)
     assert not t.isVisible() and not t._ghost.isVisible() and win.page.width() == before
+    assert not win.scrim.isVisible()
 
     win.open_tray(S["grid"])  # going home mid-slide leaves nothing behind
     win.go_home()
     _pump(qapp, 400)
     assert not t.is_open() and not t.isVisible() and not t._ghost.isVisible()
+    assert not win.scrim.isVisible()
+
+
+def test_pop_overs_and_menus_dim_the_window(qapp, window):
+    from PySide6.QtCore import QPoint
+    from PySide6.QtTest import QTest
+
+    win = window
+    win.keypop.open_above(win.statusbar.connection.mapToGlobal(QPoint(10, 0)), align_right=True)
+    _pump(qapp, 300)
+    assert win.scrim.isVisible() and win.scrim.is_covering()
+    assert win.childAt(win.header.mapTo(win, QPoint(400, 10))) is win.scrim
+    QTest.mouseClick(win.scrim, Qt.MouseButton.LeftButton, pos=QPoint(400, 300))
+    _pump(qapp, 400)
+    assert not win.keypop.isVisible() and not win.scrim.isVisible()
+
+    from steam_artwork_finder.gui.gamemenu import FadingPopup
+    menu = FadingPopup(win)
+    menu.move(win.mapToGlobal(QPoint(100, 100)))
+    menu.show()
+    _pump(qapp, 300)
+    assert win.scrim.is_covering()
+    menu.hide()
+    _pump(qapp, 400)
+    assert not win.scrim.isVisible()
