@@ -156,3 +156,13 @@ def source(mime: QMimeData | None) -> dict | None:
         if isinstance(img, QImage) and not img.isNull():
             return {"image": img}
     return None
+
+
+def usable(mime: QMimeData | None) -> bool:
+    """Whether a drop or the clipboard looks like it holds a picture, without decoding it (that
+    waits for `source`, on the drop or the paste itself)."""
+    if mime is None:
+        return False
+    if mime.hasUrls() and any(u.isLocalFile() and u.toLocalFile().lower().endswith(SUFFIXES) for u in mime.urls()):
+        return True
+    return mime.hasImage()

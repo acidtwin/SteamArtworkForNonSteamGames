@@ -659,7 +659,10 @@ class MainWindow(QMainWindow):
                 if isinstance(target, ArtView):
                     target.size()  # raises if the widget was replaced meanwhile
                     target.animated = True
-                    target.set_motion(*self.motion_spec(asset, target.size()))
+                    target.set_motion(*self.motion_spec(asset, target.size(), crop=not target.checker))
+                elif isinstance(target, QListWidgetItem):
+                    # See all asks only for options in view, once it has stopped scrolling.
+                    motion.first_frame(kind, path, deliver, wanted=lambda: self.tray.is_open())
                 else:
                     motion.first_frame(kind, path, deliver)
             except RuntimeError:
@@ -667,8 +670,9 @@ class MainWindow(QMainWindow):
 
         workers.run(workers.cached_file, url, self.sgdb.download, on_done=done, on_error=lambda _m: None)
 
-    def motion_spec(self, asset: Asset | None, size) -> tuple:
-        """(key, factory) for ArtView.set_motion to play an animated option, once it's downloaded."""
+    def motion_spec(self, asset: Asset | None, size, crop: bool = False) -> tuple:
+        """(key, factory) for ArtView.set_motion to play an animated option, once it's downloaded.
+        With `crop`, frames are made to measure (cut as fill_rect cuts), so they're drawn as they are."""
         if asset is None or not asset.animated:
             return None, None
         full = self.full_files.get(asset.id)  # the whole animation at full quality, when it's to hand
@@ -676,8 +680,9 @@ class MainWindow(QMainWindow):
         if src is None:
             return None, None
         kind, path = src
-        bound = size * self.devicePixelRatioF()
-        return ("asset", asset.id, kind), lambda: motion.make(kind, path, bound)
+        bound = self._bound(size)
+        how = "middle" if crop else False
+        return ("asset", asset.id, kind), lambda: motion.make(kind, path, bound, crop=how)
 
     def _bound(self, size: QSize) -> QSize:
         """`size` in device pixels, rounded as fill_rect rounds, so frames made to it draw 1:1."""
@@ -702,7 +707,7 @@ class MainWindow(QMainWindow):
 
                 workers.run(workers.cached_file, asset.url, self.sgdb.download, on_done=done,
                             on_error=lambda _m, aid=asset.id: self._full_loading.discard(aid))
-            return self.motion_spec(asset, size)
+            return self.motion_spec(asset, size, crop=bool(how.get("crop")))
         bound = self._bound(size)
         return ("full", asset.id), lambda: motion.make("frames", path, bound, budget, **how)
 
@@ -771,7 +776,11 @@ class MainWindow(QMainWindow):
             ok = cur is not None and cur.appid == appid and self.stage.currentWidget() is self.page
             return cur if ok else None
 
+        saved = self.config.get_steam_match(appid)
+
         def done(result):
+            if self.config.get_steam_match(appid) != saved:
+                return  # the Steam game was changed meanwhile: this answer is for the old one
             self.steam_found[appid] = result
             if here() is not None:
                 self._show_steam(here(), result)
@@ -780,7 +789,7 @@ class MainWindow(QMainWindow):
             if here() is not None:
                 self.page.card.set_steam("error")
 
-        workers.run(self._steam_lookup, sc.name, self.config.get_steam_match(appid), on_done=done, on_error=failed)
+        workers.run(self._steam_lookup, sc.name, saved, on_done=done, on_error=failed)
 
     def _show_steam(self, sc: Shortcut, found, state: str = ""):
         game, assets = found
@@ -903,14 +912,20 @@ class MainWindow(QMainWindow):
             self.config.save()
 
         def done(loaded):
-            if self.current_shortcut() is not sc or self.busy == "apply":
+            if self.busy == "apply" or self.sfile is None:
                 return
+            game = next((s for s in self.sfile.shortcuts if s.appid == sc.appid), None)
+            if game is None:
+                return  # the game is gone
             asset = loaded.pick.asset
             if asset.animated and self.show_animated:
                 self.motion_files[asset.id] = ("frames", asset.path)
-            self._stage(sc, slot.key, loaded.pick, QPixmap.fromImage(loaded.preview))
+            self._stage(game, slot.key, loaded.pick, QPixmap.fromImage(loaded.preview))
             self.refresh_all()
-            if loaded.note:
+            cur = self.current_shortcut()
+            if cur is None or cur.appid != sc.appid:  # you moved on while it converted: it still went in
+                self.toast.show_message(f"Your {slot.label.lower()} for {game.name or 'the game'} is ready to apply.")
+            elif loaded.note:
                 self.toast.show_message(loaded.note)
 
         fn, arg = (localfile.load_path, path) if path else (localfile.load_image, image)
@@ -1692,10 +1707,10 @@ class MainWindow(QMainWindow):
         for key, row in self.page.rows.items():
             row.set_loading()
 
-            def got(assets, row=row, key=key):
-                cur = self.current_shortcut()
-                if cur is None or cur.appid != appid:
-                    return
+            def got(assets, row=row, key=key, gen=row.gen, gid=game.id):
+                cur, now = self.current_shortcut(), self.current_game()
+                if cur is None or cur.appid != appid or row.gen != gen or getattr(now, "id", None) != gid:
+                    return  # an earlier load, answered late (another game, or the match changed)
                 if assets is None:
                     row.set_message("Couldn't reach SteamGridDB. Check your connection.", "warning")
                 else:
@@ -1728,10 +1743,11 @@ class MainWindow(QMainWindow):
             return
         if pm is not None and not pm.isNull():
             backdrop = row.art.backdrop if slot.key == "logo" else None
-            row.art.set_motion(*self.motion_spec(asset, row.art.size()))
+            row.art.set_motion(*self.motion_spec(asset, row.art.size(), crop=not row.art.checker))
             row.art.animated = bool(asset and asset.animated)
+            row.art.new = False
             row.art.set_pixmap(pm, backdrop)
-            row.caption.setText("Previewing")
+            row._set_caption("Previewing", "preview")
             row._previewing = True
         elif row._previewing:
             row._previewing = False

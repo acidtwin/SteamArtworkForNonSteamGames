@@ -335,7 +335,7 @@ class CustomImageButton(QPushButton):
         pick.triggered.connect(self.chosen.emit)
         paste = QAction("Paste Picture", menu)
         paste.setShortcut(QKeySequence.StandardKey.Paste)
-        paste.setEnabled(localfile.source(QApplication.clipboard().mimeData()) is not None)
+        paste.setEnabled(localfile.usable(QApplication.clipboard().mimeData()))
         paste.triggered.connect(self.pasted.emit)
         menu.addAction(pick)
         menu.addAction(paste)
@@ -457,6 +457,12 @@ class ArtworkRow(QWidget):
         self.thumbs: list[ArtView] = []
         self.total = 0
         self._previewing = False
+        self.gen = 0  # counts option loads, so a late answer to an earlier one is ignored
+        # A strip option is previewed on the piece once the pointer rests on it, as in See all,
+        # so sweeping across the strip doesn't start a decode for every option passed over.
+        self._rest = QTimer(self, singleShot=True, interval=140)
+        self._rest.timeout.connect(self._preview_now)
+        self._rest_view: ArtView | None = None
 
     def eventFilter(self, obj, e):
         if e.type() == QEvent.Type.Resize and obj is self._viewport:
@@ -541,7 +547,7 @@ class ArtworkRow(QWidget):
             pm = self._pick_pixmap(sc, self.slot.key, pick)
             self._set_caption("From the game's .exe · not applied yet" if pick.asset.style == "exe"
                               else "Not applied yet", "new")
-            spec = self.win.motion_spec(pick.asset, self.art.size())
+            spec = self.win.motion_spec(pick.asset, self.art.size(), crop=not self.art.checker)
             animated = pick.asset.animated
         else:
             pm = load_pixmap(path) if path else None
@@ -615,7 +621,7 @@ class ArtworkRow(QWidget):
         self.win.stage_file(self.slot, **src)
 
     def dragEnterEvent(self, e):
-        if localfile.source(e.mimeData()) is not None and self.win.current_shortcut() is not None:
+        if localfile.usable(e.mimeData()) and self.win.current_shortcut() is not None:
             e.acceptProposedAction()
             self.file_btn.set_drop_hot(True)
         else:
@@ -647,6 +653,8 @@ class ArtworkRow(QWidget):
         self._render()
 
     def set_loading(self):
+        """Options are on their way; results from any earlier request are now stale (see gen)."""
+        self.gen += 1
         self._sgdb = ("loading",)
         self._render()
 
@@ -738,23 +746,34 @@ class ArtworkRow(QWidget):
         return self.thumbs[0].pixmap if self.thumbs and not self.thumbs[0].pixmap.isNull() else None
 
     def _preview(self, on: bool, view: ArtView):
-        if on and not view.pixmap.isNull():
+        # Moving from one option to the next doesn't flash the piece back in between either.
+        self._rest_view = view if on else None
+        self._rest.start()
+
+    def _preview_now(self):
+        view = self._rest_view
+        if view is None:
+            if self._previewing:
+                self._previewing = False
+                self.show_current()
+            return
+        if not view.pixmap.isNull():
             backdrop = self.art.backdrop if self.slot.key == "logo" else None
             self.art.new = False
             self.art.animated = view.animated
             asset = next((a for v, a in zip(self.thumbs, self.assets) if v is view), None)
-            self.art.set_motion(*self.win.motion_spec(asset, self.art.size()))
+            self.art.set_motion(*self.win.motion_spec(asset, self.art.size(), crop=not self.art.checker))
             self.art.set_pixmap(view.pixmap, backdrop)
             self._set_caption("Previewing", "preview")
             self._previewing = True
-        elif self._previewing:
-            self._previewing = False
-            self.show_current()
 
     def _clear_strip(self):
+        self._rest.stop()
+        self._rest_view = None
         had = bool(self.thumbs)
         for v in self.thumbs:
             self.strip.removeWidget(v)
+            v.drop_motion()  # its decode, if still waiting, never runs
             v.hide()
             v.deleteLater()
         self.thumbs = []
@@ -774,6 +793,9 @@ class CoverThumb(QWidget):
         self._scaled: tuple | None = None  # (pixmap key, dpr, the pixmap cropped to fit)
 
     def set_pixmap(self, pm: QPixmap | None, glyph: str = ""):
+        if glyph == self.glyph and (pm is self.pixmap or pm is not None and self.pixmap is not None
+                                    and pm.cacheKey() == self.pixmap.cacheKey()):
+            return  # the same picture (a refresh): keep it scaled
         self.pixmap = pm
         self.glyph = glyph
         self._scaled = None
@@ -816,8 +838,7 @@ class _Layer(QObject):
         if key is not None and key == self.key:
             return False
         if self.m is not None:
-            self.m.stop()
-            self.m.deleteLater()
+            self.m.retire()  # nothing it was still decoding reaches the card
             self.m = None
         self.key = key if factory is not None else None
         if self.key is not None:
@@ -1342,20 +1363,31 @@ class GamePage(QWidget):
         the card's size in device pixels, cropped as it's drawn, so they're drawn pixel for
         pixel (no second scaling to blur them), and a banner too big to hold every frame of
         streams rather than dropping frames. After a resize (see _card_resized) it decodes
-        again, sharp at the new size; the small logo and cover round up so they carry on."""
+        again, sharp at the new size, and on a screen of another scale. The cover is a fixed
+        size, made to measure; the logo's box rounds up so it carries on across small resizes."""
         if not self.win.show_animated:
             return None, None
         hero = key == "hero"
-        if not hero:
+        if key == "logo":
             size = QSize(-(-size.width() // 160) * 160, -(-size.height() // 40) * 40)
-        how = {"budget": CARD_BUDGET, "crop": True, "stream": True} if hero else {}
+        how = ({"budget": CARD_BUDGET, "crop": True, "stream": True} if hero
+               else {"crop": "middle"} if key == "grid" else {})
         pick = self.win.pending.get(sc.appid, key)
         if pick is not None:
             asset = getattr(pick, "asset", None)
             spec = (None, None) if pick.clears else self.win.full_motion_spec(asset, size, **how)
         else:
             spec = self.win.file_motion_spec(self.win.slot_path(sc, SLOTS[key]), size, **how)
-        return (None, None) if spec[0] is None else ((spec[0], size.width(), size.height()), spec[1])
+        dpr = round(self.devicePixelRatioF() * 100)
+        return (None, None) if spec[0] is None else ((spec[0], size.width(), size.height(), dpr), spec[1])
+
+    def showEvent(self, e):
+        super().showEvent(e)
+        handle = self.window().windowHandle()
+        if handle is not None and not getattr(self, "_screen_hooked", False):
+            # Moved to a screen of another scale: the card's animations decode again, sharp there.
+            self._screen_hooked = True
+            handle.screenChanged.connect(lambda *_: self._resize_timer.start())
 
     def _card_resized(self):
         if self.isVisible() and self.win.current_shortcut() is not None:

@@ -3,12 +3,15 @@ SteamGridDB's video thumbnails) into an ArtView."""
 
 from __future__ import annotations
 
+import os
 import queue
 import struct
 import threading
 import time
+import warnings
 import weakref
 import zlib
+from collections import deque
 from pathlib import Path
 
 from PySide6.QtCore import QBuffer, QByteArray, QCoreApplication, QIODevice, QObject, QRect, QSize, Qt, QThreadPool, QTimer, QUrl, Signal
@@ -19,6 +22,16 @@ from . import workers
 PNG_SIG = b"\x89PNG\r\n\x1a\n"
 MAX_FRAMES = 300
 FRAME_BUDGET = 48 * 1024 * 1024  # bytes of decoded frames kept for one animation
+# Every playing animation's kept frames together, across the whole app: each FrameMotion
+# reserves its share as its decode starts and gives back what it didn't use as it ends. A
+# tight pool just means fewer frames kept (see _Frames), never more memory.
+TOTAL_BUDGET = 320 * 1024 * 1024
+MIN_SHARE = 4 * 1024 * 1024
+# Animation decodes run up to DECODE_THREADS at once, but each one first reserves the most
+# memory it can need (its full-size working pictures, the file, and its frames) against
+# DECODE_LIMIT, so two big banners never decode together; one bigger than the limit runs alone.
+DECODE_LIMIT = 256 * 1024 * 1024
+DECODE_THREADS = 3
 
 
 # ---- decoding (safe off the GUI thread) -----------------------------------------
@@ -55,7 +68,9 @@ def _fit(img: QImage, bound: QSize | None, crop: bool) -> QImage:
         img = img.scaled(bound, Qt.AspectRatioMode.KeepAspectRatioByExpanding,
                          Qt.TransformationMode.SmoothTransformation)
     if crop and img.size() != bound:
-        img = img.copy((img.width() - bound.width()) // 2, 0, bound.width(), bound.height())
+        # crop="middle" cuts evenly top and bottom, as fill_rect does for the strips and the panel.
+        y = (img.height() - bound.height()) // 2 if crop == "middle" else 0
+        img = img.copy((img.width() - bound.width()) // 2, y, bound.width(), bound.height())
     return img
 
 
@@ -219,20 +234,109 @@ def apng_frames(data: bytes, max_frames: int = MAX_FRAMES, bound: QSize | None =
     return out.frames()
 
 
+class _Gate:
+    """A byte budget shared by the decode threads (see DECODE_LIMIT). Callers take turns in
+    the order they asked, so a big decode waiting for room isn't starved by small ones."""
+
+    def __init__(self, limit: int):
+        self.limit = limit
+        self.held = 0
+        self.running = 0
+        self.peak = 0  # the most ever held at once (for tests)
+        self.cond = threading.Condition()
+        self._line: deque = deque()
+
+    def acquire(self, need: int, cancel: threading.Event | None = None) -> bool:
+        """Wait for `need` bytes (or to be alone, when it's more than the whole limit). False if cancelled."""
+        me = object()
+        with self.cond:
+            self._line.append(me)
+            try:
+                while not (self._line[0] is me and (self.running == 0 or self.held + need <= self.limit)):
+                    if cancel is not None and cancel.is_set():
+                        return False
+                    self.cond.wait(0.1)
+                self.held += need
+                self.running += 1
+                self.peak = max(self.peak, self.held)
+                return True
+            finally:
+                self._line.remove(me)
+                self.cond.notify_all()
+
+    def release(self, need: int):
+        with self.cond:
+            self.held -= need
+            self.running -= 1
+            self.cond.notify_all()
+
+
+_gate = _Gate(DECODE_LIMIT)
+
+
+def decode_need(path: str, bound: QSize | None, budget: int, crop=False) -> int:
+    """The most memory decoding this file can take: the file (read, and copied once more for
+    the decoder), four full-size pictures (an APNG's canvas, its copy, the dispose backup and
+    the frame decoded), a frame being shrunk, and the frames kept. Unknown size: the whole limit."""
+    try:
+        file = os.path.getsize(path)
+    except OSError:
+        return 0
+    reader = QImageReader(path)
+    reader.setDecideFormatFromContent(True)
+    size = reader.size()
+    if not size.isValid() or size.isEmpty():
+        return max(_gate.limit, 2 * file + budget)
+    full = size.width() * size.height() * 4
+    fitted = full
+    if bound is not None and not bound.isEmpty():
+        s = size.scaled(bound, Qt.AspectRatioMode.KeepAspectRatioByExpanding)
+        if crop or s.width() < size.width():
+            fitted = s.width() * s.height() * 4
+    return 2 * file + 4 * full + 2 * fitted + budget
+
+
 def decode_frames(path: str, bound: QSize | None = None, max_frames: int = MAX_FRAMES,
-                  budget: int | None = None, crop: bool = False,
-                  keep_all: bool = False) -> list[tuple[QImage, int]] | None:
+                  budget: int | None = None, crop: bool | str = False, keep_all: bool = False,
+                  cancel: threading.Event | None = None, share: list | None = None) -> list[tuple[QImage, int]] | None:
     """Worker: every frame of an animated file (APNG, WebP or GIF, whatever its name), scaled
     to cover `bound` (and cut to it, with `crop`), within `budget` bytes (FRAME_BUDGET if not
-    given). A still image gives one frame. With `keep_all`, None when they won't all fit."""
+    given). A still image gives one frame. With `keep_all`, None when they won't all fit.
+    It waits for room under DECODE_LIMIT first; once `cancel` is set it stops and gives [].
+    With `share` (a one-item list), the budget is taken from TOTAL_BUDGET as it starts, held
+    in share[0], and cut to what the frames kept take as it ends."""
+    budget = budget or FRAME_BUDGET
+    need = decode_need(path, bound, budget, crop)
+    if not _gate.acquire(need, cancel):
+        return []
+    out = []
+    try:
+        if share is not None:
+            budget = _reserve_into(share, budget, cancel)
+            if not budget:
+                return []  # cancelled
+        # Its working pictures and the file go when _decode returns, before the room is given back.
+        out = _decode(path, bound, max_frames, budget, crop, keep_all, cancel)
+        return out
+    finally:
+        if share is not None:
+            _cut_share(share, sum(img.sizeInBytes() for img, _ in out) if out else 0)
+        _gate.release(need)
+
+
+def _decode(path, bound, max_frames, budget, crop, keep_all, cancel):
+    if cancel is not None and cancel.is_set():
+        return []
     try:
         data = Path(path).read_bytes()
     except OSError:
         return []
     count, frames = frame_iter(data, max_frames)
-    out = _Frames(bound, budget or FRAME_BUDGET, count, crop, keep_all)
+    out = _Frames(bound, budget, count, crop, keep_all)
     try:
         for img, ms in frames:
+            if cancel is not None and cancel.is_set():
+                return []
             out.add(img, ms)
     except TooBig:
         return None
@@ -305,18 +409,60 @@ _pool = None
 
 
 def decode_pool():
-    """Animations decode one at a time, so opening a page full of them can't decode them all at once."""
+    """Up to DECODE_THREADS animations decode at once (fewer on a small machine), each within
+    the shared DECODE_LIMIT, so a page full of them starts sooner without a memory spike."""
     global _pool
     if _pool is None:
         _pool = QThreadPool()
-        _pool.setMaxThreadCount(1)
+        _pool.setMaxThreadCount(max(1, min(DECODE_THREADS, QThreadPool.globalInstance().maxThreadCount() // 2)))
+        workers._pools["decode"] = _pool  # so quitting waits for it too (workers.shutdown)
     return _pool
+
+
+# ---- every animation's frames, within TOTAL_BUDGET -------------------------------
+
+_kept = 0
+_kept_lock = threading.Lock()  # a share can also be given back by the garbage collector
+
+
+def _release_share(share: list):
+    global _kept
+    with _kept_lock:
+        _kept = max(0, _kept - share[0])
+        share[0] = 0
+
+
+def _reserve_into(share: list, want: int, cancel: threading.Event | None) -> int:
+    """Reserve into `share`, unless the animation was retired (its share is given back then)."""
+    global _kept
+    with _kept_lock:
+        if cancel is not None and cancel.is_set():
+            return 0
+        give = max(MIN_SHARE, min(want, TOTAL_BUDGET - _kept))
+        _kept += give
+        share[0] += give
+        return give
+
+
+def _cut_share(share: list, used: int):
+    """Keep only `used` bytes of a share (all of it if it was given back meanwhile)."""
+    global _kept
+    with _kept_lock:
+        if share[0] > used:
+            _kept = max(0, _kept - (share[0] - used))
+            share[0] = used
+
+
+def frames_kept() -> int:
+    """Bytes of TOTAL_BUDGET reserved by animations now."""
+    return _kept
 
 
 class Motion(QObject):
     """Plays something animated; `frame` brings each picture as it's due."""
 
     frame = Signal(QPixmap)
+    dead = False
 
     def start(self):
         pass
@@ -324,17 +470,32 @@ class Motion(QObject):
     def stop(self):
         pass
 
+    def retire(self):
+        """Stop for good: nothing more is emitted, whatever is still on its way, and it's deleted."""
+        if self.dead:
+            return
+        self.dead = True
+        self.stop()
+        with warnings.catch_warnings():
+            warnings.simplefilter("ignore", RuntimeWarning)
+            try:
+                self.frame.disconnect()
+            except (RuntimeError, TypeError):
+                pass
+        self.deleteLater()
+
 
 class FrameMotion(Motion):
     """An animated image file, decoded off the GUI thread, then looped.
 
-    Every frame is kept when they fit `budget`. When they don't and `stream` is set (a big
-    banner), it plays from a _Stream instead, every frame at full size; otherwise frames are
-    dropped to fit (each shown for the time of the ones dropped). Frames come when they're
-    due by the clock, so drawing them doesn't slow the animation down."""
+    Every frame is kept when they fit `budget` (as much of it as TOTAL_BUDGET has left). When
+    they don't and `stream` is set (a big banner), it plays from a _Stream instead, every frame
+    at full size; otherwise frames are dropped to fit (each shown for the time of the ones
+    dropped). Frames come when they're due by the clock, so drawing them doesn't slow the
+    animation down. Retired, its decode is dropped if it hasn't started and stopped if it has."""
 
     def __init__(self, path: str, bound: QSize | None = None, budget: int | None = None,
-                 crop: bool = False, stream: bool = False):
+                 crop: bool | str = False, stream: bool = False):
         super().__init__()
         self.path, self.bound, self.crop = path, bound, crop
         self.frames: list[tuple[QPixmap, int]] = []
@@ -346,17 +507,29 @@ class FrameMotion(Motion):
         self.timer.setSingleShot(True)
         self.timer.setTimerType(Qt.TimerType.PreciseTimer)
         self.timer.timeout.connect(self._next)
-        workers.run(decode_frames, path, bound, budget=budget, crop=crop, keep_all=stream,
-                    on_done=self._decoded, on_error=lambda _m: None, pool=decode_pool())
+        self._share = [0]  # bytes of TOTAL_BUDGET it holds, reserved as its decode starts
+        weakref.finalize(self, _release_share, self._share)  # given back even if never retired
+        self._cancel = threading.Event()
+        self._task = workers.run(decode_frames, path, bound, budget=budget, crop=crop, keep_all=stream,
+                                 cancel=self._cancel, share=self._share, on_done=self._decoded,
+                                 on_error=lambda _m: None, pool=decode_pool())
 
     def _decoded(self, frames):
-        if frames is None:  # too big to keep every frame of: stream it
+        self._task = None
+        if self.dead:
+            return
+        if frames is None:  # too big to keep every frame of: stream it (only a few frames held)
             self.stream = _Stream(self.path, self.bound, self.crop)
             self.due = time.monotonic()
             if self.playing:
                 self.timer.start(0)
             return
-        self.frames = [(QPixmap.fromImage(img), ms) for img, ms in frames]
+        # One at a time, so each image goes as its pixmap comes rather than holding both lists.
+        frames.reverse()
+        while frames:
+            img, ms = frames.pop()
+            self.frames.append((QPixmap.fromImage(img), ms))
+            del img
         if self.frames:
             self.frame.emit(self.frames[0][0])
             self.due = time.monotonic() + self.frames[0][1] / 1000
@@ -368,6 +541,8 @@ class FrameMotion(Motion):
             self.timer.start(max(0, round((self.due - time.monotonic()) * 1000)))
 
     def _next(self):
+        if self.dead:
+            return
         now = time.monotonic()
         if self.stream is not None:
             f = self.stream.get()
@@ -388,7 +563,7 @@ class FrameMotion(Motion):
         self._schedule()
 
     def start(self):
-        if not self.playing:
+        if not self.playing and not self.dead:
             self.playing = True
             self.due = max(self.due, time.monotonic())
             self._schedule()
@@ -396,6 +571,19 @@ class FrameMotion(Motion):
     def stop(self):
         self.playing = False
         self.timer.stop()
+
+    def retire(self):
+        if self.dead:
+            return
+        self._cancel.set()
+        task, self._task = self._task, None
+        if task is not None and decode_pool().tryTake(task):
+            workers._live.discard(task)  # still waiting its turn: it never runs
+        if self.stream is not None:
+            self.stream.close()
+        self.frames = []
+        _release_share(self._share)
+        super().retire()
 
     def deleteLater(self):
         if self.stream is not None:
@@ -435,52 +623,86 @@ class VideoMotion(Motion):
         self.player.setSource(QUrl.fromLocalFile(path))
 
     def _frame(self, f):
+        if self.dead:
+            return
         img = f.toImage()
         if not img.isNull():
             self.frame.emit(QPixmap.fromImage(img))
 
     def start(self):
-        self.player.play()
+        if not self.dead:
+            self.player.play()
 
     def stop(self):
         self.player.pause()
 
+    def retire(self):
+        if not self.dead:
+            self.player.stop()  # lets go of the decoder, not just pauses it
+        super().retire()
+
 
 def make(kind: str, path: str, bound: QSize | None = None, budget: int | None = None,
-         crop: bool = False, stream: bool = False) -> Motion:
+         crop: bool | str = False, stream: bool = False) -> Motion:
     """Play a video thumbnail, or an animated image file decoded to cover `bound` within `budget` bytes
     (cut to it, with `crop`; streamed a few frames ahead, with `stream`, when every frame won't fit)."""
     return VideoMotion(path) if kind == "video" else FrameMotion(path, bound, budget, crop, stream)
 
 
-def first_frame(kind: str, path: str, deliver):
-    """Call `deliver(QPixmap)` with the first picture of an animation, for places that show a still."""
+# ---- first frames, for places that show a still ---------------------------------
+
+GRAB_MAX = 2  # video players started at once just to grab a first frame
+_grab_q: deque = deque()  # (path, deliver, wanted) waiting their turn
+_grabbing: set[Motion] = set()
+
+
+def _first_image(path: str, bound: QSize | None) -> QImage:
+    """Worker: the first picture of an animated file, shrunk as it decodes to cover `bound`."""
+    r = QImageReader(path)
+    r.setDecideFormatFromContent(True)
+    s = r.size()
+    if bound is not None and s.isValid() and s.width() > bound.width() and s.height() > bound.height():
+        r.setScaledSize(s.scaled(bound, Qt.AspectRatioMode.KeepAspectRatioByExpanding))
+    return r.read()
+
+
+def first_frame(kind: str, path: str, deliver, bound: QSize | None = None, wanted=None):
+    """Call `deliver(QPixmap)` with the first picture of an animation, for places that show a still.
+    An image file decodes off the GUI thread; a video plays just until its first frame, at most
+    GRAB_MAX at a time. `wanted()`, if given, is asked before starting, so ones no longer needed are skipped."""
     if kind != "video":
-        img = QImageReader(path)
-        img.setDecideFormatFromContent(True)
-        deliver(QPixmap.fromImage(img.read()))
+        def done(img):
+            if not img.isNull() and (wanted is None or wanted()):
+                deliver(QPixmap.fromImage(img))
+
+        workers.run(_first_image, path, bound, kind="cpu", on_done=done, on_error=lambda _m: None)
         return
+    _grab_q.append((path, deliver, wanted))
+    _pump_grabs()
+
+
+def _pump_grabs():
+    while len(_grabbing) < GRAB_MAX and _grab_q:
+        path, deliver, wanted = _grab_q.popleft()
+        if wanted is not None and not wanted():
+            continue
+        _grab(path, deliver)
+
+
+def _grab(path: str, deliver):
     m = VideoMotion(path)
     _grabbing.add(m)
 
-    def got(pm, m=m):
+    def finish(pm=None, m=m):
         if m not in _grabbing:
             return
         _grabbing.discard(m)
-        m.stop()
-        m.deleteLater()
-        deliver(pm)
+        m.retire()
+        QTimer.singleShot(0, _pump_grabs)
+        if pm is not None:
+            deliver(pm)
 
-    def give_up(m=m):  # a video that never shows a frame mustn't keep a player running
-        if m in _grabbing:
-            _grabbing.discard(m)
-            m.stop()
-            m.deleteLater()
-
-    m.frame.connect(got)
-    m.player.errorOccurred.connect(lambda *_: give_up())
-    QTimer.singleShot(10000, m, give_up)
+    m.frame.connect(finish)
+    m.player.errorOccurred.connect(lambda *_: finish())  # a video that never shows a frame
+    QTimer.singleShot(10000, m, finish)  # mustn't keep a player running
     m.start()
-
-
-_grabbing: set[Motion] = set()
