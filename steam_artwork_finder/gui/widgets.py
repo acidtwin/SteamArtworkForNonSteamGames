@@ -131,7 +131,7 @@ class ScaledCache:
             if on_ready:
                 on_ready()
 
-        workers.run(decode_scaled, key[0], w, h, contain, on_done=done,
+        workers.run(decode_scaled, key[0], w, h, contain, kind="cpu", on_done=done,
                     on_error=lambda _m, key=key: done(QImage(), key))
         return None
 

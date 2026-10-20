@@ -1015,6 +1015,9 @@ class MainWindow(QMainWindow):
         self.start.rebuild()
         self.show_index(self.current)
         workers.run(prune_replaced, self.user.grid_dir)
+        if not getattr(self, "_cache_pruned", False):
+            self._cache_pruned = True
+            workers.run(workers.prune_cache, kind="long")
         self.match_all()
         self.update_steam_state()
 
@@ -1278,7 +1281,7 @@ class MainWindow(QMainWindow):
             self._show_status()
             self._key_problem(msg)
 
-        workers.run(work, on_progress=got, on_done=finished, on_error=failed)
+        workers.run(work, kind="long", on_progress=got, on_done=finished, on_error=failed)
 
     def check_gaps(self):
         """Ask SteamGridDB, once a session, whether matched games' missing pieces exist at all,
@@ -1809,7 +1812,7 @@ class MainWindow(QMainWindow):
             self._key_problem(msg)
             self.toast.show_message(f"Couldn't apply the artwork: {msg}")
 
-        workers.run(work, on_progress=on_progress, on_done=done, on_error=failed)
+        workers.run(work, kind="long", on_progress=on_progress, on_done=done, on_error=failed)
         return True
 
     # ---- SteamGridDB key and matching ---------------------------------------
@@ -2084,7 +2087,7 @@ class MainWindow(QMainWindow):
             self.refresh_all()
             QMessageBox.warning(self, APP_NAME, msg)
 
-        workers.run(self._fetch_missing, jobs, use_sgdb=use_sgdb, notfound=frozenset(notfound),
+        workers.run(self._fetch_missing, jobs, kind="long", use_sgdb=use_sgdb, notfound=frozenset(notfound),
                     on_progress=on_progress, on_done=done,
                     on_error=failed)
 
@@ -2240,6 +2243,7 @@ def main() -> int:
     from . import smooth
 
     smooth.install(app)
+    app.aboutToQuit.connect(workers.shutdown)
     win = MainWindow()
     screen = app.primaryScreen().availableGeometry() if app.primaryScreen() else None
     if screen is not None and (screen.width() <= 1280 or screen.height() <= 800):

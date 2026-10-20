@@ -328,7 +328,7 @@ class _Playing(QObject):
                     item.setData(ROLE_FULL, pm)
 
         def got(path):
-            workers.run(decode_fit, path, w, h, cover, on_done=decoded, on_error=lambda _m: None)
+            workers.run(decode_fit, path, w, h, cover, kind="cpu", on_done=decoded, on_error=lambda _m: None)
 
         workers.run(workers.cached_file, a.url, t.win.sgdb.download, on_done=got, on_error=lambda _m: None)
 

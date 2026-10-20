@@ -36,10 +36,27 @@ class Task(QRunnable):
 
 
 _live: set[Task] = set()
+_pools: dict[str, QThreadPool] = {}
 
 
-def run(fn, *args, on_done=None, on_error=None, on_progress=None, pool=None, **kwargs) -> Task:
-    """Start fn in the pool (or `pool`). If fn takes `progress`, it gets an emit function."""
+def pool_for(kind: str) -> QThreadPool:
+    """Separate pools so slow work never queues ahead of quick work:
+    "net"  - downloads and API calls (mostly waiting on the network), the default;
+    "cpu"  - image decoding, sized to the machine's cores;
+    "long" - Get Artwork, Apply and other jobs that hold a thread for a long time."""
+    if kind == "cpu":
+        return QThreadPool.globalInstance()
+    p = _pools.get(kind)
+    if p is None:
+        p = _pools[kind] = QThreadPool()
+        p.setMaxThreadCount(12 if kind == "net" else 2)
+        p.setExpiryTimeout(30_000)
+    return p
+
+
+def run(fn, *args, on_done=None, on_error=None, on_progress=None, pool=None, kind: str = "net",
+        priority: int = 0, **kwargs) -> Task:
+    """Start fn in the `kind` pool (or `pool`). If fn takes `progress`, it gets an emit function."""
     task = Task(fn, *args, **kwargs)
     if on_progress is not None:
         task.kwargs["progress"] = task.signals.progress.emit
@@ -53,8 +70,17 @@ def run(fn, *args, on_done=None, on_error=None, on_progress=None, pool=None, **k
     task.signals.done.connect(lambda *_: _live.discard(task))
     task.signals.failed.connect(lambda *_: _live.discard(task))
     task.setAutoDelete(False)
-    (pool or QThreadPool.globalInstance()).start(task)
+    (pool or pool_for(kind)).start(task, priority)
     return task
+
+
+def shutdown(ms: int = 1500):
+    """When quitting: drop queued work and give running work a moment to finish."""
+    pools = [QThreadPool.globalInstance(), *_pools.values()]
+    for p in pools:
+        p.clear()
+    for p in pools:
+        p.waitForDone(ms)
 
 
 def _is_video(data: bytes) -> bool:
@@ -62,7 +88,21 @@ def _is_video(data: bytes) -> bool:
 
 
 def _whole(data: bytes) -> bool:
-    return _is_video(data) or not QImage.fromData(data).isNull()
+    """A cached file that is complete. Judged by its ending where the format allows, so a
+    cache hit doesn't cost a full decode."""
+    if not data:
+        return False
+    if _is_video(data):
+        return True
+    if data.startswith(b"\x89PNG\r\n\x1a\n"):
+        return data[-12:-4] == b"\x00\x00\x00\x00IEND"
+    if data[:3] == b"\xff\xd8\xff":
+        return b"\xff\xd9" in data[-64:]
+    if data[:4] == b"RIFF" and data[8:12] == b"WEBP":
+        return int.from_bytes(data[4:8], "little") + 8 <= len(data)
+    if data[:4] in (b"GIF8",):
+        return data.rstrip(b"\x00")[-1:] == b"\x3b"
+    return not QImage.fromData(data).isNull()
 
 
 def cached_file(url: str, fetch) -> str:
@@ -99,7 +139,7 @@ def cached_download(url: str, fetch) -> bytes:
     p = d / hashlib.sha1(url.encode()).hexdigest()
     try:
         data = p.read_bytes()
-        if not QImage.fromData(data).isNull():
+        if _whole(data):
             return data
         p.unlink(missing_ok=True)  # cut off or broken: fetch it again
     except OSError:
@@ -117,3 +157,29 @@ def cached_download(url: str, fetch) -> bytes:
         except OSError:
             pass
     return data
+
+
+def prune_cache(max_bytes: int = 400 * 1024 * 1024):
+    """Keep the thumbnail and .exe icon caches under max_bytes, dropping the least recently used."""
+    files = []
+    for sub in ("thumbs", "exe-icons"):
+        try:
+            with os.scandir(cache_dir() / sub) as it:
+                for e in it:
+                    try:
+                        st = e.stat()
+                    except OSError:
+                        continue
+                    if e.is_file():
+                        files.append((max(st.st_atime, st.st_mtime), st.st_size, e.path))
+        except OSError:
+            continue
+    total = sum(f[1] for f in files)
+    for _t, size, path in sorted(files):
+        if total <= max_bytes:
+            break
+        try:
+            os.unlink(path)
+            total -= size
+        except OSError:
+            pass
