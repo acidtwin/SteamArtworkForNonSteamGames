@@ -1243,7 +1243,9 @@ def test_exe_icon_is_the_fallback_for_steam_and_the_list(qapp, window, tmp_path,
     win = window
     sc = win.sfile.shortcuts[0]
     sc.exe = f'"{exe}"'
-    path, contain = win.list_icon(sc)  # the app's list shows the .exe's icon straight away
+    win.list_icon(sc)  # looked up in a worker, so painting never waits on the disk
+    _pump(qapp, 3000, until=lambda: win.list_icon(sc)[0] is not None)
+    path, contain = win.list_icon(sc)  # the app's list shows the .exe's icon
     assert path is not None and QImage(str(path)).size().width() == 64 and not contain
     assert win.pending.get(sc.appid, "icon") is None  # Steam is only offered it once SteamGridDB has none
 

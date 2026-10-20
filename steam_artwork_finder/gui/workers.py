@@ -43,13 +43,13 @@ def pool_for(kind: str) -> QThreadPool:
     """Separate pools so slow work never queues ahead of quick work:
     "net"  - downloads and API calls (mostly waiting on the network), the default;
     "cpu"  - image decoding, sized to the machine's cores;
-    "long" - Get Artwork, Apply and other jobs that hold a thread for a long time."""
+    "long" - Get Artwork, Apply, matching and other jobs that hold a thread for a long time."""
     if kind == "cpu":
         return QThreadPool.globalInstance()
     p = _pools.get(kind)
     if p is None:
         p = _pools[kind] = QThreadPool()
-        p.setMaxThreadCount(12 if kind == "net" else 2)
+        p.setMaxThreadCount(12 if kind == "net" else 4)
         p.setExpiryTimeout(30_000)
     return p
 

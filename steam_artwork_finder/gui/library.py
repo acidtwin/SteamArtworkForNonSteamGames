@@ -720,7 +720,7 @@ class GameList(QWidget):
         self._update_button()
 
     def rebuild(self):
-        cur = self.current_index()
+        cur = self.win.current if self.win.current >= 0 else None  # by game, after a reload re-numbers them
         self.list.blockSignals(True)
         self.list.clear()
         scs = self.win.sfile.shortcuts

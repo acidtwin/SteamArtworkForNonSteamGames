@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import itertools
+import os
 import sys
 from pathlib import Path
 
@@ -25,7 +26,7 @@ from PySide6.QtWidgets import (
 
 from .. import APP_NAME, __version__
 from .. import artwork
-from ..artwork import SLOTS, Slot, current_icon, existing, prune_replaced, remove_asset, save_asset, undo
+from ..artwork import IMAGE_EXTS, SLOTS, Slot, current_icon, existing, prune_replaced, remove_asset, save_asset, undo
 from ..config import Config, cache_dir
 from ..exeicon import exe_icon, exe_path
 from ..pending import LocalFile, Pending, Pick
@@ -86,6 +87,30 @@ def is_exact(sc_name: str, game_name: str, exe: str = "") -> bool:
     return any(v.casefold() == want for v in name_variants(sc_name) + name_variants(term))
 
 
+def _exe_icon_png(appid: int, exe_field: str) -> Path | None:
+    """Worker: the icon in a shortcut's .exe as a cached PNG, or None."""
+    exe = exe_path(exe_field)
+    if exe is None:
+        return None
+    try:
+        mtime = exe.stat().st_mtime_ns
+    except OSError:
+        return None
+    dest = cache_dir() / "exe-icons" / f"{appid}-{mtime}.png"
+    if dest.is_file():
+        return dest
+    data = exe_icon(exe)
+    img = QImage.fromData(data) if data else QImage()
+    if img.isNull():
+        return None
+    dest.parent.mkdir(parents=True, exist_ok=True)
+    tmp = dest.with_name(dest.name + ".part")
+    if img.save(str(tmp), "PNG"):
+        os.replace(tmp, dest)
+        return dest
+    return None
+
+
 class MainWindow(QMainWindow):
     def __init__(self):
         super().__init__()
@@ -109,7 +134,9 @@ class MainWindow(QMainWindow):
         self.guesses: dict[int, Game] = {}  # best guesses not yet confirmed by an action
         self._matching = False  # the startup lookup of every game is running
         self._match_count = (0, 0)  # games looked up so far, of how many
-        self._exe_icons: dict = {}  # (appid, exe, mtime) -> the icon from its .exe, or None
+        self._exe_icons: dict = {}  # (appid, exe field) -> the icon from its .exe, or None
+        self._exe_icon_busy: set = set()
+        self._grid_names: set[str] | None = None  # file names in the grid folder, read once per refresh
         self._gaps_checked: set[int] = set()  # games whose missing pieces were asked about this session
         self._note: tuple[str, str] | None = None  # a short-lived status bar message
         self._note_timer = QTimer(self, singleShot=True, interval=5000, timeout=self._clear_note)
@@ -329,14 +356,29 @@ class MainWindow(QMainWindow):
         paths = self._cov.get(sc.appid)
         if paths is None:
             grid = self.user.grid_dir
-            paths = self._cov[sc.appid] = [current_icon(sc, grid) if k == "icon" else existing(grid, sc.appid, SLOTS[k])
+            if self._grid_names is None or not self._cov:
+                # One directory read instead of a dozen file checks per game.
+                try:
+                    with os.scandir(grid) as it:
+                        self._grid_names = {e.name for e in it}
+                except OSError:
+                    self._grid_names = set()
+            names = self._grid_names
+
+            def have(key):
+                stem = f"{sc.appid}{SLOTS[key].suffix}"
+                return next((grid / (stem + ext) for ext in IMAGE_EXTS if stem + ext in names), None)
+
+            paths = self._cov[sc.appid] = [(current_icon(sc, grid) if sc.icon else have(k)) if k == "icon" else have(k)
                                            for k in ORDER]
         return paths[ORDER.index(slot.key)]
 
     def forget_files(self, appid: int | None = None):
         """Look on disk again for one game's artwork files (or every game's, with None)."""
+        self._grid_names = None
         if appid is None:
             self._cov.clear()
+            self._exe_icons.clear()  # looked up again (in a worker) in case a game was updated
         else:
             self._cov.pop(appid, None)
 
@@ -372,36 +414,37 @@ class MainWindow(QMainWindow):
                 return path, key == "logo"
         return None, False
 
-    def exe_icon_file(self, sc: Shortcut) -> Path | None:
-        """The icon inside the game's .exe, saved once as a PNG in the cache; None if it has none."""
-        exe = exe_path(sc.exe)
-        try:
-            key = (sc.appid, str(exe), exe.stat().st_mtime_ns) if exe else None
-        except OSError:
-            key = None
+    def exe_icon_file(self, sc: Shortcut, wait: bool = False) -> Path | None:
+        """The icon inside the game's .exe, saved once as a PNG in the cache; None if it has none
+        (or, without `wait`, until a worker has looked: lists paint without touching the disk,
+        which may be a sleeping drive or a network share)."""
+        key = (sc.appid, sc.exe)
         if key in self._exe_icons:
             return self._exe_icons[key]
-        out = None
-        if key is not None:
-            dest = cache_dir() / "exe-icons" / f"{sc.appid}-{key[2]}.png"
-            if dest.is_file():
-                out = dest
-            else:
-                data = exe_icon(exe)
-                img = QImage.fromData(data) if data else QImage()
-                if not img.isNull():
-                    dest.parent.mkdir(parents=True, exist_ok=True)
-                    if img.save(str(dest), "PNG"):
-                        out = dest
-        self._exe_icons[key] = out
-        return out
+        if wait:
+            self._exe_icons[key] = _exe_icon_png(*key)
+            return self._exe_icons[key]
+        if key not in self._exe_icon_busy:
+            self._exe_icon_busy.add(key)
+
+            def done(path, key=key):
+                self._exe_icon_busy.discard(key)
+                self._exe_icons[key] = path
+                if path is not None:
+                    self.game_list.list.viewport().update()
+                    self.start.wall.viewport().update()
+
+            workers.run(_exe_icon_png, *key, on_done=done,
+                        on_error=lambda _m, key=key: (self._exe_icon_busy.discard(key),
+                                                      self._exe_icons.__setitem__(key, None)))
+        return None
 
     def stage_exe_icon(self, sc: Shortcut) -> bool:
         """When SteamGridDB has no icon, stage the one in the game's .exe for Steam (written on
         Apply like any pick). True if one was staged."""
         if self.pending.get(sc.appid, "icon") is not None or self.slot_path(sc, SLOTS["icon"]):
             return False
-        path = self.exe_icon_file(sc)
+        path = self.exe_icon_file(sc, wait=True)
         if path is None:
             return False
         try:
@@ -922,6 +965,7 @@ class MainWindow(QMainWindow):
                 self.header.set_users([u.label for u in self.users], self.users.index(self.user), self._avatar())
                 return
         self.user = self.users[idx]
+        self.current = -1  # another account's games: start from its library
         self.header.set_users([u.label for u in self.users], idx, self._avatar())
         self._sync_folder_popover()
         self.reload_shortcuts()
@@ -989,6 +1033,8 @@ class MainWindow(QMainWindow):
             return self.detect_steam()
         from ..shortcuts import ShortcutsFile
 
+        keep = self.current_shortcut()
+        keep = keep.appid if keep is not None else None  # stay on the same game, wherever it now sits
         self.forget_files()
         try:
             self.sfile = ShortcutsFile(self.user.shortcuts_path)
@@ -1009,8 +1055,7 @@ class MainWindow(QMainWindow):
             self.update_chrome()
             return
         self.game_list.set_empty_reason(None)
-        if self.current >= len(self.sfile.shortcuts):
-            self.current = -1
+        self.current = next((i for i, sc in enumerate(self.sfile.shortcuts) if sc.appid == keep), -1)
         self.game_list.rebuild()
         self.start.rebuild()
         self.show_index(self.current)
