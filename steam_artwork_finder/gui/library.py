@@ -861,8 +861,9 @@ class GameList(QWidget):
         self.list.setCurrentRow(-1)
         self.list.clearSelection()
 
-    def refresh(self):
-        self.refresh_spoken()
+    def refresh(self, spoken: bool = True):
+        if spoken:
+            self.refresh_spoken()
         self.list.viewport().update()
 
     def _changed(self, cur, _prev):
@@ -888,6 +889,16 @@ class WallDelegate(QStyledItemDelegate):
         self.picks: dict = {}
 
     def tile_height(self, font: QFont) -> int:
+        # Asked on every mouse move over the wall (hit testing): worked out once per font.
+        key = (font.key(), theme.pt("control"), theme.pt("label"))
+        cached = getattr(self, "_tile_h", None)
+        if cached is not None and cached[0] == key:
+            return cached[1]
+        h = self._tile_height(font)
+        self._tile_h = (key, h)
+        return h
+
+    def _tile_height(self, font: QFont) -> int:
         f = QFont(font)
         f.setPointSizeF(theme.pt("control"))
         m = QFont(font)
@@ -979,6 +990,9 @@ class Chip(QAbstractButton):
         return self.total > 0 and self.have >= self.total
 
     def set_values(self, have: int, total: int):
+        if getattr(self, "_set", None) == (have, total):
+            return  # unchanged: don't make the start page lay out again
+        self._set = (have, total)
         self.have, self.total = have, total
         miss = total - have
         lower = self.name.lower()

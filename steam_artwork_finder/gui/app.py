@@ -1573,8 +1573,8 @@ class MainWindow(QMainWindow):
             self.update_chrome()
             return
         self.resort()
-        self.game_list.update_counts()
-        self.game_list.refresh()
+        self.game_list.update_counts()  # also refreshes what screen readers say
+        self.game_list.refresh(spoken=False)
         self.start.refresh()
         if self.current >= 0:
             self.page.refresh_current()
