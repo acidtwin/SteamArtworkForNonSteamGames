@@ -5,7 +5,7 @@ from __future__ import annotations
 import sys
 from pathlib import Path
 
-from PySide6.QtCore import QObject, QPoint, QTimer, QUrl, Qt, Signal
+from PySide6.QtCore import QObject, QPoint, QSize, QTimer, QUrl, Qt, Signal
 from PySide6.QtGui import QAction, QDesktopServices, QKeySequence, QPixmap
 from PySide6.QtWidgets import (
     QApplication,
@@ -425,7 +425,12 @@ class MainWindow(QMainWindow):
         bound = size * self.devicePixelRatioF()
         return ("asset", asset.id), lambda: motion.make(kind, path, bound)
 
-    def full_motion_spec(self, asset: Asset | None, size, budget: int | None = None) -> tuple:
+    def _bound(self, size: QSize) -> QSize:
+        """`size` in device pixels, rounded as fill_rect rounds, so frames made to it draw 1:1."""
+        dpr = self.devicePixelRatioF()
+        return QSize(round(size.width() * dpr), round(size.height() * dpr))
+
+    def full_motion_spec(self, asset: Asset | None, size, budget: int | None = None, **how) -> tuple:
         """Like motion_spec, but playing the option's full file at `size` rather than its small
         preview video: for big places such as the page's banner. The preview plays until the
         file is downloaded."""
@@ -444,10 +449,10 @@ class MainWindow(QMainWindow):
                 workers.run(workers.cached_file, asset.url, self.sgdb.download, on_done=done,
                             on_error=lambda _m, aid=asset.id: self._full_loading.discard(aid))
             return self.motion_spec(asset, size)
-        bound = size * self.devicePixelRatioF()
-        return ("full", asset.id), lambda: motion.make("frames", path, bound, budget)
+        bound = self._bound(size)
+        return ("full", asset.id), lambda: motion.make("frames", path, bound, budget, **how)
 
-    def file_motion_spec(self, path: Path | None, size, budget: int | None = None) -> tuple:
+    def file_motion_spec(self, path: Path | None, size, budget: int | None = None, **how) -> tuple:
         """(key, factory) to play an animated artwork file from Steam's folder; nothing for a still."""
         if path is None or not self.show_animated:
             return None, None
@@ -459,8 +464,8 @@ class MainWindow(QMainWindow):
             self._anim_files[key] = artwork.file_is_animated(path)
         if not self._anim_files[key]:
             return None, None
-        bound = size * self.devicePixelRatioF()
-        return ("file",) + key, lambda: motion.make("frames", str(path), bound, budget)
+        bound = self._bound(size)
+        return ("file",) + key, lambda: motion.make("frames", str(path), bound, budget, **how)
 
     def fetch_assets(self, game_id: int, slot_key: str, page: int, callback):
         animated = self.show_animated

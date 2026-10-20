@@ -133,6 +133,10 @@ def fill_rect(pm: QPixmap, target: QSize, dpr: float = 1.0, top: bool = False) -
     With `dpr` above 1 the result has that many more pixels, for sharp HiDPI drawing.
     `top` keeps the top of the image and crops only the bottom, as Steam does with a banner."""
     target = QSize(round(target.width() * dpr), round(target.height() * dpr))
+    if pm.size() == target:  # made to measure (an animation's frame): drawn as it is
+        out = QPixmap(pm)
+        out.setDevicePixelRatio(dpr)
+        return out
     s = pm.scaled(target, Qt.AspectRatioMode.KeepAspectRatioByExpanding,
                   Qt.TransformationMode.SmoothTransformation)
     x = (s.width() - target.width()) // 2

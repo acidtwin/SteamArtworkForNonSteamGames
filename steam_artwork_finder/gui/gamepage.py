@@ -1108,18 +1108,23 @@ class GamePage(QWidget):
         """(key, factory) to play this piece where it's animated (a waiting pick, else what's on
         disk), for the match card; nothing for a still or with animation turned off.
 
-        It decodes the full file at the size it's shown, rounded up a little so a small resize
-        carries on playing; a bigger one (see _card_resized) decodes it again, sharp at the new size."""
+        It decodes the full file at the size it's shown. The banner's frames are made exactly
+        the card's size in device pixels, cropped as it's drawn, so they're drawn pixel for
+        pixel (no second scaling to blur them), and a banner too big to hold every frame of
+        streams rather than dropping frames. After a resize (see _card_resized) it decodes
+        again, sharp at the new size; the small logo and cover round up so they carry on."""
         if not self.win.show_animated:
             return None, None
-        size = QSize(-(-size.width() // 160) * 160, -(-size.height() // 40) * 40)
-        budget = CARD_BUDGET if key == "hero" else None
+        hero = key == "hero"
+        if not hero:
+            size = QSize(-(-size.width() // 160) * 160, -(-size.height() // 40) * 40)
+        how = {"budget": CARD_BUDGET, "crop": True, "stream": True} if hero else {}
         pick = self.win.pending.get(sc.appid, key)
         if pick is not None:
             asset = getattr(pick, "asset", None)
-            spec = (None, None) if pick.clears else self.win.full_motion_spec(asset, size, budget)
+            spec = (None, None) if pick.clears else self.win.full_motion_spec(asset, size, **how)
         else:
-            spec = self.win.file_motion_spec(self.win.slot_path(sc, SLOTS[key]), size, budget)
+            spec = self.win.file_motion_spec(self.win.slot_path(sc, SLOTS[key]), size, **how)
         return (None, None) if spec[0] is None else ((spec[0], size.width(), size.height()), spec[1])
 
     def _card_resized(self):

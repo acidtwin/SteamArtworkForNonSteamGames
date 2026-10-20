@@ -1,4 +1,5 @@
 import struct
+import time
 import zlib
 
 import pytest
@@ -337,6 +338,7 @@ def test_game_page_banner_plays_with_its_logo_over_it(qapp, window):
 
 
 def test_page_banner_decodes_at_the_size_it_is_shown(qapp, window):
+    from PySide6.QtCore import QSize
     win = window
     sc = win.sfile.shortcuts[0]
     grid = win.user.grid_dir
@@ -349,7 +351,37 @@ def test_page_banner_decodes_at_the_size_it_is_shown(qapp, window):
     big = lambda: card.banner is not None and card.banner.width() >= card.width()
     _pump(qapp, 5000, until=big)
     assert big()  # as wide as the banner is shown, not a thumbnail
+    dpr = card.devicePixelRatioF()
+    exact = lambda: card.banner.size() == QSize(round(card.width() * dpr), round(card.height() * dpr))
+    _pump(qapp, 2000, until=exact)
+    assert exact()  # cut to the card, so it's drawn pixel for pixel, not scaled a second time
     first = card.layers["banner"].key
     win.resize(win.width() + 400, win.height())
     _pump(qapp, 5000, until=lambda: card.layers["banner"].key != first and big())
     assert card.layers["banner"].key != first and big()  # decoded again for the wider window
+
+
+def test_a_big_animation_streams_every_frame_on_time(qapp, tmp_path, monkeypatch):
+    from PySide6.QtCore import QSize
+    from steam_artwork_finder.gui import motion
+
+    colours = [(i * 20, 255 - i * 20, 0, 255) for i in range(12)]
+    f = tmp_path / "hero.png"
+    f.write_bytes(make_apng(400, 130, [(0, 0, 400, 130, c, 40, 0, 0) for c in colours]))
+    bound = QSize(300, 80)
+    one = 300 * 80 * 4
+    assert motion.decode_frames(str(f), bound, budget=one * 4, crop=True, keep_all=True) is None  # won't fit
+    m = motion.make("frames", str(f), bound, one * 4, crop=True, stream=True)
+    got = []
+    m.frame.connect(lambda pm: got.append((time.monotonic(), pm)))
+    m.start()
+    _pump(qapp, 3000, until=lambda: m.stream is not None and len(got) >= 2)
+    start = len(got)
+    _pump(qapp, 1000)
+    m.stop()
+    m.deleteLater()
+    shown = got[start:]
+    assert all(pm.size() == bound for _, pm in shown)  # every frame full size, cut to the bound
+    assert 20 <= len(shown) <= 27  # 40 ms apiece for a second: on time, none dropped or slowed
+    names = {pm.toImage().pixelColor(5, 5).name() for _, pm in got}
+    assert len(names) == 12  # every frame, none dropped
