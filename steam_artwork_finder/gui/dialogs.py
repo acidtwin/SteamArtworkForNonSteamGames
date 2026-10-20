@@ -18,6 +18,7 @@ from PySide6.QtWidgets import (
     QHBoxLayout,
     QLabel,
     QLineEdit,
+    QMessageBox,
     QPushButton,
     QSizePolicy,
     QToolButton,
@@ -28,6 +29,7 @@ from PySide6.QtWidgets import (
 from ..sgdb import Game, SteamGridDB
 from . import icons, theme, workers
 from .chrome import Overlay
+from .scrim import run_dialog
 from .theme import C
 from .widgets import FlowLayout, fill_rect
 
@@ -152,6 +154,7 @@ class KeyPopover(Overlay):
         self.edit.returnPressed.connect(self._check)
         foot.addWidget(self.save)
         lay.addLayout(foot)
+        self._run = 0  # each key check; closing the pop-over drops the check on its way
         self._changed()
 
     def open_for(self, current: str, anchor: QPoint):
@@ -159,6 +162,7 @@ class KeyPopover(Overlay):
             self.edit.setText(current)
             self.edit.setEchoMode(QLineEdit.EchoMode.Password)
             self.eye.setIcon(icons.icon("eye", 16, C["text3"]))
+            self._changed()  # Save back on, if it was closed mid-check
         self.open_above(anchor, align_right=True)
         self.edit.setFocus()
 
@@ -192,14 +196,23 @@ class KeyPopover(Overlay):
         self.status.setText(text)
         self.status.show()
 
+    def dismiss(self):
+        self._run += 1  # a check still running no longer saves the key
+        self.save.setEnabled(bool(self.edit.text().strip()))
+        super().dismiss()
+
     def _check(self):
         key = self.edit.text().strip()
         if not key:
             return
         self._say("Checking the key…", C["text2"])
         self.save.setEnabled(False)
+        self._run += 1
+        run = self._run
 
         def done(ok):
+            if run != self._run:
+                return  # closed (or checked again) while this one was on its way
             self.save.setEnabled(True)
             if ok:
                 self.dismiss()
@@ -208,6 +221,8 @@ class KeyPopover(Overlay):
                 self._say("SteamGridDB didn't accept that key. Check you copied all of it.", C["bad"])
 
         def failed(msg):
+            if run != self._run:
+                return
             self.save.setEnabled(True)
             self._say(msg, C["bad"])
 
@@ -940,6 +955,11 @@ class QuitDialog(QDialog):
     def _done(self, choice: str):
         self.choice = choice
         self.accept()
+
+
+def tell(parent: QWidget, title: str, text: str, icon=QMessageBox.Icon.Warning):
+    """A message with an OK button, over the dimmed window (a click on the dim closes it too)."""
+    run_dialog(QMessageBox(icon, title, text, QMessageBox.StandardButton.Ok, parent), delete=True)
 
 
 def _dialog_frame(dlg: QDialog, heading: str) -> tuple[QVBoxLayout, QHBoxLayout]:

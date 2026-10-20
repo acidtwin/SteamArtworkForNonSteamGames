@@ -45,9 +45,9 @@ from ..steam import (
 from . import icons, localfile, motion, theme, workers
 from .chrome import ContentBar, Header, StatusBar, SteamPopover
 from .steamfolder import SteamFolderPopover
-from .scrim import Scrim
+from .scrim import Scrim, run_dialog
 from .dialogs import (
-    AboutDialog, ConfirmDialog, KeyPopover, MatchDialog, QuitDialog, RestoreDialog,
+    AboutDialog, ConfirmDialog, KeyPopover, MatchDialog, QuitDialog, RestoreDialog, tell,
 )
 from .gamepage import GamePage
 from .library import SORTS, GameList, StartPage, art_text, sorted_indices
@@ -242,7 +242,9 @@ class MainWindow(QMainWindow):
                          (QKeySequence("Ctrl+Q"), self.close)):
             act = QAction(self)
             act.setShortcut(keys)
-            act.triggered.connect(fn)
+            # Nothing behind the dim reacts to the keyboard either; quitting still works.
+            act.triggered.connect(
+                lambda _=False, fn=fn: fn() if fn == self.close or not self.scrim.is_covering() else None)
             self.addAction(act)
         self.detect_steam()
         self.check_connection()
@@ -905,7 +907,7 @@ class MainWindow(QMainWindow):
         if d:
             roots = find_steam_roots([Path(d)])
             if not roots:
-                QMessageBox.warning(self, APP_NAME, "That folder doesn't have a Steam “userdata” folder inside it.")
+                tell(self, APP_NAME, "That folder doesn't have a Steam “userdata” folder inside it.")
                 return
             self.use_steam_root(roots[0])
 
@@ -933,9 +935,10 @@ class MainWindow(QMainWindow):
 
     def _ask_discard(self) -> bool:
         n = len(self.pending.games())
-        return bool(ConfirmDialog(
+        return bool(run_dialog(ConfirmDialog(
             self, "Discard the artwork you haven't applied?",
-            f"New artwork for {plural(n, 'game')} hasn't been applied yet.", "Discard", "trash", bad=True).exec())
+            f"New artwork for {plural(n, 'game')} hasn't been applied yet.", "Discard", "trash", bad=True),
+            delete=True))
 
     def reload_game_list(self):
         """Reload Game List (menu, Ctrl+R, F5): re-read Steam's list and say what changed."""
@@ -993,9 +996,10 @@ class MainWindow(QMainWindow):
         try:
             self.sfile = ShortcutsFile(self.user.shortcuts_path)
         except Exception as e:
-            QMessageBox.critical(
+            tell(
                 self, APP_NAME,
-                f"Steam's shortcut list couldn't be read:\n{e}\n\nYou can restore a backup from the ⋯ menu.")
+                f"Steam's shortcut list couldn't be read:\n{e}\n\nYou can restore a backup from the ⋯ menu.",
+                QMessageBox.Icon.Critical)
             self.sfile = None
         known = {sc.appid for sc in self.sfile.shortcuts} if self.sfile else set()
         for appid in list(self.pending.games()):
@@ -1103,7 +1107,7 @@ class MainWindow(QMainWindow):
             games.append((sc.name or "(unnamed)", what[:1].upper() + what[1:], self.pending.count(appid), cover))
         dlg = QuitDialog(self, games)
         try:
-            if not dlg.exec():
+            if not run_dialog(dlg):
                 return None
             if dlg.choice == "apply" and dlg.remember.isChecked():
                 self._set_apply_on_quit(True)
@@ -1591,8 +1595,8 @@ class MainWindow(QMainWindow):
         self.toast.show_message(f"Refreshed the SteamGridDB options for {sc.name}.")
 
     def remove_all(self, sc: Shortcut):
-        if not ConfirmDialog(self, f"Remove all artwork from {sc.name}?", "You can undo it straight after.",
-                             "Remove Artwork", "trash", bad=True).exec():
+        if not run_dialog(ConfirmDialog(self, f"Remove all artwork from {sc.name}?", "You can undo it straight after.",
+                                        "Remove Artwork", "trash", bad=True), delete=True):
             return
         for key in self.pending.for_game(sc.appid):
             self.pending.drop(sc.appid, key)  # a waiting new title stays
@@ -1865,7 +1869,7 @@ class MainWindow(QMainWindow):
         dlg = MatchDialog(self, self.sgdb, sc.name, sc.exe, self.steam if self.steam_art else None,
                           self._steam_now(sc))
         try:
-            ok = dlg.exec()
+            ok = run_dialog(dlg)
             g = dlg.selected() if ok and self.config.api_key else None
             steam = dlg.steam_choice() if ok else None
         finally:
@@ -2085,7 +2089,7 @@ class MainWindow(QMainWindow):
                 if self.status.get(sc.appid) == "getting":
                     self.status.pop(sc.appid, None)
             self.refresh_all()
-            QMessageBox.warning(self, APP_NAME, msg)
+            tell(self, APP_NAME, msg)
 
         workers.run(self._fetch_missing, jobs, kind="long", use_sgdb=use_sgdb, notfound=frozenset(notfound),
                     on_progress=on_progress, on_done=done,
@@ -2133,8 +2137,9 @@ class MainWindow(QMainWindow):
 
         actions = [("Dismiss", dismiss)]
         if self.last_errors:
-            actions.insert(0, ("Show details", lambda: QMessageBox.information(
-                self, APP_NAME, "These couldn't be downloaded:\n\n" + "\n".join(self.last_errors[:40]))))
+            actions.insert(0, ("Show details", lambda: tell(
+                self, APP_NAME, "These couldn't be downloaded:\n\n" + "\n".join(self.last_errors[:40]),
+                QMessageBox.Icon.Information)))
         if any(v in ("notfound", "check") for v in self.status.values()):
             actions.insert(0, ("Show games to check", lambda: self.game_list.set_filter("check")))
         self.notice.show_message("info", text, actions)
@@ -2147,7 +2152,7 @@ class MainWindow(QMainWindow):
         running = self.steam_is_running()
         dlg = RestoreDialog(self, self.sfile.backups(), self.sfile.shortcuts, running)
         try:
-            path = dlg.selected() if dlg.exec() else None
+            path = dlg.selected() if run_dialog(dlg) else None
         finally:
             dlg.deleteLater()
         if not path:
@@ -2180,7 +2185,7 @@ class MainWindow(QMainWindow):
         try:
             self.sfile.restore(path)
         except Exception as e:
-            QMessageBox.warning(self, APP_NAME, f"Couldn't restore that copy: {e}")
+            tell(self, APP_NAME, f"Couldn't restore that copy: {e}")
             return False
         self.reload_shortcuts()
         self.toast.show_message("Game list restored. The list you had before is saved as a copy too.")
@@ -2192,7 +2197,7 @@ class MainWindow(QMainWindow):
             QDesktopServices.openUrl(QUrl.fromLocalFile(str(self.user.grid_dir)))
 
     def about(self):
-        AboutDialog(self, APP_NAME, __version__).exec()
+        run_dialog(AboutDialog(self, APP_NAME, __version__), delete=True)
 
     def keyPressEvent(self, e):
         if e.key() == Qt.Key.Key_Escape and self.tray.is_open():
