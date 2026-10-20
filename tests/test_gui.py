@@ -17,7 +17,9 @@ def qapp():
     app = QApplication.instance() or QApplication([])
     from steam_artwork_finder.gui import theme
 
-    app.setStyleSheet(theme.stylesheet())
+    sheet = theme.stylesheet()
+    if app.styleSheet() != sheet:  # setting it again repolishes every widget earlier modules left behind
+        app.setStyleSheet(sheet)
     return app
 
 

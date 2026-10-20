@@ -141,8 +141,8 @@ class OptionDelegate(QStyledItemDelegate):
             pm = live
         if pm is not None and not pm.isNull():
             dpr = p.device().devicePixelRatioF()
-            # Live frames change every time, so scale them as they come rather than keeping them.
-            sp = fill_rect(pm, s, dpr) if live is not None and not logo else self.scaled(pm, s, logo, dpr)
+            # A live frame comes ready to draw (see _Playing._frame); the rest are scaled once and kept.
+            sp = live if live is not None else self.scaled(pm, s, logo, dpr)
             if logo:
                 w, h = sp.width() / dpr, sp.height() / dpr
                 p.drawPixmap(QPointF(r.x() + (s.width() - w) / 2, r.y() + (s.height() - h) / 2), sp)
@@ -182,9 +182,10 @@ class _Playing(QObject):
 
     An option in view loads its full-size artwork: a still is decoded shrunk to fit (kept
     in `_full`), and an animation is decoded whole, every frame shrunk as it decodes,
-    through motion's one-at-a-time pool, then looped. Until that's ready an animated
-    option plays SteamGridDB's small preview. Scrolled away, filtered out, or the panel
-    closed, and it stops and lets go of its frames."""
+    through motion's decode pool, then looped. Until that's ready an animated option plays
+    SteamGridDB's small preview. Scrolled away, filtered out, or the panel closed, and it
+    stops and lets go of its frames. Nothing loads while the list scrolls: only the options
+    in view once it has settled, so ones merely passed over cost nothing."""
 
     MAX = 20  # at most this many play at once: a full view of covers is four rows of four
 
@@ -194,20 +195,53 @@ class _Playing(QObject):
         # asset id -> {"m": Motion, "pm": latest frame, "src": what it plays, "next": the full one decoding}
         self.motions: dict[int, dict] = {}
         self._asked: set = set()  # full-size downloads or decodes already under way
+        self.items: dict[int, QListWidgetItem] = {}  # asset id -> its option in the list
+        self._thumbs: set[int] = set()  # animated options whose first picture was asked for
         self.timer = QTimer(self, interval=300)
         self.timer.timeout.connect(self.sweep)
+
+    def reset(self):
+        """The list was emptied."""
+        self.stop_all()
+        self.items.clear()
+        self._thumbs.clear()
 
     def frame(self, a) -> QPixmap | None:
         e = self.motions.get(a.id) if a is not None else None
         return e["pm"] if e is not None else None
 
     def _in_view(self):
+        """The options on screen, looking only near the visible rows rather than at every one."""
         lst = self.tray.list
         view = lst.viewport().rect()
-        for i in range(lst.count()):
+        n = lst.count()
+        if not n:
+            return
+        first = None
+        cell = lst.sizeHintForRow(0) if n else 0
+        step = max(8, view.width() // 12)
+        for y in (view.top() + 1, view.top() + cell // 2, view.top() + cell):
+            for x in range(view.left() + 1, view.right(), step):
+                idx = lst.indexAt(QPoint(x, y))
+                if idx.isValid() and (first is None or idx.row() < first):
+                    first = idx.row()
+            if first is not None:
+                break
+        start = first or 0
+        back = COLUMNS[self.tray.slot.key]  # a row partly above the probes: step back a whole row
+        while start > 0 and back > 0:
+            start -= 1
+            if not lst.item(start).isHidden():
+                back -= 1
+        for i in range(start, n):
             it = lst.item(i)
+            if it.isHidden():
+                continue
+            r = lst.visualItemRect(it)
+            if r.top() > view.bottom():
+                break
             a = it.data(ROLE_ASSET)
-            if a is not None and not it.isHidden() and lst.visualItemRect(it).intersects(view):
+            if a is not None and r.intersects(view):
                 yield it, a
 
     def sweep(self):
@@ -216,11 +250,16 @@ class _Playing(QObject):
         if not (t.isVisible() and lst.isVisible()):
             self.stop_all()
             return
+        if t._settle.isActive():
+            return  # mid-scroll: it sweeps again once the list settles
         win = t.win
         want: dict[int, tuple] = {}
         for it, a in self._in_view():
             if isinstance(a, SteamAsset):
                 continue  # Steam's own piece is already its full picture
+            if a.animated and it.data(ROLE_PIX) is None and a.id not in self._thumbs:
+                self._thumbs.add(a.id)
+                win.load_thumb(a, it)  # its preview file, and a first picture to stand still with
             if a.animated and win.show_animated:
                 if len(want) >= self.MAX:
                     continue
@@ -247,10 +286,13 @@ class _Playing(QObject):
 
     def _play(self, aid, e, src, bound):
         kind, path = src
-        m = motion.make(kind, path, bound, ANIM_BUDGET)
+        # Frames made to measure (cut as the delegate cuts), so they're drawn as they are; logos keep their shape.
+        m = motion.make(kind, path, bound, ANIM_BUDGET, crop=False if self.tray.slot.key == "logo" else "middle")
         if e["m"] is None:
             e["m"], e["src"] = m, src
         else:
+            if e["next"] is not None:
+                e["next"][1].retire()
             e["next"] = (src, m)
         m.frame.connect(lambda pm, aid=aid, m=m: self._frame(aid, m, pm))
         m.start()
@@ -263,21 +305,28 @@ class _Playing(QObject):
             old = e["m"]
             e["src"], e["m"] = e["next"]
             e["next"] = None
-            old.stop()
-            old.deleteLater()
+            old.retire()
         elif e["m"] is not m:
             return
+        it = self.items.get(aid)
+        if it is not None and it.data(ROLE_PIX) is None:
+            it.setData(ROLE_PIX, pm)  # its first picture stands in when it stops
+        # Scaled once as it comes, not on every repaint (a glide repaints every 16 ms).
+        s = thumb_size(self.tray.slot.key)
+        dpr = self.tray.list.devicePixelRatioF()
+        if self.tray.slot.key == "logo":
+            pm = pm.scaled(s * 0.86 * dpr, Qt.AspectRatioMode.KeepAspectRatio, Qt.TransformationMode.SmoothTransformation)
+            pm.setDevicePixelRatio(dpr)
+        else:
+            pm = fill_rect(pm, s, dpr)
         e["pm"] = pm
         self._repaint(aid)
 
     def _repaint(self, aid):
-        lst = self.tray.list
-        for i in range(lst.count()):  # repaint just that option
-            it = lst.item(i)
-            a = it.data(ROLE_ASSET)
-            if a is not None and a.id == aid:
-                lst.viewport().update(lst.visualItemRect(it))
-                break
+        it = self.items.get(aid)
+        if it is not None:  # repaint just that option
+            lst = self.tray.list
+            lst.viewport().update(lst.visualItemRect(it))
 
     def _fetch_file(self, a):
         key = ("file", a.id)
@@ -315,30 +364,30 @@ class _Playing(QObject):
         cover = t.slot.key != "logo"
 
         def decoded(img, aid=a.id):
+            self._asked.discard(key)  # once _full lets it go, it can be loaded again
             if img.isNull():
                 return
             pm = QPixmap.fromImage(img)
             _full[(aid, w, h)] = pm
             while len(_full) > FULL_KEEP:
                 _full.pop(next(iter(_full)))
-            for i in range(t.list.count()):
-                item = t.list.item(i)
-                b = item.data(ROLE_ASSET)
-                if b is not None and b.id == aid:
-                    item.setData(ROLE_FULL, pm)
+            item = self.items.get(aid)
+            if item is not None:
+                item.setData(ROLE_FULL, pm)
 
         def got(path):
-            workers.run(decode_fit, path, w, h, cover, kind="cpu", on_done=decoded, on_error=lambda _m: None)
+            workers.run(decode_fit, path, w, h, cover, kind="cpu", on_done=decoded,
+                        on_error=lambda _m: self._asked.discard(key))
 
-        workers.run(workers.cached_file, a.url, t.win.sgdb.download, on_done=got, on_error=lambda _m: None)
+        workers.run(workers.cached_file, a.url, t.win.sgdb.download, on_done=got,
+                    on_error=lambda _m: None)  # a download that failed isn't asked for again this session
 
     def _stop(self, aid):
         e = self.motions.pop(aid, None)
         if e is not None:
             for m in (e["m"], e["next"][1] if e["next"] else None):
                 if m is not None:
-                    m.stop()
-                    m.deleteLater()
+                    m.retire()
 
     def stop_all(self):
         for aid in list(self.motions):
@@ -465,7 +514,9 @@ class OptionTray(QWidget):
         # While it scrolls, wait for it to settle before starting animations or loads, so the glide stays smooth.
         self._settle = QTimer(self, singleShot=True, interval=120)
         self._settle.timeout.connect(lambda: self.playing.sweep())
+        self._settle.timeout.connect(self._resume)
         self._settle.timeout.connect(self._hover_now)
+        self._gen = 0  # counts openings, so a late answer for an earlier one is ignored
         self.list.verticalScrollBar().valueChanged.connect(self._scrolled)
         self.list.currentItemChanged.connect(self._selected)
         self.list.itemClicked.connect(self._use)  # a click picks it
@@ -522,7 +573,8 @@ class OptionTray(QWidget):
         self.list.setIconSize(thumb_size(slot.key))
         self.assets = []
         self.page = 0
-        self.playing.stop_all()
+        self._gen += 1
+        self.playing.reset()
         self.list.clear()
         self._hovered = None
         self._show_empty(False)
@@ -549,13 +601,18 @@ class OptionTray(QWidget):
                                 if steam is not None else "Match this game to a SteamGridDB title first.")
             return
         self.status.setText("Loading options…")
-        slot, page, appid = self.slot, self.page, self.win.current_shortcut().appid
+        slot, page, appid, gen = self.slot, self.page, self.win.current_shortcut().appid, self._gen
         self.win.fetch_assets(game.id, slot.key, page,
-                              lambda assets: self._loaded(slot, page, appid, assets))
+                              lambda assets: self._loaded(slot, page, appid, assets, game.id, gen))
 
-    def _loaded(self, slot, page, appid, assets):
-        if slot is not self.slot or page != self.page or self.win.current_shortcut().appid != appid:
-            return
+    def _loaded(self, slot, page, appid, assets, gid=None, gen=None):
+        sc = self.win.current_shortcut()
+        if slot is not self.slot or page != self.page or sc is None or sc.appid != appid:
+            return  # another piece, game or page now (or gone home)
+        if gen is not None and gen != self._gen:
+            return  # opened again since (animated turned on or off, say): a newer load is coming
+        if gid is not None and getattr(self.win.current_game(), "id", None) != gid:
+            return  # matched to another SteamGridDB game since
         if assets is None:
             self.status.setText("Couldn't load options from SteamGridDB.")
             return
@@ -573,10 +630,12 @@ class OptionTray(QWidget):
     def _thumb(self, a, it):
         """Load an option's thumbnail; while the tray slides in, only ones already to hand, as
         decoding the rest (or starting video) mid-slide would make it stutter."""
+        if getattr(a, "animated", False):
+            return  # asked for once it's in view (see _Playing.sweep): it may be a video to start
         if not self._entering:
             self.win.load_thumb(a, it)
             return
-        pm = None if getattr(a, "animated", False) else pixmap_cache.get(("thumb", getattr(a, "thumb", None)))
+        pm = pixmap_cache.get(("thumb", getattr(a, "thumb", None)))
         if pm is not None:
             it.setData(ROLE_PIX, pm)
         else:
@@ -607,6 +666,7 @@ class OptionTray(QWidget):
             if full is not None:
                 it.setData(ROLE_FULL, full)
             self.list.addItem(it)
+            self.playing.items[a.id] = it
             self._thumb(a, it)
 
     def _show_empty(self, empty: bool):
@@ -653,7 +713,12 @@ class OptionTray(QWidget):
 
     def _scrolled(self, *_):
         self._hover_wait.stop()  # no previews while it moves
+        self.playing.timer.stop()  # nor loads: only what's in view once it settles
         self._settle.start()
+
+    def _resume(self):
+        if self.isVisible() and self._open and not self._leaving:
+            self.playing.timer.start()
 
     def _hover_now(self):
         """Preview the option under the pointer once it has rested there (and scrolling has settled)."""

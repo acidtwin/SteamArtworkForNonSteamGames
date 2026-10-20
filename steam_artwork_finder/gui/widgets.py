@@ -301,6 +301,19 @@ def draw_dots(p: QPainter, x: float, y: float, states: list, d: float = 7, gap: 
 
 
 FRAME_CACHE = 64 * 1024 * 1024  # bytes of scaled animation frames one ArtView keeps
+HIDDEN_DROP_MS = 5000  # an animation hidden this long lets go of its frames (made again when shown)
+
+
+def _unhook(signal, slot):
+    """Disconnect, quietly if it wasn't connected."""
+    import warnings
+
+    with warnings.catch_warnings():
+        warnings.simplefilter("ignore", RuntimeWarning)
+        try:
+            signal.disconnect(slot)
+        except (RuntimeError, TypeError):
+            pass
 
 
 class ArtView(QWidget):
@@ -324,6 +337,8 @@ class ArtView(QWidget):
         self._frames: dict = {}  # scaled frames of a looping animation, so each loop only draws
         self._frames_bytes = 0
         self._motion = None
+        self._parked: tuple | None = None  # (key, Motion) replaced by a preview, kept paused to go back to
+        self._drop_timer: QTimer | None = None
         self.motion_spec: tuple = (None, None)  # (key, factory) of what's playing, for previews
         self.setCursor(Qt.CursorShape.PointingHandCursor)
         self.setFocusPolicy(Qt.FocusPolicy.StrongFocus)
@@ -336,29 +351,70 @@ class ArtView(QWidget):
         self.setAccessibleName(text)
 
     def set_pixmap(self, pm: QPixmap | None, backdrop: QPixmap | None = None):
-        self.pixmap = pm or QPixmap()
-        self.backdrop = backdrop or QPixmap()
+        pm, backdrop = pm or QPixmap(), backdrop or QPixmap()
+        if pm.cacheKey() == self.pixmap.cacheKey() and backdrop.cacheKey() == self.backdrop.cacheKey():
+            return  # the same pictures (a refresh): keep what's already scaled
+        self.pixmap = pm
+        self.backdrop = backdrop
         self._scaled = None
         self.update()
 
     def set_motion(self, key=None, factory=None):
         """Play an animation here: `factory()` makes the Motion, `key` says what it is, so asking
-        again for the same thing carries on rather than restarting. No key stops it."""
+        again for the same thing carries on rather than restarting. No key stops it.
+
+        The Motion is made only once the view is on show, so options that don't fit the strip
+        never decode. The one it replaces is kept aside, paused, so a hover preview that ends
+        goes straight back to it instead of decoding it again."""
         if key is not None and key == self.motion_spec[0]:
             return
+        back = None
+        if key is not None and self._parked is not None and self._parked[0] == key:
+            back, self._parked = self._parked[1], None  # going back to the one kept aside
         if self._motion is not None:
-            self._motion.stop()
-            self._motion.deleteLater()
+            self._park(self.motion_spec[0], self._motion)
             self._motion = None
         self._frames = {}
         self._frames_bytes = 0
         self.motion_spec = (key, factory)
-        if key is None or factory is None:
+        self._make(back)
+
+    def drop_motion(self):
+        """Stop and let go of every animation here, for good (the view is going)."""
+        self.motion_spec = (None, None)
+        self._let_go()
+
+    def _let_go(self):
+        for m in (self._motion, self._parked[1] if self._parked else None):
+            if m is not None:
+                m.retire()
+        self._motion = self._parked = None
+        self._frames = {}
+        self._frames_bytes = 0
+
+    def _park(self, key, m):
+        m.stop()
+        _unhook(m.frame, self._frame)
+        if self._parked is not None:
+            self._parked[1].retire()
+        self._parked = (key, m) if key is not None else None
+        if key is None:
+            m.retire()
+
+    def _make(self, m=None):
+        key, factory = self.motion_spec
+        if key is None or factory is None or self._motion is not None:
             return
-        self._motion = factory()
-        self._motion.frame.connect(self._frame)
+        if m is not None:
+            pass
+        elif self.isVisible():
+            m = factory()
+        else:
+            return  # made when it's shown
+        self._motion = m
+        m.frame.connect(self._frame)
         if self.isVisible():
-            self._motion.start()
+            m.start()
 
     def _frame(self, pm: QPixmap):
         first = self.pixmap.isNull()
@@ -371,14 +427,31 @@ class ArtView(QWidget):
         """The first picture of an animation has arrived (for subclasses)."""
 
     def showEvent(self, e):
+        if self._drop_timer is not None:
+            self._drop_timer.stop()
         if self._motion is not None:
             self._motion.start()
+        else:
+            self._make()
         super().showEvent(e)
 
     def hideEvent(self, e):
         if self._motion is not None:
             self._motion.stop()  # nothing plays where it can't be seen
+        if not e.spontaneous() and (self._motion is not None or self._parked is not None):
+            # Hidden for a while (a strip option that no longer fits, the page left for the
+            # library): let go of its frames or video player; it's made again when shown.
+            if self._drop_timer is None:
+                self._drop_timer = QTimer(self, singleShot=True, interval=HIDDEN_DROP_MS)
+                self._drop_timer.timeout.connect(self._drop_hidden)
+            self._drop_timer.start()
         super().hideEvent(e)
+
+    def _drop_hidden(self):
+        if not self.isVisible():
+            spec = self.motion_spec
+            self._let_go()
+            self.motion_spec = spec
 
     def resizeEvent(self, e):
         self._scaled = None
@@ -395,6 +468,7 @@ class ArtView(QWidget):
         if self._scaled is None or self._scaled[0] != key:
             bd = fill_rect(self.backdrop, self.size(), dpr) if not self.backdrop.isNull() else None
             art = None
+            exact = False
             if not self.pixmap.isNull():
                 if self.checker or bd is not None:
                     # Logos keep their shape, centred with a margin.
@@ -403,10 +477,13 @@ class ArtView(QWidget):
                                              Qt.TransformationMode.SmoothTransformation)
                     art.setDevicePixelRatio(dpr)
                 else:
+                    exact = self.pixmap.size() == QSize(round(self.width() * dpr), round(self.height() * dpr))
                     art = fill_rect(self.pixmap, self.size(), dpr)
             self._scaled = (key, bd, art)
-            if isinstance(self._motion, motion.FrameMotion) and self._frames_bytes < FRAME_CACHE:
-                self._frames[key] = self._scaled  # the same frames come round again
+            # The same frames come round again: keep them scaled, unless made to measure already.
+            if (isinstance(self._motion, motion.FrameMotion) and not (exact and bd is None)
+                    and self._frames_bytes < FRAME_CACHE):
+                self._frames[key] = self._scaled
                 self._frames_bytes += sum(pm.width() * pm.height() * 4 for pm in (bd, art) if pm is not None)
         return self._scaled[1], self._scaled[2]
 
