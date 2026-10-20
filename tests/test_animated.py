@@ -334,3 +334,22 @@ def test_game_page_banner_plays_with_its_logo_over_it(qapp, window):
     win.page._banner()
     assert card._logo_art() is None
     win.config.data["logo_on_banner"] = True
+
+
+def test_page_banner_decodes_at_the_size_it_is_shown(qapp, window):
+    win = window
+    sc = win.sfile.shortcuts[0]
+    grid = win.user.grid_dir
+    grid.mkdir(parents=True, exist_ok=True)
+    red, blue = (255, 0, 0, 255), (0, 0, 255, 255)
+    (grid / f"{sc.appid}_hero.png").write_bytes(
+        make_apng(1920, 620, [(0, 0, 1920, 620, red, 40, 0, 0), (0, 0, 1920, 620, blue, 40, 0, 0)]))
+    win.open_game(0)
+    card = win.page.card
+    big = lambda: card.banner is not None and card.banner.width() >= card.width()
+    _pump(qapp, 5000, until=big)
+    assert big()  # as wide as the banner is shown, not a thumbnail
+    first = card.layers["banner"].key
+    win.resize(win.width() + 400, win.height())
+    _pump(qapp, 5000, until=lambda: card.layers["banner"].key != first and big())
+    assert card.layers["banner"].key != first and big()  # decoded again for the wider window

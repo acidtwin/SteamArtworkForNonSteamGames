@@ -217,7 +217,7 @@ class Motion(QObject):
 class FrameMotion(Motion):
     """An animated image file, decoded off the GUI thread, then looped."""
 
-    def __init__(self, path: str, bound: QSize | None = None):
+    def __init__(self, path: str, bound: QSize | None = None, budget: int | None = None):
         super().__init__()
         self.frames: list[tuple[QPixmap, int]] = []
         self.i = 0
@@ -225,7 +225,7 @@ class FrameMotion(Motion):
         self.timer = QTimer(self)
         self.timer.setSingleShot(True)
         self.timer.timeout.connect(self._next)
-        workers.run(decode_frames, path, bound, on_done=self._decoded, on_error=lambda _m: None,
+        workers.run(decode_frames, path, bound, budget=budget, on_done=self._decoded, on_error=lambda _m: None,
                     pool=decode_pool())
 
     def _decoded(self, frames):
@@ -299,8 +299,8 @@ class VideoMotion(Motion):
         self.player.pause()
 
 
-def make(kind: str, path: str, bound: QSize | None = None) -> Motion:
-    return VideoMotion(path) if kind == "video" else FrameMotion(path, bound)
+def make(kind: str, path: str, bound: QSize | None = None, budget: int | None = None) -> Motion:
+    return VideoMotion(path) if kind == "video" else FrameMotion(path, bound, budget)
 
 
 def first_frame(kind: str, path: str, deliver):

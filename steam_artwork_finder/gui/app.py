@@ -97,6 +97,8 @@ class MainWindow(QMainWindow):
         self.pending = Pending()
         self.pick_pix: dict[tuple[int, str], QPixmap] = {}
         self.motion_files: dict[int, tuple[str, str]] = {}  # animated asset id -> (kind, cached file)
+        self.full_files: dict[int, str] = {}  # animated asset id -> its full file, for big places
+        self._full_loading: set[int] = set()
         self._anim_files: dict[tuple, bool] = {}  # (artwork file, mtime) -> animated?
         # Each game's artwork files in ORDER (None where it has none), so painting and
         # counting never touch the disk. Forgotten whenever the app writes a game's files.
@@ -423,7 +425,29 @@ class MainWindow(QMainWindow):
         bound = size * self.devicePixelRatioF()
         return ("asset", asset.id), lambda: motion.make(kind, path, bound)
 
-    def file_motion_spec(self, path: Path | None, size) -> tuple:
+    def full_motion_spec(self, asset: Asset | None, size, budget: int | None = None) -> tuple:
+        """Like motion_spec, but playing the option's full file at `size` rather than its small
+        preview video: for big places such as the page's banner. The preview plays until the
+        file is downloaded."""
+        if asset is None or not asset.animated:
+            return None, None
+        path = self.full_files.get(asset.id)
+        if path is None:
+            if asset.id not in self._full_loading:
+                self._full_loading.add(asset.id)
+
+                def done(p, aid=asset.id):
+                    self._full_loading.discard(aid)
+                    self.full_files[aid] = p
+                    self.refresh_soon()
+
+                workers.run(workers.cached_file, asset.url, self.sgdb.download, on_done=done,
+                            on_error=lambda _m, aid=asset.id: self._full_loading.discard(aid))
+            return self.motion_spec(asset, size)
+        bound = size * self.devicePixelRatioF()
+        return ("full", asset.id), lambda: motion.make("frames", path, bound, budget)
+
+    def file_motion_spec(self, path: Path | None, size, budget: int | None = None) -> tuple:
         """(key, factory) to play an animated artwork file from Steam's folder; nothing for a still."""
         if path is None or not self.show_animated:
             return None, None
@@ -436,7 +460,7 @@ class MainWindow(QMainWindow):
         if not self._anim_files[key]:
             return None, None
         bound = size * self.devicePixelRatioF()
-        return ("file",) + key, lambda: motion.make("frames", str(path), bound)
+        return ("file",) + key, lambda: motion.make("frames", str(path), bound, budget)
 
     def fetch_assets(self, game_id: int, slot_key: str, page: int, callback):
         animated = self.show_animated

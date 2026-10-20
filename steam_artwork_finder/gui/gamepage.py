@@ -8,7 +8,7 @@ import zlib
 from dataclasses import dataclass
 from html import escape
 
-from PySide6.QtCore import QEvent, QObject, QPoint, QPointF, QRect, QRectF, QSize, Qt, Signal
+from PySide6.QtCore import QEvent, QObject, QPoint, QPointF, QRect, QRectF, QSize, Qt, QTimer, Signal
 from PySide6.QtGui import QColor, QFont, QFontMetricsF, QLinearGradient, QPainter, QPainterPath, QPen, QPixmap
 from PySide6.QtWidgets import (
     QBoxLayout,
@@ -663,6 +663,9 @@ class _Layer(QObject):
 
 
 BANNER_H = 210
+# Frames kept for the page's own banner: it's shown big, so its frames are big, and a
+# smaller budget would drop so many that it stutters. Still one decode at a time.
+CARD_BUDGET = 96 * 1024 * 1024
 COMPACT_GAP = 12  # above the buttons when they move to a row of their own (the banner grows to fit)
 INFO_MIN = 280  # the least room for the name and match line beside the buttons
 # Colour sweeps for a game with no banner yet (dark, deep, bright, light), picked by name.
@@ -690,6 +693,7 @@ class MatchCard(QWidget):
     home = Signal()
     get_all = Signal()
     apply = Signal()
+    resized = Signal()
 
     def __init__(self, parent=None):
         super().__init__(parent)
@@ -920,6 +924,7 @@ class MatchCard(QWidget):
         self._logo_scaled = None
         super().resizeEvent(e)
         self._fit()
+        self.resized.emit()
 
     def _art(self) -> QPixmap | None:
         if self.banner is None or self.banner.isNull():
@@ -1009,6 +1014,10 @@ class GamePage(QWidget):
         self.card.home.connect(win.go_home)
         self.card.get_all.connect(win.fill_current)
         self.card.apply.connect(lambda: win.apply_games([win.current_shortcut().appid]))
+        # After a resize settles, an animated banner decodes again at the new size.
+        self._resize_timer = QTimer(self, singleShot=True, interval=300)
+        self._resize_timer.timeout.connect(self._card_resized)
+        self.card.resized.connect(self._resize_timer.start)
         top.addWidget(self.card)
 
         lay = QVBoxLayout()
@@ -1097,14 +1106,25 @@ class GamePage(QWidget):
 
     def _motion(self, sc, key: str, size: QSize) -> tuple:
         """(key, factory) to play this piece where it's animated (a waiting pick, else what's on
-        disk), for the match card; nothing for a still or with animation turned off."""
+        disk), for the match card; nothing for a still or with animation turned off.
+
+        It decodes the full file at the size it's shown, rounded up a little so a small resize
+        carries on playing; a bigger one (see _card_resized) decodes it again, sharp at the new size."""
         if not self.win.show_animated:
             return None, None
+        size = QSize(-(-size.width() // 160) * 160, -(-size.height() // 40) * 40)
+        budget = CARD_BUDGET if key == "hero" else None
         pick = self.win.pending.get(sc.appid, key)
         if pick is not None:
             asset = getattr(pick, "asset", None)
-            return (None, None) if pick.clears else self.win.motion_spec(asset, size)
-        return self.win.file_motion_spec(self.win.slot_path(sc, SLOTS[key]), size)
+            spec = (None, None) if pick.clears else self.win.full_motion_spec(asset, size, budget)
+        else:
+            spec = self.win.file_motion_spec(self.win.slot_path(sc, SLOTS[key]), size, budget)
+        return (None, None) if spec[0] is None else ((spec[0], size.width(), size.height()), spec[1])
+
+    def _card_resized(self):
+        if self.isVisible() and self.win.current_shortcut() is not None:
+            self._banner()
 
     def refresh_current(self):
         for row in self.rows.values():
