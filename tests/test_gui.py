@@ -40,6 +40,11 @@ def window(qapp, steam_root, tmp_path, monkeypatch):
 
     monkeypatch.setattr(appmod, "steam_running", lambda root=None: False)
     win = appmod.MainWindow()
+
+    def offline(url):
+        raise OSError("no network in tests")
+
+    monkeypatch.setattr(win.sgdb, "download", offline)  # nothing reaches the internet
     win.resize(1280, 800)
     win.show()
     win.detect_steam([steam_root])

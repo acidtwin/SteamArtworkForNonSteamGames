@@ -183,7 +183,7 @@ def test_see_all_counts_and_filters_animated(qapp, window, monkeypatch):
     mk = lambda i, thumb: Asset(i, f"https://x/{i}.png", thumb, 920, 430, "image/png", 0, "alternate", "a")
     t._loaded(t.slot, 0, win.current_shortcut().appid,
               [mk(1, "https://x/1.png"), mk(2, "https://x/2.webm"), mk(3, "https://x/3.png")])
-    assert "3 options, 1 animated." in t.status.text()
+    assert t.status.text() == "3 options, 1 animated"
     chip = next(b for b in t.chips.buttons() if b.property("style_key") == "animated")
     chip.click()
     shown = [t.list.item(i).data(traymod.ROLE_ASSET).id for i in range(t.list.count()) if not t.list.item(i).isHidden()]
@@ -258,7 +258,7 @@ def test_pop_overs_and_menus_dim_the_window(qapp, window):
     assert not win.scrim.isVisible()
 
 
-def test_see_all_fits_three_covers_to_a_row(qapp, window, monkeypatch):
+def test_see_all_fills_its_rows(qapp, window, monkeypatch):
     win = window
     win.open_game(0)
     _pump(qapp, 200)
@@ -268,14 +268,15 @@ def test_see_all_fits_three_covers_to_a_row(qapp, window, monkeypatch):
     monkeypatch.setattr(t, "load", lambda: None)
     mk = lambda i: Asset(i, f"https://x/{i}.png", f"https://x/{i}.png", 600, 900, "image/png", 0, "", "a")
     per_row = {}
-    for key in ("grid", "wide", "icon"):
+    for key in ("grid", "wide", "hero", "logo", "icon"):
         win.open_tray(SLOTS[key])
         _pump(qapp, 400)
         t._loaded(t.slot, 0, win.current_shortcut().appid, [mk(i) for i in range(8)])
         _pump(qapp, 50)
         ys = [t.list.visualItemRect(t.list.item(i)).y() for i in range(8)]
         per_row[key] = ys.count(ys[0])
-    assert per_row == {"grid": 3, "wide": 2, "icon": 4}
+        assert t.title.text() == SLOTS[key].label  # it opens on the piece asked for
+    assert per_row == {"grid": 4, "wide": 3, "hero": 2, "logo": 3, "icon": 6}
     assert win.page.width() > t.width()  # still leaves most of the page in view at 1280 wide
 
 
@@ -385,3 +386,115 @@ def test_a_big_animation_streams_every_frame_on_time(qapp, tmp_path, monkeypatch
     assert 20 <= len(shown) <= 27  # 40 ms apiece for a second: on time, none dropped or slowed
     names = {pm.toImage().pixelColor(5, 5).name() for _, pm in got}
     assert len(names) == 12  # every frame, none dropped
+
+
+def _png(w, h, rgba):
+    ihdr, data = _rgba_png_parts(w, h, rgba)
+    return PNG_SIG + _chunk(b"IHDR", ihdr) + _chunk(b"IDAT", data) + _chunk(b"IEND", b"")
+
+
+def _open_panel(qapp, win, monkeypatch, key="grid"):
+    win.open_game(0)
+    _pump(qapp, 200)
+    monkeypatch.setattr(win, "current_game", lambda: object())
+    monkeypatch.setattr(win, "load_thumb", lambda a, target: None)
+    t = win.tray
+    monkeypatch.setattr(t, "load", lambda: None)
+    win.open_tray(SLOTS[key])
+    _pump(qapp, 400)
+    return t
+
+
+def test_see_all_click_picks_an_option(qapp, window, monkeypatch):
+    win = window
+    t = _open_panel(qapp, win, monkeypatch, "hero")
+    assert t.title.text() == "Banner"
+    sc = win.current_shortcut()
+    mk = lambda i: Asset(i, f"https://x/{i}.png", f"https://x/{i}.png", 1920, 620, "image/png", 0, "", "a")
+    t._loaded(t.slot, 0, sc.appid, [mk(1), mk(2)])
+    _pump(qapp, 50)
+    from PySide6.QtTest import QTest
+    QTest.mouseClick(t.list.viewport(), Qt.MouseButton.LeftButton,
+                     pos=t.list.visualItemRect(t.list.item(1)).center())
+    pick = win.pending.get(sc.appid, "hero")
+    assert pick is not None and pick.asset.id == 2  # one click, picked
+    assert t.list.item(1).text().endswith(", picked")
+
+
+def test_see_all_loads_full_quality_stills(qapp, window, monkeypatch):
+    from types import SimpleNamespace
+
+    from steam_artwork_finder.gui import tray as traymod
+
+    win = window
+    full = _png(600, 900, (0, 200, 0, 255))
+    monkeypatch.setattr(win, "sgdb", SimpleNamespace(download=lambda url: full))
+    t = _open_panel(qapp, win, monkeypatch, "grid")
+    a = Asset(31, "https://x/full31.png", "https://x/thumb31.png", 600, 900, "image/png", 0, "", "a")
+    t._loaded(t.slot, 0, win.current_shortcut().appid, [a])
+    t.playing.sweep()
+    it = t.list.item(0)
+    _pump(qapp, 3000, until=lambda: it.data(traymod.ROLE_FULL) is not None)
+    pm = it.data(traymod.ROLE_FULL)
+    tile = traymod.thumb_size("grid")
+    assert pm is not None and tile.width() <= pm.width() < 600  # shrunk as it decoded, but sharp
+    seen = []
+    t.preview.connect(lambda slot, pm, asset: seen.append(pm))
+    t._hover(it)
+    assert seen and seen[-1].cacheKey() == pm.cacheKey()  # the page previews the full-quality picture
+
+
+def test_see_all_swaps_in_the_whole_animation(qapp, window, monkeypatch, tmp_path):
+    from types import SimpleNamespace
+
+    win = window
+    anim = make_apng(60, 90, [(0, 0, 60, 90, (255, 0, 0, 255), 40, 0, 0),
+                              (0, 0, 60, 90, (0, 255, 0, 255), 40, 0, 0),
+                              (0, 0, 60, 90, (0, 0, 255, 255), 40, 0, 0)])
+    monkeypatch.setattr(win, "sgdb", SimpleNamespace(download=lambda url: anim))
+    preview = tmp_path / "preview.png"
+    preview.write_bytes(make_apng(60, 90, [(0, 0, 60, 90, (9, 9, 9, 255), 40, 0, 0),
+                                           (0, 0, 60, 90, (8, 8, 8, 255), 40, 0, 0)]))
+    win.motion_files[41] = ("frames", str(preview))  # SteamGridDB's small preview
+    t = _open_panel(qapp, win, monkeypatch, "grid")
+    a = Asset(41, "https://x/41.png", "https://x/41.webm", 600, 900, "image/png", 0, "", "a")
+    t._loaded(t.slot, 0, win.current_shortcut().appid, [a])
+    t.playing.sweep()
+    _pump(qapp, 3000, until=lambda: 41 in win.full_files)
+    t.playing.sweep()
+    _pump(qapp, 3000, until=lambda: t.playing.motions[41]["src"] == ("frames", win.full_files[41]))
+    seen = set()
+    for _ in range(15):
+        _pump(qapp, 30)
+        seen.add(t.playing.frame(a).toImage().pixelColor(5, 5).name())
+    assert {"#ff0000", "#00ff00", "#0000ff"} <= seen  # every frame of the full one, looping
+
+
+def test_see_all_scrolls_smoothly(qapp, window, monkeypatch):
+    from PySide6.QtCore import QPoint, QPointF
+    from PySide6.QtGui import QWheelEvent
+    from PySide6.QtWidgets import QApplication
+
+    from steam_artwork_finder.gui import smooth
+
+    win = window
+    f = smooth.install(qapp)  # as the app's main() does
+    t = _open_panel(qapp, win, monkeypatch, "grid")
+    mk = lambda i: Asset(i, f"https://x/{i}.png", f"https://x/{i}.png", 600, 900, "image/png", 0, "", "a")
+    t._loaded(t.slot, 0, win.current_shortcut().appid, [mk(i) for i in range(40)])
+    _pump(qapp, 50)
+    bar = t.list.verticalScrollBar()
+    assert bar.maximum() > 0
+    vp = t.list.viewport()
+    # A plain wheel click, as the user's mouse sends it on KDE (no scroll phase).
+    e = QWheelEvent(QPointF(50, 50), QPointF(vp.mapToGlobal(QPoint(50, 50))), QPoint(0, 0), QPoint(0, -120),
+                    Qt.MouseButton.NoButton, Qt.KeyboardModifier.NoModifier, Qt.ScrollPhase.NoScrollPhase, False)
+    QApplication.sendEvent(vp, e)
+    assert bar.value() == 0  # it doesn't jump...
+    values = []
+    for _ in range(30):
+        _pump(qapp, 15)
+        values.append(bar.value())
+    qapp.removeEventFilter(f)
+    assert len(set(values)) > 3  # ...it glides
+    assert 0 < values[-1] <= 3 * 24 * 2  # a click moves a few lines, not three rows of covers

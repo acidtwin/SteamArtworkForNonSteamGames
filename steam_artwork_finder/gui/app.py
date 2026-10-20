@@ -47,6 +47,7 @@ from .dialogs import AboutDialog, ConfirmDialog, KeyPopover, MatchDialog, QuitDi
 from .gamepage import GamePage
 from .library import GameList, StartPage
 from .tray import ROLE_PIX, OptionTray
+from .tray import _full_for as tray_full_pixmap
 from .widgets import ArtView, Notice, Toast, label, load_pixmap
 
 ORDER = ("grid", "wide", "hero", "logo", "icon")
@@ -418,12 +419,15 @@ class MainWindow(QMainWindow):
 
     def motion_spec(self, asset: Asset | None, size) -> tuple:
         """(key, factory) for ArtView.set_motion to play an animated option, once it's downloaded."""
-        src = self.motion_files.get(asset.id) if asset is not None and asset.animated else None
+        if asset is None or not asset.animated:
+            return None, None
+        full = self.full_files.get(asset.id)  # the whole animation at full quality, when it's to hand
+        src = ("frames", full) if full is not None else self.motion_files.get(asset.id)
         if src is None:
             return None, None
         kind, path = src
         bound = size * self.devicePixelRatioF()
-        return ("asset", asset.id), lambda: motion.make(kind, path, bound)
+        return ("asset", asset.id, kind), lambda: motion.make(kind, path, bound)
 
     def _bound(self, size: QSize) -> QSize:
         """`size` in device pixels, rounded as fill_rect rounds, so frames made to it draw 1:1."""
@@ -505,6 +509,9 @@ class MainWindow(QMainWindow):
 
         def loaded(pm, key=key, asset=pick.asset):
             cur = self.pending.get(*key)
+            full = tray_full_pixmap(asset.id)  # sharper than the thumbnail, if See all loaded it
+            if full is not None:
+                pm = full
             if cur is not None and cur.asset is asset:
                 self.pick_pix[key] = pm
                 self.refresh_soon()
