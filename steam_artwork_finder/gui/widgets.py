@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from collections import OrderedDict
 from pathlib import Path
 
 from PySide6.QtCore import QBuffer, QByteArray, QIODevice, QPoint, QPointF, QRect, QRectF, QSize, Qt, QTimer, Signal
@@ -100,10 +101,44 @@ class ScaledCache:
     returns None, and calls `on_ready` later so the view can repaint.
     """
 
-    def __init__(self, limit: int = 2000):
-        self.ready: dict[tuple, QPixmap] = {}
+    def __init__(self, budget: int = 96 * 1024 * 1024):
+        self.ready: OrderedDict[tuple, QPixmap] = OrderedDict()  # oldest first
         self.pending: set[tuple] = set()
-        self.limit = limit
+        self.budget, self.used = budget, 0
+        self._notify: list = []  # repaints asked for by decodes that landed, run together
+
+    @staticmethod
+    def _bytes(pm: QPixmap) -> int:
+        return pm.width() * pm.height() * 4
+
+    def _put(self, key, pm: QPixmap):
+        for k in [k for k in self.ready if k[0] == key[0] and k[1] != key[1]]:
+            self.used -= self._bytes(self.ready.pop(k))  # an older version of a replaced file
+        old = self.ready.pop(key, None)
+        if old is not None:
+            self.used -= self._bytes(old)
+        self.ready[key] = pm
+        self.used += self._bytes(pm)
+        while self.used > self.budget and len(self.ready) > 1:
+            _, gone = self.ready.popitem(last=False)
+            self.used -= self._bytes(gone)
+
+    def _ready_soon(self, on_ready):
+        # Many thumbnails land at once when a wall first shows: one repaint for the batch.
+        if on_ready is None:
+            return
+        if not self._notify:
+            QTimer.singleShot(16, self._flush)
+        if on_ready not in self._notify:
+            self._notify.append(on_ready)
+
+    def _flush(self):
+        calls, self._notify = self._notify, []
+        for fn in calls:
+            try:
+                fn()
+            except RuntimeError:  # its view was deleted meanwhile
+                pass
 
     def get(self, path: Path, size: QSize, on_ready=None, dpr: float = 1.0,
             contain: bool = False) -> QPixmap | None:
@@ -116,6 +151,7 @@ class ScaledCache:
             return QPixmap()
         pm = self.ready.get(key)
         if pm is not None:
+            self.ready.move_to_end(key)
             return pm
         if key in self.pending:
             return None
@@ -123,13 +159,10 @@ class ScaledCache:
 
         def done(img: QImage, key=key):
             self.pending.discard(key)
-            if len(self.ready) >= self.limit:
-                self.ready.clear()
             pm = QPixmap.fromImage(img)  # null if the file wasn't an image
             pm.setDevicePixelRatio(dpr)
-            self.ready[key] = pm
-            if on_ready:
-                on_ready()
+            self._put(key, pm)
+            self._ready_soon(on_ready)
 
         workers.run(decode_scaled, key[0], w, h, contain, kind="cpu", on_done=done,
                     on_error=lambda _m, key=key: done(QImage(), key))
@@ -138,7 +171,7 @@ class ScaledCache:
     def forget(self, path: Path):
         s = str(path)
         for k in [k for k in self.ready if k[0] == s]:
-            del self.ready[k]
+            self.used -= self._bytes(self.ready.pop(k))
 
 
 def fill_rect(pm: QPixmap, target: QSize, dpr: float = 1.0, top: bool = False) -> QPixmap:
@@ -602,9 +635,12 @@ class FlowLayout(QLayout):
         size = QSize()
         for item in self._items:
             size = size.expandedTo(item.minimumSize())
-        return size
+        m = self.contentsMargins()
+        return size + QSize(m.left() + m.right(), m.top() + m.bottom())
 
     def _do_layout(self, rect, test):
+        m = self.contentsMargins()  # Qt hands a custom layout the whole rect: margins are ours to keep
+        outer, rect = rect, rect.adjusted(m.left(), m.top(), -m.right(), -m.bottom())
         x, y, line = rect.x(), rect.y(), 0
         for item in self._items:
             if item.widget() is not None and item.widget().isHidden():  # hidden on purpose (not just not shown yet)
@@ -618,7 +654,7 @@ class FlowLayout(QLayout):
                 item.setGeometry(QRect(QPoint(x, y), hint))
             x += hint.width() + self._spacing
             line = max(line, hint.height())
-        return y + line - rect.y()
+        return y + line - outer.y() + m.bottom()
 
 
 def label(text: str, name: str = "", wrap=False) -> QLabel:

@@ -56,7 +56,7 @@ from .gamepage import GamePage
 from .library import SORTS, GameList, StartPage, art_text, sorted_indices
 from .tray import ROLE_PIX, OptionTray
 from .tray import _full_for as tray_full_pixmap
-from .widgets import ArtView, Notice, Toast, _largest_frame, label, load_pixmap
+from .widgets import ArtView, Notice, Toast, _largest_frame, decode_scaled, label, load_pixmap
 
 ORDER = ("grid", "wide", "hero", "logo", "icon")
 EXE_STYLE = "exe"  # the style of an icon taken from the game's .exe
@@ -1260,6 +1260,7 @@ class MainWindow(QMainWindow):
     def _ask_on_quit(self) -> str | None:
         """"apply", "discard", or None (cancel), from the quit prompt."""
         games = []
+        dpr = self.devicePixelRatioF()
         for appid in self.pending.games():
             sc = self.sfile.find(appid) if self.sfile else None
             if sc is None:
@@ -1279,10 +1280,18 @@ class MainWindow(QMainWindow):
             new_name = self.pending.name(appid)
             if new_name:
                 what = (what + ", " if what else "") + f"renamed to “{new_name}”"
-            cover = self.pick_pixmap(sc, "grid")
-            if cover is None and not (picks.get("grid") and picks["grid"].clears):
-                path = self.cover_path(sc)
-                cover = load_pixmap(path) if path else None
+            cover = None
+            if len(games) < QuitDialog.SHOWN:  # only the first few are shown: decode just those, small
+                grid = picks.get("grid")
+                if grid is not None and not grid.clears:
+                    cover = self.pick_pixmap(sc, "grid")
+                    if cover is None and grid.fetched:
+                        cover = QPixmap.fromImage(decode_pick(grid.file or grid.data, "grid"))
+                elif grid is None:
+                    path = self.cover_path(sc)
+                    if path:
+                        cover = QPixmap.fromImage(decode_scaled(str(path), round(30 * dpr), round(45 * dpr)))
+                        cover.setDevicePixelRatio(dpr)
             games.append((sc.name or "(unnamed)", what[:1].upper() + what[1:], self.pending.count(appid), cover))
         dlg = QuitDialog(self, games)
         try:

@@ -721,6 +721,8 @@ class GameList(QWidget):
 
     def rebuild(self):
         cur = self.win.current if self.win.current >= 0 else None  # by game, after a reload re-numbers them
+        bar = self.list.verticalScrollBar()
+        v = bar.value()
         self.list.blockSignals(True)
         self.list.clear()
         scs = self.win.sfile.shortcuts
@@ -732,6 +734,8 @@ class GameList(QWidget):
             self.list.addItem(it)
         self.select(cur if cur is not None else -1)
         self.list.blockSignals(False)
+        if cur is None:
+            QTimer.singleShot(0, lambda: bar.setValue(min(v, bar.maximum())))
         self.update_counts()
 
     def order(self) -> list[int]:
@@ -1530,6 +1534,8 @@ class StartPage(QWidget):
         self.set_piece(None)
 
     def rebuild(self):
+        bar = self.wall.verticalScrollBar()
+        v = bar.value()  # a re-sort after Apply keeps the place (choosing a sort scrolls up itself)
         self.wall.clear()
         scs = self.win.sfile.shortcuts
         for i in sorted_indices(self.win, self.win.library_sort):
@@ -1539,6 +1545,7 @@ class StartPage(QWidget):
             it.setToolTip(sc.name)
             self.wall.addItem(it)
         self.refresh()
+        QTimer.singleShot(0, lambda: bar.setValue(min(v, bar.maximum())))
 
     def order(self) -> list[int]:
         return [self.wall.item(row).data(ROLE_INDEX) for row in range(self.wall.count())]
