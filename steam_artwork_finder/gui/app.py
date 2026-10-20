@@ -581,6 +581,14 @@ class MainWindow(QMainWindow):
         g = self.guesses.get(sc.appid)
         return {"id": g.id, "name": g.name, "year": g.year} if g else None
 
+    def _fill_still_wanted(self, sc: Shortcut, asset: Asset, gid: int | None) -> bool:
+        """Get Artwork's piece is still for the game the shortcut is matched to now."""
+        if isinstance(asset, SteamAsset):
+            saved = self.config.get_steam_match(sc.appid)
+            return saved is None or saved.get("id") == asset.appid
+        m = self.match_info(sc)
+        return m is not None and m["id"] == gid
+
     def match_candidates(self, sc: Shortcut) -> int:
         return self.candidates.get(sc.appid, 0)
 
@@ -2126,7 +2134,7 @@ class MainWindow(QMainWindow):
                 a = official.get(slot.key)
                 if a is not None:
                     try:
-                        progress(("asset", sc, slot, *_spool_pick(self.sgdb.download(a.url), sc.appid, slot.key), a))
+                        progress(("asset", sc, slot, *_spool_pick(self.sgdb.download(a.url), sc.appid, slot.key), a, None))
                         got = True
                         continue
                     except Exception:
@@ -2140,7 +2148,7 @@ class MainWindow(QMainWindow):
                         progress(("empty", sc, slot))
                         continue
                     data = self.sgdb.download(assets[0].url)
-                    progress(("asset", sc, slot, *_spool_pick(data, sc.appid, slot.key), assets[0]))
+                    progress(("asset", sc, slot, *_spool_pick(data, sc.appid, slot.key), assets[0], game.id))
                     got = True
                 except AuthError:
                     raise
@@ -2199,8 +2207,11 @@ class MainWindow(QMainWindow):
                 if self.current_shortcut() is sc and self.stage.currentWidget() is self.page:
                     self._show_steam(sc, found)
             elif kind == "asset":
-                _, sc, slot, file, img, asset = ev
+                _, sc, slot, file, img, asset, gid = ev
                 self.config.set_no_art(sc.appid, slot.key, False)
+                if self.pending.get(sc.appid, slot.key) is not None or not self._fill_still_wanted(sc, asset, gid):
+                    Path(file).unlink(missing_ok=True)  # the user picked, cleared or rematched it meanwhile
+                    return
                 pm = QPixmap.fromImage(img) if not img.isNull() else None
                 self._stage(sc, slot.key, Pick(asset, file=file), pm)
                 self.refresh_soon()

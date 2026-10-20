@@ -897,7 +897,7 @@ class OptionTray(QWidget):
             scrim.uncover(self)
 
     def hideEvent(self, e):
-        if not self._swapping:  # closed outright
+        if not self._swapping and not e.spontaneous():  # closed outright (not the window minimising)
             self._reset()
         super().hideEvent(e)
 
