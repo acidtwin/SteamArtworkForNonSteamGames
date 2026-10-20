@@ -254,3 +254,24 @@ def test_pop_overs_and_menus_dim_the_window(qapp, window):
     menu.hide()
     _pump(qapp, 400)
     assert not win.scrim.isVisible()
+
+
+def test_see_all_fits_three_covers_to_a_row(qapp, window, monkeypatch):
+    win = window
+    win.open_game(0)
+    _pump(qapp, 200)
+    monkeypatch.setattr(win, "current_game", lambda: object())
+    monkeypatch.setattr(win, "load_thumb", lambda a, target: None)
+    t = win.tray
+    monkeypatch.setattr(t, "load", lambda: None)
+    mk = lambda i: Asset(i, f"https://x/{i}.png", f"https://x/{i}.png", 600, 900, "image/png", 0, "", "a")
+    per_row = {}
+    for key in ("grid", "wide", "icon"):
+        win.open_tray(SLOTS[key])
+        _pump(qapp, 400)
+        t._loaded(t.slot, 0, win.current_shortcut().appid, [mk(i) for i in range(8)])
+        _pump(qapp, 50)
+        ys = [t.list.visualItemRect(t.list.item(i)).y() for i in range(8)]
+        per_row[key] = ys.count(ys[0])
+    assert per_row == {"grid": 3, "wide": 2, "icon": 4}
+    assert win.page.width() > t.width()  # still leaves most of the page in view at 1280 wide

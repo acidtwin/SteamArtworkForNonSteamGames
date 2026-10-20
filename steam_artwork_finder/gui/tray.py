@@ -182,7 +182,7 @@ class OptionTray(QWidget):
         self._anim.finished.connect(self._settled)
         self._leaving = False
         # Wide enough for the five tabs in a row at the user's font size.
-        self.setFixedWidth(max(370, theme.text_width("Cover Wide cover Banner Logo Icon") + 180))
+        self.setFixedWidth(max(self._width_for_covers(3), theme.text_width("Cover Wide cover Banner Logo Icon") + 180))
         lay = QVBoxLayout(self)
         lay.setContentsMargins(16, 14, 16, 14)
         lay.setSpacing(10)
@@ -264,6 +264,14 @@ class OptionTray(QWidget):
         lay.addLayout(foot)
         self.assets = []
         self.page = 0
+
+    def _width_for_covers(self, n: int) -> int:
+        """Wide enough for `n` covers to a row (two wide covers or logos, four icons)."""
+        sp = 4  # the list's spacing, around every option
+        cell = thumb_size("grid").width() + 8 + sp * 2
+        bar = self.style().pixelMetric(QStyle.PixelMetric.PM_ScrollBarExtent)
+        frame = self.style().pixelMetric(QStyle.PixelMetric.PM_DefaultFrameWidth) * 2
+        return 16 * 2 + frame + bar + n * cell + sp + 8
 
     def open_slot(self, slot):
         self.slot = slot
