@@ -498,3 +498,28 @@ def test_see_all_scrolls_smoothly(qapp, window, monkeypatch):
     qapp.removeEventFilter(f)
     assert len(set(values)) > 3  # ...it glides
     assert 0 < values[-1] <= 3 * 24 * 2  # a click moves a few lines, not three rows of covers
+
+
+def test_see_all_previews_only_where_the_pointer_rests(qapp, window, monkeypatch):
+    from PySide6.QtGui import QCursor
+
+    from steam_artwork_finder.gui import tray as traymod
+
+    win = window
+    t = _open_panel(qapp, win, monkeypatch, "grid")
+    mk = lambda i: Asset(i, f"https://x/{i}.png", f"https://x/{i}.png", 600, 900, "image/png", 0, "", "a")
+    t._loaded(t.slot, 0, win.current_shortcut().appid, [mk(i) for i in range(40)])
+    _pump(qapp, 50)
+    seen = []
+    t.preview.connect(lambda slot, pm, asset: seen.append(asset.id if asset else None))
+    vp = t.list.viewport()
+    target = t.list.item(5)
+    monkeypatch.setattr(traymod, "QCursor", type("C", (), {"pos": staticmethod(
+        lambda: vp.mapToGlobal(t.list.visualItemRect(target).center()))}))
+    for i in range(8):  # the list scrolls options under a still pointer
+        t.list.itemEntered.emit(t.list.item(i))
+        t.list.verticalScrollBar().setValue(i)
+        _pump(qapp, 20)
+    assert seen == []  # nothing previewed mid-scroll
+    _pump(qapp, 400)
+    assert seen == [5]  # just the one it came to rest on

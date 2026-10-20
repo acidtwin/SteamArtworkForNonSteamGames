@@ -10,7 +10,7 @@ from PySide6.QtCore import (
     QEasingCurve, QEvent, QObject, QPoint, QPointF, QRect, QRectF, QSize, Qt, QTimer, QVariantAnimation, Signal,
 )
 from PySide6.QtGui import (
-    QColor, QFont, QFontMetrics, QImage, QImageReader, QLinearGradient, QPainter, QPainterPath, QPen, QPixmap,
+    QColor, QCursor, QFont, QFontMetrics, QImage, QImageReader, QLinearGradient, QPainter, QPainterPath, QPen, QPixmap,
 )
 from PySide6.QtWidgets import (
     QApplication,
@@ -117,6 +117,7 @@ class OptionDelegate(QStyledItemDelegate):
 
     def paint(self, p: QPainter, option, index):
         p.save()
+        p.setClipRect(option.rect)  # nothing an option draws reaches past its own cell
         # Clear the whole cell first: a caption from an earlier layout (before filtering, say)
         # mustn't show through the new one.
         p.fillRect(option.rect, q("tray"))
@@ -125,7 +126,7 @@ class OptionDelegate(QStyledItemDelegate):
         r = QRectF(option.rect.x() + 4, option.rect.y() + 4, s.width(), s.height())
         clip = QPainterPath()
         clip.addRoundedRect(r, 3, 3)
-        p.setClipPath(clip)
+        p.setClipPath(clip, Qt.ClipOperation.IntersectClip)
         pm = _best(index.data(ROLE_FULL), index.data(ROLE_PIX))
         a = index.data(ROLE_ASSET)
         live = self.tray.playing.frame(a)  # an animated option playing: its frame now
@@ -145,7 +146,7 @@ class OptionDelegate(QStyledItemDelegate):
                 p.drawPixmap(QPointF(r.x() + (s.width() - w) / 2, r.y() + (s.height() - h) / 2), sp)
             else:
                 p.drawPixmap(r.topLeft(), sp)
-        p.setClipping(False)
+        p.setClipRect(option.rect)
         picked = bool(index.data(ROLE_PICK))
         if picked:
             draw_new_tag(p, r)
@@ -444,12 +445,21 @@ class OptionTray(QWidget):
         # one click of the wheel jumped about three rows instead of gliding.
         self.list.verticalScrollBar().setSingleStep(24)
         self.list.setItemDelegate(OptionDelegate(self))
-        self.list.itemEntered.connect(self._hover)
-        self.list.viewportEntered.connect(lambda: self.preview.emit(self.slot, None, None))
+        # Opaque, so nothing behind the panel (the page's preview playing, say) can show through it.
+        self.list.setStyleSheet(f"QListWidget {{ background: {theme.C['tray']}; border: none; outline: none; }}")
+        self.list.setDragEnabled(False)  # a click picks: a slight drag mustn't pick an option up instead
+        self.list.setDragDropMode(QListView.DragDropMode.NoDragDrop)
+        # The page previews the option the pointer rests on, not each one the list scrolls under it.
+        self._hover_wait = QTimer(self, singleShot=True, interval=140)
+        self._hover_wait.timeout.connect(self._hover_now)
+        self._hovered = None  # the option the page is previewing
+        self.list.itemEntered.connect(lambda _it: self._hover_wait.start())
+        self.list.viewportEntered.connect(lambda: self._hover_wait.start())
         # While it scrolls, wait for it to settle before starting animations or loads, so the glide stays smooth.
         self._settle = QTimer(self, singleShot=True, interval=120)
         self._settle.timeout.connect(lambda: self.playing.sweep())
-        self.list.verticalScrollBar().valueChanged.connect(lambda *_: self._settle.start())
+        self._settle.timeout.connect(self._hover_now)
+        self.list.verticalScrollBar().valueChanged.connect(self._scrolled)
         self.list.currentItemChanged.connect(self._selected)
         self.list.itemClicked.connect(self._use)  # a click picks it
         self.list.itemActivated.connect(self._use)  # so does Enter (and a double click: already picked)
@@ -507,6 +517,7 @@ class OptionTray(QWidget):
         self.page = 0
         self.playing.stop_all()
         self.list.clear()
+        self._hovered = None
         self._show_empty(False)
         self._chips([])
         self.more.hide()
@@ -625,12 +636,34 @@ class OptionTray(QWidget):
                 self.list.item(i).setHidden(want != "all" and a.style != want)
         QTimer.singleShot(0, self.playing.sweep)  # once the list has laid itself out again
 
+    def _scrolled(self, *_):
+        self._hover_wait.stop()  # no previews while it moves
+        self._settle.start()
+
+    def _hover_now(self):
+        """Preview the option under the pointer once it has rested there (and scrolling has settled)."""
+        if self._settle.isActive() or not self.isVisible():
+            return
+        vp = self.list.viewport()
+        pos = vp.mapFromGlobal(QCursor.pos())
+        it = self.list.itemAt(pos) if vp.rect().contains(pos) else None
+        if it is not None and it.isHidden():
+            it = None
+        self._hover(it)
+
     def _hover(self, item):
         """Hovering an option previews it on the page behind (dimmed, but in view), at full quality once loaded."""
-        self.preview.emit(self.slot, _best(item.data(ROLE_FULL), item.data(ROLE_PIX)), item.data(ROLE_ASSET))
+        if item is self._hovered:
+            return
+        self._hovered = item
+        if item is None:
+            self.preview.emit(self.slot, None, None)
+        else:
+            self.preview.emit(self.slot, _best(item.data(ROLE_FULL), item.data(ROLE_PIX)), item.data(ROLE_ASSET))
 
     def leaveEvent(self, e):
-        self.preview.emit(self.slot, None, None)
+        self._hover_wait.stop()
+        self._hover(None)
         super().leaveEvent(e)
 
     def _selected(self, *_):
@@ -701,6 +734,8 @@ class OptionTray(QWidget):
     def close_tray(self):
         if self._leaving or not self._open:
             return
+        self._hover_wait.stop()
+        self._hovered = None
         self.preview.emit(self.slot, None, None)
         self._disappear()
         self.closed.emit()
