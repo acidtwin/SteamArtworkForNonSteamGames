@@ -92,6 +92,10 @@ def _full_for(asset_id: int) -> QPixmap | None:
     return best
 
 
+def style_name(style: str) -> str:
+    """SteamGridDB's style key as people read it: "white_logo" -> "White logo"."""
+    return style.replace("_", " ").capitalize()
+
 class OptionDelegate(QStyledItemDelegate):
     def __init__(self, tray):
         super().__init__()
@@ -170,8 +174,11 @@ class OptionDelegate(QStyledItemDelegate):
         f.setPointSizeF(theme.pt("label"))
         p.setFont(f)
         p.setPen(q("text3"))
-        cap = "Official, from Steam" if official else f"by {a.author or 'unknown'}" + (f" · {a.style}" if a.style else "")
-        cap = QFontMetrics(f).elidedText(cap, Qt.TextElideMode.ElideRight, s.width())
+        fm = QFontMetrics(f)
+        cap = "Official, from Steam" if official else f"by {a.author or 'unknown'}"
+        if not official and a.style and fm.horizontalAdvance(f"{cap} · {style_name(a.style)}") <= s.width():
+            cap += f" · {style_name(a.style)}"  # the style only when it fits whole: the author comes first
+        cap = fm.elidedText(cap, Qt.TextElideMode.ElideRight, s.width())
         p.drawText(QRectF(r.left(), r.bottom() + 4, s.width(), QFontMetrics(f).height() + 2),
                    Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignVCenter, cap)
         p.restore()
@@ -618,7 +625,8 @@ class OptionTray(QWidget):
             return
         self._add(assets)
         self.more.setVisible(len(assets) >= 50)
-        self._chips(sorted({a.style for a in self.assets if a.style}), any(a.animated for a in self.assets))
+        self._chips(sorted({a.style for a in self.assets if a.style}, key=lambda st: (st != "official", st)),
+                    any(a.animated for a in self.assets))
         self._filter()
         if not self.assets:
             self.empty_title.setText(f"No {slot.label.lower()} for this game on SteamGridDB yet")
@@ -656,7 +664,7 @@ class OptionTray(QWidget):
         for i, a in enumerate(assets):
             n = len(self.assets) - len(assets) + i + 1
             name = (f"{slot.label} option {n}, Steam's official artwork" if isinstance(a, SteamAsset) else
-                    f"{slot.label} option {n}, by {a.author or 'unknown'}" + (f", {a.style}" if a.style else ""))
+                    f"{slot.label} option {n}, by {a.author or 'unknown'}" + (f", {style_name(a.style)}" if a.style else ""))
             it = QListWidgetItem(name)
             it.setData(ROLE_NAME, name)
             it.setData(ROLE_ASSET, a)
@@ -689,7 +697,7 @@ class OptionTray(QWidget):
             b.hide()
             b.deleteLater()
         for name in ["all"] + (["animated"] if animated else []) + styles:
-            b = QPushButton(name.replace("_", " ").capitalize() if name != "all" else "All")
+            b = QPushButton(style_name(name) if name != "all" else "All")
             b.setProperty("kind", "chip")
             b.setProperty("style_key", name)
             b.setCheckable(True)
