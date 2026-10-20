@@ -82,7 +82,6 @@ def text_width(text: str) -> int:
 
 # Focus rings show only for keyboard focus, as in Steam: not after a click or when the app
 # moves focus itself after a click (a pop-over closing, a page opening).
-_KEY_REASONS = (Qt.FocusReason.TabFocusReason, Qt.FocusReason.BacktabFocusReason, Qt.FocusReason.ShortcutFocusReason)
 _NAV_KEYS = {Qt.Key.Key_Left, Qt.Key.Key_Right, Qt.Key.Key_Up, Qt.Key.Key_Down, Qt.Key.Key_Home, Qt.Key.Key_End,
              Qt.Key.Key_PageUp, Qt.Key.Key_PageDown}
 
@@ -104,8 +103,10 @@ class _FocusTracker(QObject):
         elif t in (QEvent.Type.MouseButtonPress, QEvent.Type.MouseButtonDblClick, QEvent.Type.TouchBegin):
             self.last_key = False
         elif t == QEvent.Type.FocusIn and isinstance(obj, QWidget):
+            # Qt also gives Tab as the reason when it moves focus on by itself (the focused
+            # button was disabled or hidden), so only a key press counts as the keyboard.
             r = e.reason()
-            _mark(obj, r in _KEY_REASONS or (r != Qt.FocusReason.MouseFocusReason and self.last_key))
+            _mark(obj, r != Qt.FocusReason.MouseFocusReason and self.last_key)
         elif t == QEvent.Type.FocusOut and isinstance(obj, QWidget) and obj.property("kbd"):
             _mark(obj, False)
         return False
@@ -143,6 +144,24 @@ def kbd_focus(w: QWidget) -> bool:
     return w.hasFocus() and bool(w.property("kbd"))
 
 
+def _set_open(btn: QWidget, on: bool):
+    try:
+        btn.setProperty("open", on)
+        btn.style().unpolish(btn)
+        btn.style().polish(btn)
+    except RuntimeError:  # the button was deleted while its menu showed
+        pass
+
+
+def hold_open(btn: QWidget):
+    """Draw `btn` pressed for as long as the popup menu it just opened stays open."""
+    pop = QApplication.activePopupWidget()
+    if pop is None or not hasattr(pop, "closed"):
+        return
+    _set_open(btn, True)
+    pop.closed.connect(lambda: _set_open(btn, False))
+
+
 def stylesheet() -> str:
     c = C
     tick = (Path(__file__).parent / "icons" / "tick.svg").as_posix()
@@ -171,6 +190,7 @@ def stylesheet() -> str:
     QPushButton[kind="confirm"]:disabled {{ background: {c['disabled_bg']}; color: {c['text3']}; }}
     QPushButton[kind="danger"] {{ background: {c['danger']}; color: white; }}
     QPushButton[kind="danger"]:hover {{ background: {c['danger_hover']}; }}
+    QPushButton[drop="true"] {{ background: {c['info_ground']}; border: 1px dashed {c['blue_ink']}; color: {c['text']}; }}
     QPushButton[kind="quiet"] {{ background: transparent; color: {c['blue_ink']}; padding: 0 6px; min-height: 40px; }}
     QPushButton[kind="quiet"]:hover {{ text-decoration: underline; }}
     QPushButton[kind="seg"] {{ background: transparent; color: {c['text2']}; min-height: 40px; padding: 0 10px; }}
@@ -180,8 +200,9 @@ def stylesheet() -> str:
         min-height: 40px; padding: 0 14px; color: {c['text2']};
     }}
     QPushButton[kind="chip"]:checked {{ background: {c['text']}; color: {c['ground']}; }}
-    QToolButton {{ background: transparent; border: none; border-radius: 3px; min-width: 40px; min-height: 40px; }}
+    QToolButton {{ background: transparent; border: 1px solid transparent; border-radius: 3px; min-width: 40px; min-height: 40px; }}
     QToolButton:hover {{ background: {c['raised']}; }}
+    QToolButton:pressed, QToolButton[open="true"] {{ background: {c['select']}; border: 1px solid {c['text3']}; }}
     QToolButton::menu-indicator {{ image: none; }}
 
     QLineEdit {{
@@ -236,6 +257,7 @@ def stylesheet() -> str:
     #spop {{ background: {c['ground']}; border: 1px solid {c['line']}; border-radius: 4px; }}
     #spop QPushButton {{ min-height: 36px; padding: 0 12px; }}
     #spopcheck {{ color: {c['text']}; spacing: 10px; }}
+    #spopx {{ min-width: 26px; min-height: 26px; max-width: 26px; max-height: 26px; }}
     #fseg {{ background: {c['panel']}; border-radius: 4px; }}
     #fseg QPushButton {{ background: transparent; color: {c['text2']}; min-height: 34px; border-radius: 3px; }}
     #fseg QPushButton:hover {{ color: {c['text']}; }}

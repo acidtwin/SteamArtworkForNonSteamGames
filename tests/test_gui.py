@@ -40,6 +40,13 @@ def window(qapp, steam_root, tmp_path, monkeypatch):
 
     monkeypatch.setattr(appmod, "steam_running", lambda root=None: False)
     win = appmod.MainWindow()
+    win.steam.search = lambda term: []  # no Steam store lookups from tests unless a test sets them up
+    win.steam.assets = lambda appid: {}
+
+    def offline(url):
+        raise OSError("no network in tests")
+
+    monkeypatch.setattr(win.sgdb, "download", offline)  # nothing reaches the internet
     win.resize(1280, 800)
     win.show()
     win.detect_steam([steam_root])
@@ -139,6 +146,57 @@ def test_games_are_matched_at_startup(qapp, window):
     assert not win.config.get_match(win.sfile.shortcuts[0].appid)  # guesses wait for the user
 
 
+def test_status_bar_shows_matching_and_reloads(qapp, window, monkeypatch):
+    from steam_artwork_finder.sgdb import Game
+
+    win = window
+    shown = []
+    real = win.statusbar.set_message
+    monkeypatch.setattr(win.statusbar, "set_message", lambda kind, text="": (shown.append(text), real(kind, text)))
+    win.config.data["api_key"] = "x"
+    win.sgdb.match = lambda name: (Game(9, name + " Remastered", "2020"), 4)
+    win.set_connection("connected")
+    _pump(qapp, 3000, until=lambda: not win._matching and len(win.guesses) == 3)
+    assert "Matching games on SteamGridDB · 0 of 3" in shown
+    assert "Matching games on SteamGridDB · 3 of 3" in shown
+    assert win.statusbar.message.text() == ""  # quiet again once it's done
+
+    win.sfile.shortcuts.pop()  # as if a game was added in Steam since the list was read
+    win.reload_game_list()
+    assert win.statusbar.message.accessibleName() == "Game list reloaded · 3 games, 1 new"
+    win._note_timer.timeout.emit()
+    assert win.statusbar.message.text()  # it fades out, rather than vanishing
+    win.refresh_all()  # a refresh meanwhile doesn't cut the fade short
+    assert win.statusbar.message.text()
+    _pump(qapp, 1000, until=lambda: not win.statusbar.message.text())
+    assert win.statusbar.message.text() == "" and not win.statusbar._msg_fx.isEnabled()
+
+
+def test_get_artwork_result_goes_to_the_status_bar(qapp, window, monkeypatch):
+    win = window
+    win.config.data["api_key"] = "x"
+    report = {"found": 2, "notfound": [], "gaps": 4, "errors": [], "unsure": 0, "stopped": False}
+    monkeypatch.setattr(win, "_fetch_missing", lambda jobs, progress, **kw: dict(report))
+    win.fill_everything()
+    _pump(qapp, 3000, until=lambda: not win.busy)
+    assert win.notice.isHidden()  # no banner when there's nothing to act on
+    assert win.statusbar.message.accessibleName() == \
+        "Found artwork for 2 games, ready to apply · 4 pieces had no options yet"
+    assert win._note_timer.interval() == 8000
+
+    report.update(found=0, gaps=0)
+    win.fill_everything()
+    assert win._note is None  # new work clears the old result
+    _pump(qapp, 3000, until=lambda: not win.busy)
+    assert win.statusbar.message.accessibleName() == "No new artwork found"
+    assert not win._note_timer.isActive()  # stays until the next piece of work
+
+    report.update(notfound=["Celeste"])
+    win.fill_everything()
+    _pump(qapp, 3000, until=lambda: not win.busy)
+    assert not win.notice.isHidden()  # something to act on keeps the banner
+
+
 def test_game_menu_opens_the_game(qapp, window):
     from PySide6.QtCore import QPoint
 
@@ -166,7 +224,11 @@ def test_steam_folder_popover_searches_and_switches(qapp, window, tmp_path, stea
     win.statusbar.steam.click()
     _pump(qapp, 100)
     assert pop.is_open() and pop.pages.currentIndex() == 0
+    assert not pop.searching and pop.found == []  # a folder is in use, so it doesn't search by itself
+    assert pop.title.text() == "Using your chosen folder"
     h0 = pop.height()
+    pop.again.click()  # Detect Again
+    assert pop.searching
     _pump(qapp, 2000, until=lambda: not pop.searching)
     assert not pop.searching
     assert [f.place.short for f in pop.found] == ["Flatpak"]  # the test's Steam lives outside the usual places
@@ -190,6 +252,35 @@ def test_steam_folder_popover_searches_and_switches(qapp, window, tmp_path, stea
     _pump(qapp, 400)
     assert not pop.isVisible()
     assert steamfolder.tilde(tmp_path / "x") == "~/x"
+
+
+def test_steam_folder_popover_searches_only_when_no_folder_in_use(qapp, window, tmp_path, steam_root):
+    import shutil
+
+    win = window
+    pop = win.folderpop
+    pop.delay = 0
+    flatpak = tmp_path / ".var/app/com.valvesoftware.Steam/.local/share/Steam"
+    shutil.copytree(steam_root, flatpak)
+    win.use_steam_root(flatpak.resolve())
+    _pump(qapp)
+    for _ in range(2):  # opening it again and again never searches while a folder is in use
+        win.show_folder_popover()
+        _pump(qapp, 100)
+        assert pop.is_open() and not pop.searching
+        assert pop.title.text() == "Using Steam (Flatpak)" and pop.found[0].games == 3
+        assert pop.dots.states[1] == "hit" and pop.dots.states[0] == ""  # the others weren't checked
+        win.show_folder_popover()
+        _pump(qapp, 400)
+
+    win.detect_steam([])  # no Steam folder in use, as on a first launch
+    _pump(qapp)
+    win.show_folder_popover()
+    assert pop.searching
+    _pump(qapp, 2000, until=lambda: not pop.searching)
+    assert win.steam_root == flatpak.resolve()  # the search found it and put it to use
+    win.show_folder_popover()
+    _pump(qapp, 400)
 
 
 def test_quit_prompt_lists_games_and_remembers(qapp, window, monkeypatch):
@@ -598,11 +689,10 @@ def test_banner_header_fits_the_page(qapp, window):
     assert not card.compact and card.height() == 210  # buttons beside the name, as always
     shown = QLabel.text(card.title)
     assert card.title.text().startswith("A Very Long") and shown.endswith("…") and card.title.toolTip()
-    win.tray.show()
-    win.split.setSizes([300, 610, 370])
+    win.split.setSizes([670, 610])  # a narrow page (the tray no longer narrows it: it lies over it)
     fits()
     assert card.compact  # the buttons moved to a row of their own
-    win.tray.hide()
+    win.split.setSizes([300, 980])
     _pump(qapp, 150)
     assert not card.compact
 
@@ -689,3 +779,580 @@ def test_details_columns_never_overlap_the_names(qapp):
         assert status_x is None and end >= NAME_X + 40  # the status column moves into the tooltip
         assert centres[0] - col / 2 >= end
     assert detail_columns(640 + STATUS_W)[2] is not None
+
+
+def test_sidebar_search_and_filter_reach_the_wall(qapp, window):
+    win, start = window, window.start
+
+    def on_wall():
+        return [start.wall.item(r).text() for r in range(start.wall.count()) if not start.wall.item(r).isHidden()]
+
+    assert len(on_wall()) == 3 and win.cbar.count.text() == "(3)"
+    win.game_list.search.setText("celeste")
+    assert on_wall() == ["Celeste"] and win.cbar.count.text() == "(1 of 3)"
+    start.set_piece(0)  # the chips still narrow it further
+    assert on_wall() == ["Celeste"] and start.note.isVisibleTo(start)
+    win.game_list.search.setText("zzz")
+    assert on_wall() == [] and start.empty.isVisibleTo(start) and win.cbar.count.text() == "(0 of 3)"
+    start._show_everything()
+    assert len(on_wall()) == 3 and not start.empty.isVisibleTo(start) and start.piece is None
+    win.status[win.sfile.shortcuts[1].appid] = "check"
+    win.game_list.set_filter("check")
+    assert on_wall() == [win.sfile.shortcuts[1].name] and win.cbar.count.text() == "(1 of 3)"
+    win.game_list.set_filter("all")
+    assert len(on_wall()) == 3
+
+
+def test_banner_header_has_one_filled_button(qapp, window):
+    win = window
+    win.config.data["api_key"] = "x"
+    win.sgdb.match = lambda name: (None, 0)
+    win.sgdb.assets = lambda *a, **k: []
+    win.open_game(0)
+    _pump(qapp)
+    card = win.page.card
+
+    def filled():
+        return [b.text() for b in card.acts.findChildren(type(card.apply_btn)) if b.isVisibleTo(card) and b.isEnabled()
+                and (b.objectName() == "bannerget" or b.property("kind") in ("go", "confirm"))]
+
+    for state, changes, want in (("exact", 0, ["Get All Artwork"]), ("exact", 2, ["Apply (2 Changes)"]),
+                                 ("check", 0, []), ("check", 1, ["Apply (1 Change)"])):
+        card.set_state(state, "Celeste", "2018", 3)
+        card.set_actions(True, changes, False)
+        assert filled() == want, (state, changes)
+    assert "href='confirm'" in card.meta.text()  # "Yes, That's It" is a quiet link beside "Change Game"
+    confirmed = []
+    card.confirm.connect(lambda: confirmed.append(True))
+    card.meta.linkActivated.emit("confirm")
+    assert confirmed
+
+
+def test_option_strips_line_up_and_banners_keep_their_top(qapp, window):
+    from PySide6.QtCore import QSize
+    from PySide6.QtGui import QColor, QPainter, QPixmap
+
+    from steam_artwork_finder.gui.widgets import fill_rect
+
+    win = window
+    win.open_game(0)
+    _pump(qapp)
+    rows = win.page.rows.values()
+    assert len({r.mid_col.geometry().right() for r in rows}) == 1  # every strip starts at the same x
+
+    pm = QPixmap(100, 200)
+    pm.fill(QColor("red"))
+    p = QPainter(pm)
+    p.fillRect(0, 100, 100, 100, QColor("blue"))  # red top half, blue bottom half
+    p.end()
+    centred = fill_rect(pm, QSize(100, 50)).toImage()
+    assert QColor(centred.pixel(50, 0)) == QColor("red") and QColor(centred.pixel(50, 49)) == QColor("blue")
+    top = fill_rect(pm, QSize(100, 50), top=True).toImage()
+    assert QColor(top.pixel(50, 0)) == QColor("red") and QColor(top.pixel(50, 49)) == QColor("red")
+
+
+def test_sort_menu_orders_the_list_and_wall(qapp, window):
+    win = window
+    bar = win.game_list.homebar
+    assert win.game_list.order() == win.start.order() == [0, 1, 2]  # A to Z by default
+    bar.sort_menu.chosen.emit("za")
+    _pump(qapp, 100)
+    assert win.game_list.order() == win.start.order() == [2, 1, 0]
+    assert bar.sort.view == "za" and win.config.data["library_sort"] == "za"
+    assert win.game_list.list.item(0).text() == "Pokémon émulé"
+
+    bar.sort_menu.chosen.emit("missing")
+    win.user.grid_dir.mkdir(parents=True, exist_ok=True)
+    sc = win.sfile.shortcuts[0]  # Celeste gets a cover: it has the least missing now
+    (win.user.grid_dir / f"{sc.appid}p.png").write_bytes(PNG)
+    win.forget_files()
+    win.refresh_all()
+    assert win.game_list.order() == win.start.order() == [1, 2, 0]
+
+    win.game_list.set_filter("missing")  # sorting works on what the filter leaves
+    shown = [i for row, i in enumerate(win.game_list.order()) if not win.game_list.list.item(row).isHidden()]
+    assert shown == [1, 2, 0]
+    bar.sort_menu.chosen.emit("recent")
+    assert win.game_list.order() == [2, 1, 0]
+
+
+def test_generic_title_is_renamed_on_apply(qapp, window, steam_root, steam_state):
+    from conftest import SAMPLE_ENTRIES, make_entry, make_shortcuts
+
+    from steam_artwork_finder.shortcuts import ShortcutsFile
+
+    win = window
+    entries = [make_entry(*e) for e in SAMPLE_ENTRIES] + [
+        make_entry(-123456, "game.exe", '"/home/deck/Games/Hollow Knight/game.exe"')]
+    win.user.shortcuts_path.write_bytes(make_shortcuts(entries))
+    win.reload_shortcuts()
+    _pump(qapp, 100)
+    idx = next(i for i, s in enumerate(win.sfile.shortcuts) if s.name == "game.exe")
+    sc = win.sfile.shortcuts[idx]
+    win.config.set_match(sc.appid, 42, "Hollow Knight", "2017")
+    win.open_game(idx)
+    _pump(qapp, 100)
+    card = win.page.card
+    assert win.rename_suggestion(sc) == "Hollow Knight"
+    assert card.rename_btn.isVisible() and card.rename_btn.text() == "Rename to Hollow Knight"
+
+    card.rename_btn.click()
+    assert win.pending.name(sc.appid) == "Hollow Knight" and win.pending.count(sc.appid) == 1
+    assert card.title.text() == "Hollow Knight" and card.unrename_btn.isVisible() and not card.rename_btn.isVisible()
+    assert ShortcutsFile(win.user.shortcuts_path).find(sc.appid).name == "game.exe"  # nothing written yet
+    assert card.apply_btn.text() == "Apply (1 Change)"
+
+    steam_state["running"] = True  # Apply closes Steam, renames, then starts it again
+    win.apply_games([sc.appid])
+    _pump(qapp, 3000, until=lambda: not win.busy)
+    assert steam_state["calls"] == ["shutdown", "start"]
+    on_disk = ShortcutsFile(win.user.shortcuts_path).find(sc.appid)
+    assert on_disk is not None and on_disk.name == "Hollow Knight"  # same appid: artwork stays linked
+    assert not win.pending and win.current_shortcut().name == "Hollow Knight"
+    assert not card.rename_btn.isVisible()
+    assert any(win.game_list.list.item(r).text() == "Hollow Knight" for r in range(win.game_list.list.count()))
+
+    win.toast.undo_now()
+    assert ShortcutsFile(win.user.shortcuts_path).find(sc.appid).name == "game.exe"
+
+
+def test_rename_waits_for_steam_to_close(qapp, window, steam_state):
+    from steam_artwork_finder.shortcuts import ShortcutsFile
+
+    win = window
+    win.config.data["auto_restart_steam"] = False
+    sc = win.sfile.shortcuts[1]
+    win.pending.set_name(sc.appid, "Hollow Knight")
+    steam_state["running"] = True
+    win.apply_games([sc.appid])
+    _pump(qapp, 3000, until=lambda: not win.busy)
+    assert ShortcutsFile(win.user.shortcuts_path).find(sc.appid).name == "Hollow Knight™"  # Steam would undo it
+    assert win.pending_names() == {str(sc.appid): "Hollow Knight"} and win.steam_state() == "restart"
+    steam_state["running"] = False
+    win.update_steam_state()
+    assert ShortcutsFile(win.user.shortcuts_path).find(sc.appid).name == "Hollow Knight"
+    assert not win.pending_names()
+
+
+def test_get_artwork_and_apply_rename_by_default(qapp, window, steam_state):
+    from conftest import SAMPLE_ENTRIES, make_entry, make_shortcuts
+
+    from steam_artwork_finder.sgdb import Game
+    from steam_artwork_finder.shortcuts import ShortcutsFile
+
+    win = window
+    entries = [make_entry(*e) for e in SAMPLE_ENTRIES] + [
+        make_entry(-123456, "game.exe", '"/home/deck/Games/Hollow Knight/game.exe"'),
+        make_entry(-654321, "Launcher", '"/home/deck/Games/Hades/Launcher.exe"')]
+    win.user.shortcuts_path.write_bytes(make_shortcuts(entries))
+    win.reload_shortcuts()
+    win.config.data["api_key"] = "x"
+    searched = []
+    win.sgdb.match = lambda name: searched.append(name) or (Game(len(searched), name, "2020"), 1)
+    win.sgdb.assets = lambda kind, gid, page=0: [_asset(gid * 10 + len(kind))]
+    win.sgdb.download = lambda url: PNG
+    hk, hades = (next(s for s in win.sfile.shortcuts if s.name == n) for n in ("game.exe", "Launcher"))
+    win.config.set_match(hades.appid, 77, "Hades", "2020")
+    win._set_keeps_name(hades.appid, True)  # the user said Keep Old Name for this one
+    _pump(qapp, 100)
+
+    win.fill_everything()
+    _pump(qapp, 5000, until=lambda: not win.busy)
+    assert "Hollow Knight" in searched  # looked up by its folder
+    assert win.pending.name(hk.appid) == "Hollow Knight"
+    assert win.pending.name(hades.appid) is None
+    win.apply_all()
+    _pump(qapp, 5000, until=lambda: not win.busy)
+    on_disk = ShortcutsFile(win.user.shortcuts_path)
+    assert on_disk.find(hk.appid).name == "Hollow Knight"
+    assert on_disk.find(hades.appid).name == "Launcher"  # kept, as asked
+    assert {s.name for s in on_disk.shortcuts} >= {"Celeste", "Hollow Knight™", "Pokémon émulé"}  # real titles stay
+
+
+def test_wall_gaps_are_not_clickable(qapp, window):
+    from PySide6.QtCore import QPoint, Qt
+    from PySide6.QtTest import QTest
+
+    wall = window.start.wall
+    picked = []
+    window.start.picked.connect(picked.append)
+    _pump(qapp, 100)
+    first, second = wall.visualRect(wall.model().index(0, 0)), wall.visualRect(wall.model().index(1, 0))
+    tile = wall.delegate.hit_rect(first)
+    assert tile.width() < first.width()  # the cell is wider than its cover
+    gap_x = (tile.right() + wall.delegate.hit_rect(second).left()) // 2
+    below = QPoint(tile.center().x(), first.bottom() - 4)  # under the artwork line, above the next row
+    for pt in (QPoint(gap_x, tile.center().y()), below):
+        assert not wall.indexAt(pt).isValid() and wall.itemAt(pt) is None
+        QTest.mouseClick(wall.viewport(), Qt.MouseButton.LeftButton, pos=pt)
+    assert picked == []
+    QTest.mouseClick(wall.viewport(), Qt.MouseButton.LeftButton, pos=tile.center())  # the cover
+    QTest.mouseClick(wall.viewport(), Qt.MouseButton.LeftButton, pos=QPoint(tile.x() + 5, tile.bottom() - 5))
+    assert picked == [0, 0]
+    window.start.set_view("list")
+    _pump(qapp, 50)
+    row = wall.visualRect(wall.model().index(0, 0))
+    assert wall.indexAt(row.center()).row() == 0
+    assert not wall.indexAt(QPoint(row.center().x(), row.bottom())).isValid()  # the gap between rows
+    window.start.set_view("grid")
+
+
+
+def _image_bytes(w, h, fmt="PNG", alpha=True):
+    from PySide6.QtCore import QBuffer, QByteArray, QIODevice
+    from PySide6.QtGui import QColor, QImage
+
+    img = QImage(w, h, QImage.Format.Format_ARGB32 if alpha else QImage.Format.Format_RGB32)
+    img.fill(QColor(30, 120, 200, 128 if alpha else 255))
+    arr = QByteArray()
+    buf = QBuffer(arr)
+    buf.open(QIODevice.OpenModeFlag.WriteOnly)
+    img.save(buf, fmt)
+    buf.close()
+    return bytes(arr.data())
+
+
+def test_own_file_waits_until_apply_and_undoes(qapp, window, tmp_path):
+    from steam_artwork_finder.artwork import SLOTS, existing
+    from steam_artwork_finder.pending import LocalFile
+
+    win = window
+    src = tmp_path / "pics" / "my cover.jpg"
+    src.parent.mkdir()
+    data = _image_bytes(600, 900, "JPG", alpha=False)
+    src.write_bytes(data)
+    win.open_game(0)
+    _pump(qapp)
+    sc = win.current_shortcut()
+    row = win.page.rows["grid"]
+    assert row.file_btn.isVisible() and row.file_btn.text() == "Custom Image"  # there even without an API key or options
+    win.stage_file(SLOTS["grid"], path=str(src))
+    _pump(qapp, 2000, until=lambda: win.pending.count(sc.appid))
+    pick = win.pending.get(sc.appid, "grid")
+    assert isinstance(pick.asset, LocalFile) and pick.data == data  # a JPEG is kept as it is
+    assert row.caption.text() == "Not applied yet" and not row.art.pixmap.isNull()
+    assert win.config.data["last_image_folder"] == str(src.parent)
+    assert existing(win.user.grid_dir, sc.appid, SLOTS["grid"]) is None
+
+    win.apply_games([sc.appid])
+    _pump(qapp, 3000, until=lambda: not win.busy)
+    path = existing(win.user.grid_dir, sc.appid, SLOTS["grid"])
+    assert path is not None and path.suffix == ".jpg" and path.read_bytes() == data
+    assert win.config.get_applied(sc.appid, "grid")["file"] == "my cover.jpg"
+    assert path.parent == win.user.grid_dir and path.name == f"{sc.appid}p.jpg"  # a copy, named Steam's way
+    assert src.read_bytes() == data  # the user's own file is left alone
+    win.page.show_game()
+    assert row.caption.text() == "In use · custom image"
+    win.toast.undo_now()
+    assert existing(win.user.grid_dir, sc.appid, SLOTS["grid"]) is None
+
+
+def test_own_file_is_converted_and_warned_about(qapp):
+    from PySide6.QtGui import QImage
+
+    from steam_artwork_finder.artwork import SLOTS
+    from steam_artwork_finder.gui import localfile
+
+    bmp = localfile.load(SLOTS["hero"], _image_bytes(1920, 620, "BMP", alpha=False), "a.bmp")
+    assert bmp.pick.asset.mime == "image/png" and bmp.pick.data.startswith(b"\x89PNG") and not bmp.note
+
+    wide = localfile.load(SLOTS["grid"], _image_bytes(920, 430), "w.png")
+    assert "wider than a cover" in wide.note
+    small = localfile.load(SLOTS["hero"], _image_bytes(400, 130), "s.png")
+    assert "small" in small.note
+    logo = localfile.load(SLOTS["logo"], _image_bytes(400, 200, "JPG", alpha=False), "l.jpg")
+    assert "see-through" in logo.note
+
+    big = localfile.load(SLOTS["grid"], _image_bytes(4000, 6000), "big.png")
+    assert big.pick.asset.height == 3840 and max(big.preview.width(), big.preview.height()) <= 1920
+
+    pasted = localfile.load_image(SLOTS["icon"], QImage.fromData(_image_bytes(256, 256), "PNG"))
+    assert pasted.pick.data.startswith(b"\x89PNG") and pasted.pick.asset.path == ""
+    with pytest.raises(localfile.FileProblem):
+        localfile.load(SLOTS["grid"], b"not a picture", "x.png")
+
+
+def test_own_icon_is_copied_and_linked_from_steams_folder(qapp, window, tmp_path):
+    from steam_artwork_finder.artwork import SLOTS, existing
+
+    win = window
+    src = tmp_path / "icon.bmp"
+    src.write_bytes(_image_bytes(256, 256, "BMP", alpha=False))
+    win.open_game(0)
+    _pump(qapp)
+    sc = win.current_shortcut()
+    win.stage_file(SLOTS["icon"], path=str(src))
+    _pump(qapp, 2000, until=lambda: win.pending.count(sc.appid))
+    win.apply_games([sc.appid])
+    _pump(qapp, 3000, until=lambda: not win.busy)
+    path = existing(win.user.grid_dir, sc.appid, SLOTS["icon"])
+    assert path is not None and path.name == f"{sc.appid}_icon.png"  # converted for Steam
+    assert win.sfile.find(sc.appid).icon == str(path)  # points at the copy, never the original
+    src.unlink()
+    assert path.exists()
+
+
+def test_artwork_steamgriddb_lacks_is_remembered(qapp, window, tmp_path):
+    from PySide6.QtGui import QImage
+
+    win = window
+    win.config.data["api_key"] = "x"
+    for sc in win.sfile.shortcuts:
+        win.config.set_match(sc.appid, 9, sc.name)
+    cover = QImage(60, 90, QImage.Format.Format_RGB32)
+    cover.fill(0x3366CC)
+    cover.save(str(tmp_path / "cover.png"))
+    png = (tmp_path / "cover.png").read_bytes()
+    win.sgdb.assets = lambda kind, game_id, page=0, animated=False: [_asset(1)] if kind == "grid" else []
+    win.sgdb.download = lambda url: png
+    win.refresh_all()
+    tip = win.cbar.buttons[0].toolTip()
+    assert all(sc.name in tip for sc in win.sfile.shortcuts)  # the button says which games
+
+    win.fill_everything()
+    _pump(qapp, 3000, until=lambda: not win.busy)
+    sc = win.sfile.shortcuts[0]
+    assert win.pending.get(sc.appid, "icon") is None  # Steam's own icon is never made up
+    assert win.config.no_art(sc.appid) == {"wide", "hero", "logo", "icon"}
+    assert "12 pieces had no options yet" in win.statusbar.message.accessibleName()
+
+    win.pending.clear()
+    win.refresh_all()
+    # SteamGridDB only has covers, so only the cover is still to get; a recheck asks for all again.
+    assert [s.key for s in win._unstaged_missing(sc)] == ["grid"]
+    assert len(win._unstaged_missing(sc, recheck=True)) == 5
+    win.config.set_no_art(sc.appid, "hero", False)  # e.g. the game page found banners after all
+    assert "hero" not in win.config.no_art(sc.appid)
+
+
+def test_startup_learns_what_steamgriddb_lacks(qapp, window):
+    from steam_artwork_finder.gui.library import status_text
+
+    win = window
+    win.config.data["api_key"] = "x"
+    for sc in win.sfile.shortcuts:
+        win.config.set_match(sc.appid, 9, sc.name)
+    asked = []
+    win.sgdb.assets = lambda kind, game_id, page=0: asked.append(kind) or []
+    win.set_connection("connected")
+    _pump(qapp, 3000, until=lambda: len(asked) == 15)
+    _pump(qapp, 300)
+    sc = win.sfile.shortcuts[0]
+    assert win.complete(sc) and win.art_states(sc) == ["none"] * 5
+    assert status_text(win, 0)[0] == "All available"
+    assert win.cbar.buttons[0].text() == "Get Artwork" and not win.cbar.buttons[0].isEnabled()
+    win.check_gaps()  # once a session is enough
+    _pump(qapp, 300)
+    assert len(asked) == 15
+
+
+def test_a_game_with_all_there_is_goes_quiet(qapp, window, tmp_path):
+    from PySide6.QtGui import QImage
+
+    from steam_artwork_finder.artwork import SLOTS, save_asset
+    from steam_artwork_finder.gui.library import status_text
+
+    win = window
+    win.config.data["api_key"] = "x"
+    sc = win.sfile.shortcuts[0]
+    win.config.set_match(sc.appid, 9, sc.name)
+    img = QImage(60, 90, QImage.Format.Format_RGB32)
+    img.fill(0x3366CC)
+    img.save(str(tmp_path / "c.png"))
+    save_asset(win.user.grid_dir, sc, SLOTS["grid"], (tmp_path / "c.png").read_bytes(), "image/png", None)
+    win.forget_files()
+    win.sgdb.assets = lambda kind, game_id, page=0, *a, **k: []
+    win.sgdb.match = lambda name: (None, 0)
+    win.set_connection("connected")
+    _pump(qapp, 3000, until=lambda: len(win.config.no_art(sc.appid)) == 4)
+    _pump(qapp, 300)
+    assert win.complete(sc) and status_text(win, 0)[0] == "All available"
+    assert not win.pending  # nothing staged for Steam
+    assert win.list_icon(sc) == (win.slot_path(sc, SLOTS["grid"]), False)  # the app's list uses the cover
+
+
+def test_game_list_icon_falls_back_to_other_artwork(qapp, window, tmp_path):
+    from PySide6.QtGui import QImage
+
+    from steam_artwork_finder.artwork import SLOTS, save_asset
+    from steam_artwork_finder.gui.widgets import decode_scaled
+
+    win = window
+    sc = win.sfile.shortcuts[0]
+    assert win.list_icon(sc) == (None, False)  # no artwork at all: the letter
+    img = QImage(200, 50, QImage.Format.Format_ARGB32)
+    img.fill(0xFF3366CC)
+    img.save(str(tmp_path / "logo.png"))
+    save_asset(win.user.grid_dir, sc, SLOTS["logo"], (tmp_path / "logo.png").read_bytes(), "image/png", None)
+    win.forget_files()
+    path, contain = win.list_icon(sc)
+    assert path is not None and contain  # a logo is fitted whole
+    out = decode_scaled(str(path), 32, 32, contain=True)
+    assert out.size().width() == 32 and out.pixelColor(16, 0).alpha() == 0 and out.pixelColor(16, 16).alpha() == 255
+    save_asset(win.user.grid_dir, sc, SLOTS["grid"], (tmp_path / "logo.png").read_bytes(), "image/png", None)
+    win.forget_files()
+    assert win.list_icon(sc)[1] is False  # the cover comes first, cropped to fill
+
+
+def _tiny_exe(path, png: bytes):
+    """A minimal Windows program whose only content is one icon (a PNG), like a game's .exe."""
+    import struct
+
+    def directory(entries):  # [(id, offset)]
+        return struct.pack("<IIHHHH", 0, 0, 0, 0, 0, len(entries)) + b"".join(
+            struct.pack("<II", i, o) for i, o in entries)
+
+    # Layout inside .rsrc: root, icon dir, icon lang, group dir, group lang, 2 data entries, data.
+    root, d_icon, d_icon_l, d_grp, d_grp_l = 0, 32, 56, 80, 104
+    e_icon, e_grp = 128, 144
+    group = struct.pack("<HHH", 0, 1, 1) + struct.pack("<BBBBHHIH", 64, 64, 0, 0, 1, 32, len(png), 1)
+    icon_at, grp_at = 160, 160 + len(png)
+    rsrc = b"".join([
+        directory([(3, 0x80000000 | d_icon), (14, 0x80000000 | d_grp)]),
+        directory([(1, 0x80000000 | d_icon_l)]), directory([(0x409, e_icon)]),
+        directory([(1, 0x80000000 | d_grp_l)]), directory([(0x409, e_grp)]),
+        struct.pack("<IIII", 0x1000 + icon_at, len(png), 0, 0),
+        struct.pack("<IIII", 0x1000 + grp_at, len(group), 0, 0),
+        png, group,
+    ])
+    opt = bytearray(224)
+    struct.pack_into("<H", opt, 0, 0x10B)
+    struct.pack_into("<I", opt, 92, 16)
+    struct.pack_into("<II", opt, 96 + 2 * 8, 0x1000, len(rsrc))
+    head = bytearray(b"MZ" + bytes(58) + struct.pack("<I", 0x40))
+    head += b"PE\0\0" + struct.pack("<HHIIIHH", 0x14C, 1, 0, 0, 0, 224, 0x102) + opt
+    head += struct.pack("<8sIIIIIIHHI", b".rsrc", len(rsrc), 0x1000, len(rsrc), 0x200, 0, 0, 0, 0, 0)
+    path.write_bytes(bytes(head) + bytes(0x200 - len(head)) + rsrc)
+
+
+def test_exe_icon_is_the_fallback_for_steam_and_the_list(qapp, window, tmp_path, monkeypatch):
+    from PySide6.QtGui import QImage
+
+    from steam_artwork_finder.exeicon import exe_icon, exe_path
+
+    monkeypatch.setenv("XDG_CACHE_HOME", str(tmp_path / "cache"))
+    img = QImage(64, 64, QImage.Format.Format_ARGB32)
+    img.fill(0xFFCC3333)
+    img.save(str(tmp_path / "i.png"))
+    exe = tmp_path / "Railway Empire 2" / "RailwayEmpire2.exe"
+    exe.parent.mkdir()
+    _tiny_exe(exe, (tmp_path / "i.png").read_bytes())
+    assert exe_icon(exe) == (tmp_path / "i.png").read_bytes()
+    assert exe_path(f'"{exe}"') == exe and exe_path('"/usr/bin/heroic" --launch x') is None
+
+    win = window
+    sc = win.sfile.shortcuts[0]
+    sc.exe = f'"{exe}"'
+    path, contain = win.list_icon(sc)  # the app's list shows the .exe's icon straight away
+    assert path is not None and QImage(str(path)).size().width() == 64 and not contain
+    assert win.pending.get(sc.appid, "icon") is None  # Steam is only offered it once SteamGridDB has none
+
+    win.config.data["api_key"] = "x"
+    win.config.set_match(sc.appid, 9, sc.name)
+    win.sgdb.assets = lambda kind, game_id, page=0, *a, **k: []
+    win.sgdb.match = lambda name: (None, 0)
+    win.set_connection("connected")
+    _pump(qapp, 3000, until=lambda: win.pending.get(sc.appid, "icon") is not None)
+    assert win.pending.get(sc.appid, "icon").asset.style == "exe"
+    win.show_index(0)
+    _pump(qapp, 200)
+    assert win.page.rows["icon"].caption.text() == "From the game's .exe · not applied yet"
+
+
+def test_steam_official_artwork_comes_first_and_fills_without_a_key(qapp, window):
+    from steam_artwork_finder.artwork import SLOTS, existing
+    from steam_artwork_finder.steamstore import SteamAsset, StoreGame
+
+    win = window
+    win.sgdb.download = lambda url: PNG
+    official = {k: SteamAsset(-(504230 * 10 + i), f"https://cdn/{k}.jpg", f"https://cdn/{k}_s.jpg", 600, 900,
+                              "image/jpeg", 0, "official", "Steam", appid=504230)
+                for i, k in enumerate(("grid", "wide", "hero", "logo"), 1)}  # the store's icons are never offered
+    win.steam.match = lambda name: StoreGame(504230, "Celeste") if name == "Celeste" else None
+    win.steam.assets = lambda appid: dict(official)
+    win.open_game(0)
+    _pump(qapp, 1000, until=lambda: win.page.rows["grid"].steam_assets)
+    row = win.page.rows["grid"]
+    assert row.assets[0] is official["grid"] and row.thumbs[0].official
+    assert "Official" in row.count.text()
+    meta = win.page.card.meta.text()
+    assert "Celeste" in meta and "Steam" in meta and meta.count("href") == 1  # one line, one Change Game
+    assert win.steam_option("hero") is official["hero"]
+
+    # No SteamGridDB key: Get All Artwork still fills from Steam.
+    sc = win.current_shortcut()
+    win.fill_current()
+    _pump(qapp, 3000, until=lambda: not win.busy)
+    picks = win.pending.for_game(sc.appid)
+    assert sorted(picks) == ["grid", "hero", "logo", "wide"]
+    assert all(isinstance(p.asset, SteamAsset) for p in picks.values())
+    win.apply_games([sc.appid])
+    _pump(qapp, 3000, until=lambda: not win.busy)
+    assert existing(win.user.grid_dir, sc.appid, SLOTS["grid"]) is not None
+    assert win.config.get_applied(sc.appid, "grid")["steam"] == 504230
+    row.show_current()
+    assert row.caption.text() == "In use · from Steam"
+
+    # Turned off: Steam's options go, and nothing is looked up.
+    win._set_steam_art(False)
+    _pump(qapp)
+    assert not row.steam_assets and win.steam_option("grid") is None
+    win._set_steam_art(True)
+
+
+def test_steam_game_is_changed_in_the_game_picker(qapp, window, monkeypatch):
+    from steam_artwork_finder.gui import app as appmod
+    from steam_artwork_finder.gui.dialogs import MatchDialog
+    from steam_artwork_finder.sgdb import Game
+    from steam_artwork_finder.steamstore import StoreGame
+
+    win = window
+    win.steam.match = lambda name: None
+    looked = []
+    win.steam.assets = lambda appid: looked.append(appid) or {}
+    win.open_game(0)
+    _pump(qapp, 1000, until=lambda: win.current_shortcut().appid in win.steam_found)
+    sc = win.current_shortcut()
+
+    # The picker: the Steam game follows the SteamGridDB pick by name until one is chosen.
+    win.sgdb.search = lambda term: [Game(9, "Celeste", "2018")]
+    win.sgdb.assets = lambda *a, **k: []
+    win.steam.search = lambda term: [StoreGame(7, "Celeste Classic"), StoreGame(504230, "Celeste™")]
+    dlg = MatchDialog(win, win.sgdb, sc.name, sc.exe, win.steam, win._steam_now(sc))
+    _pump(qapp, 1000, until=lambda: dlg.steam_box.count() == 3)
+    assert dlg.steam_box.currentData().appid == 504230
+    assert dlg.steam_choice().appid == 504230
+    dlg.steam_box.setCurrentIndex(dlg.steam_box.count() - 1)
+    assert dlg.steam_choice() is None  # back where it started: no store game, nothing to change
+    dlg.done(0)
+    dlg.deleteLater()
+
+    class Dlg:
+        NOT_ON_STEAM = MatchDialog.NOT_ON_STEAM
+        steam = StoreGame(42, "Celeste Classic")
+
+        def __init__(self, *a):
+            pass
+
+        def exec(self):
+            return 1
+
+        def selected(self):
+            return None
+
+        def steam_choice(self):
+            return Dlg.steam
+
+        def deleteLater(self):
+            pass
+
+    monkeypatch.setattr(appmod, "MatchDialog", Dlg)
+    win.change_match()  # no SteamGridDB key: the picker still opens, for the Steam game
+    _pump(qapp, 1000, until=lambda: sc.appid in win.steam_found)
+    assert win.config.get_steam_match(sc.appid) == {"id": 42, "name": "Celeste Classic"}
+    assert looked == [42]
+    assert "Celeste Classic" in win.page.card.meta.text() and "Change" in win.page.card.meta.text()
+    Dlg.steam = Dlg.NOT_ON_STEAM
+    win.change_match()
+    _pump(qapp, 500)
+    assert win.config.get_steam_match(sc.appid)["id"] == 0 and looked == [42]

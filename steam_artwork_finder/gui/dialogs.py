@@ -11,6 +11,7 @@ from PySide6.QtWidgets import (
     QAbstractButton,
     QScrollArea,
     QCheckBox,
+    QComboBox,
     QDialog,
     QDialogButtonBox,
     QFrame,
@@ -389,15 +390,36 @@ class Chip(QPushButton):
         self.setAccessibleName(f"Search for {term}, from the {source} name")
 
 
-class MatchDialog(QDialog):
-    """Pick which SteamGridDB game a shortcut is: smarter search terms on top,
-    results with covers on the left, and a preview of the picked game's artwork."""
+class _Choice(QComboBox):
+    """A drop-down list in the app's style: the theme's flat box with a chevron of its own."""
 
-    def __init__(self, parent, sgdb: SteamGridDB, name: str, exe: str = ""):
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self.setStyleSheet("QComboBox { padding-right: 32px; } QComboBox::drop-down { width: 0; border: none; }")
+
+    def paintEvent(self, e):
+        super().paintEvent(e)
+        p = QPainter(self)
+        icons.draw(p, "chevron-down", QRect(self.width() - 26, (self.height() - 14) // 2, 14, 14), C["text2"])
+
+
+class MatchDialog(QDialog):
+    """Pick which game a shortcut is: smarter search terms on top, SteamGridDB results with
+    covers on the left, a preview of the picked game's artwork, and (given `store`) which
+    Steam store game its official artwork comes from, or Not on Steam."""
+
+    NOT_ON_STEAM = object()  # the "Not on Steam" choice
+
+    def __init__(self, parent, sgdb: SteamGridDB, name: str, exe: str = "", store=None, steam_now=None):
         from ..sgdb import looks_like_file, suggestions
 
         super().__init__(parent)
         self.sgdb = sgdb
+        self.store = store
+        # Whether the Steam game is settled: picked here, or already known. Until then it follows
+        # the SteamGridDB pick by name.
+        self._steam_touched = steam_now is not None
+        self._steam_start = None
         self.games: list[Game] = []
         self.rows: list[ResultRow] = []
         self._run = 0  # newer searches win over slower older ones
@@ -548,6 +570,24 @@ class MatchDialog(QDialog):
         pl.addStretch(1)
         split.addWidget(prev)
         body.addLayout(split, 1)
+        self.steam_box = None
+        if store is not None:
+            srow = QHBoxLayout()
+            srow.setSpacing(10)
+            sl = QLabel("Official art from Steam")
+            sl.setStyleSheet(f"color: {C['text2']};")
+            srow.addWidget(sl)
+            self.steam_box = _Choice()
+            self.steam_box.setAccessibleName("Steam store game for official artwork")
+            self.steam_box.setSizeAdjustPolicy(QComboBox.SizeAdjustPolicy.AdjustToMinimumContentsLengthWithIcon)
+            self.steam_box.setMinimumContentsLength(16)
+            self.steam_box.setToolTip("If this game is also sold on Steam, its store page's official artwork\n"
+                                      "shows first in each row. Pick Not on Steam to leave it out.")
+            self._steam_items(steam_now, [])
+            self._steam_start = self.steam_box.currentData()
+            self.steam_box.activated.connect(self._steam_picked)
+            srow.addWidget(self.steam_box, 1)
+            body.addLayout(srow)
         outer.addLayout(body, 1)
 
         foot = QFrame()
@@ -594,7 +634,10 @@ class MatchDialog(QDialog):
         self._fill([])
         workers.run(self.sgdb.search, self.edit.text(),
                     on_done=lambda games: self._show(games, run),
-                    on_error=lambda msg: run == self._run and self.status.setText(msg))
+                    on_error=lambda msg: run == self._run and not self._gone and self.status.setText(msg))
+        if self.store is not None and self.edit.text().strip():
+            workers.run(self.store.search, self.edit.text().strip(),
+                        on_done=lambda games: self._steam_results(games, run), on_error=lambda _m: None)
 
     def done(self, r: int):
         self._gone = True
@@ -634,7 +677,7 @@ class MatchDialog(QDialog):
             row.toggled.connect(lambda on, r=row: on and self._preview(r.game))
             self.list.insertWidget(self.list.count() - 2, row)  # above the empty state and the stretch
             self.rows.append(row)
-        self.ok.setEnabled(bool(games))
+        self.ok.setEnabled(bool(games) or self.steam_box is not None)
 
     def keyPressEvent(self, e):
         step = {Qt.Key.Key_Down: 1, Qt.Key.Key_Up: -1}.get(e.key())
@@ -648,7 +691,57 @@ class MatchDialog(QDialog):
 
     # ---- the preview ----------------------------------------------------------
 
+    # ---- the Steam store game ---------------------------------------------------
+
+    def _steam_items(self, keep, games):
+        """Fill the Steam list: `keep` (a StoreGame, NOT_ON_STEAM or None) first, then `games`."""
+        box = self.steam_box
+        box.blockSignals(True)
+        box.clear()
+        seen = set()
+        for g in ([keep] if keep is not None and keep is not self.NOT_ON_STEAM else []) + list(games):
+            if g.appid in seen:
+                continue
+            seen.add(g.appid)
+            box.addItem(f"{g.name}   ·   app {g.appid}", g)
+        box.addItem("Not on Steam", self.NOT_ON_STEAM)
+        box.setCurrentIndex(box.count() - 1 if keep is None or keep is self.NOT_ON_STEAM else 0)
+        box.blockSignals(False)
+
+    def _steam_results(self, games, run: int):
+        if self._gone or run != self._run or self.steam_box is None:
+            return
+        self._steam_items(self.steam_box.currentData(), games)
+        self._steam_follow(self.selected())
+
+    def _steam_picked(self, _i: int):
+        self._steam_touched = True
+
+    def _steam_follow(self, game: Game | None):
+        """Until the user picks one themselves, the Steam game follows the SteamGridDB pick by name."""
+        from ..steamstore import norm_name
+
+        box = self.steam_box
+        if box is None or self._steam_touched or game is None:
+            return
+        for i in range(box.count()):
+            g = box.itemData(i)
+            if g is not self.NOT_ON_STEAM and norm_name(g.name) == norm_name(game.name):
+                box.setCurrentIndex(i)
+                return
+
+    def steam_choice(self):
+        """The Steam store game picked (a StoreGame, or NOT_ON_STEAM), or None if it didn't change."""
+        if self.steam_box is None:
+            return None
+        now = self.steam_box.currentData()
+        start = self._steam_start
+        same = now is start or (now is not self.NOT_ON_STEAM and start is not None
+                                and start is not self.NOT_ON_STEAM and now.appid == start.appid)
+        return None if same else now
+
     def _preview(self, game: Game | None):
+        self._steam_follow(game)
         self.art.show_game(game.name if game else "")
         self.p_name.setText(game.name if game else "Pick a game")
         if game:
@@ -1154,3 +1247,4 @@ class RestoreDialog(QDialog):
 
     def selected(self):
         return next((r.path for r in self.rows if r.isChecked()), None)
+

@@ -2,7 +2,10 @@
 
 from __future__ import annotations
 
-from PySide6.QtCore import QEvent, QPoint, QPointF, QRect, QRectF, QSize, Qt, QTimer, Signal
+import re
+import time
+
+from PySide6.QtCore import QEvent, QModelIndex, QObject, QPoint, QPointF, QRect, QRectF, QSize, Qt, QTimer, Signal
 from PySide6.QtGui import QAction, QColor, QFont, QFontMetrics, QPainter, QPainterPath, QPen, QPixmap
 from PySide6.QtWidgets import (
     QAbstractButton,
@@ -22,8 +25,8 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
-from . import icons, theme
-from ..artwork import SLOTS
+from . import icons, motion, theme, workers
+from ..artwork import SLOTS, file_is_animated
 from .gamemenu import SHADOW, FadingPopup, PopupRow
 from .theme import C, q
 from .widgets import FlowLayout, ScaledCache, draw_dashed_empty, draw_dots, fill_rect, quiet_button
@@ -36,6 +39,9 @@ NEW_BG = C["action"]
 FILTERS = (("all", "All Games", "All"), ("missing", "Missing Art", "Missing Art"), ("check", "To Check", "To Check"))
 # key, name, icon: how the library shows its games
 VIEWS = (("list", "List", "view-list"), ("grid", "Grid", "view-grid"), ("details", "Details", "view-details"))
+# key, name, icon: the order the library lists its games in
+SORTS = (("az", "A to Z", "sort-az"), ("za", "Z to A", "sort-za"),
+         ("missing", "Missing artwork first", "images"), ("recent", "Recently added", "history"))
 PIECES = ("Covers", "Wide covers", "Banners", "Logos", "Icons")
 
 
@@ -79,11 +85,39 @@ def draw_game_icon(p: QPainter, rect: QRect, name: str, icon: QPixmap | None):
 
 
 def status_text(win, idx: int) -> tuple[str, str | None]:
-    """('3 of 5' or 'All artwork', tag or None) for a game."""
+    """('3 of 5', 'All artwork' or 'All available', tag or None) for a game."""
     sc = win.sfile.shortcuts[idx]
-    tag = win.status.get(sc.appid)
+    return art_text(win, sc), win.status.get(sc.appid)
+
+
+def art_text(win, sc) -> str:
+    """'All artwork', 'All available' (SteamGridDB has no more) or '3 of 5'."""
     have = sum(win.coverage(sc))
-    return ("All artwork" if have == 5 else f"{have} of 5"), tag
+    return "All artwork" if have == 5 else "All available" if win.complete(sc) else f"{have} of 5"
+
+
+def _natural(name: str) -> tuple:
+    """A sort key for names that puts "Game 2" before "Game 10", and unnamed games last."""
+    parts = [(0, int(t), "") if t.isdigit() else (1, 0, t) for t in re.split(r"(\d+)", name.strip().casefold()) if t]
+    return (not parts, parts)
+
+
+def sorted_indices(win, mode: str) -> list[int]:
+    """Indexes into the shortcut list in the order `mode` (a SORTS key) shows them.
+
+    Steam adds new shortcuts to the end of its list, so "recent" is that list backwards.
+    """
+    scs = win.sfile.shortcuts if win.sfile else []
+    order = list(range(len(scs)))
+    if mode == "recent":
+        return order[::-1]
+    by_name = sorted(order, key=lambda i: _natural(scs[i].name))
+    if mode == "za":
+        named = [i for i in by_name if scs[i].name.strip()]
+        return named[::-1] + [i for i in by_name if not scs[i].name.strip()]
+    if mode == "missing":
+        return sorted(by_name, key=lambda i: -win.coverage(scs[i]).count(False))  # stable: A to Z within
+    return by_name
 
 
 def is_ready(win, idx: int) -> bool:
@@ -99,7 +133,7 @@ def spoken(win, idx: int) -> str:
     """What a screen reader says for a game row or tile."""
     sc = win.sfile.shortcuts[idx]
     text, tag = status_text(win, idx)
-    parts = [sc.name or "unnamed game", text if text == "All artwork" else f"{text} artwork"]
+    parts = [sc.name or "unnamed game", text if text.startswith("All") else f"{text} artwork"]
     if tag:
         parts.append(TAGS[tag][0])
     if is_ready(win, idx):
@@ -161,7 +195,7 @@ def draw_meta(p: QPainter, win, idx: int, x: float, y: float, base: QFont, size:
     dots_w = 5 * (d + gap) + 3
     tag_w = QFontMetrics(tag_font(base)).horizontalAdvance((TAGS[tag][0] if tag else "").upper()) + 12
     if not (tag and width is not None and dots_w + tag_w > width):
-        x = draw_dots(p, x, y + (lh - d) / 2, win.coverage(sc), d=d, gap=gap) + 3
+        x = draw_dots(p, x, y + (lh - d) / 2, win.art_states(sc), d=d, gap=gap) + 3
     if tag:
         th = QFontMetrics(tag_font(base)).height() + 4
         draw_tag(p, int(x), int(y + (lh - th) / 2), tag)
@@ -223,8 +257,9 @@ class GameRowDelegate(QStyledItemDelegate):
         idx = index.data(ROLE_INDEX)
         sc = self.win.sfile.shortcuts[idx]
         icon_rect = QRect(r.x() + 8, r.y() + (r.height() - ICON.height()) // 2, ICON.width(), ICON.height())
-        ipath = self.win.slot_path(sc, SLOTS["icon"])
-        icon = self.icon_cache.get(ipath, ICON, self.view.viewport().update, self.view.devicePixelRatioF()) if ipath else QPixmap()
+        ipath, contain = self.win.list_icon(sc)  # its icon, else one cut from its other artwork
+        icon = self.icon_cache.get(ipath, ICON, self.view.viewport().update, self.view.devicePixelRatioF(),
+                                   contain) if ipath else QPixmap()
         draw_game_icon(p, icon_rect, sc.name, icon)
         f = QFont(option.font)
         f.setPointSizeF(theme.pt("control"))
@@ -268,21 +303,26 @@ class FilterButton(QToolButton):
         r = QRectF(self.rect())
         enabled = self.isEnabled()
         hover = enabled and self.underMouse()
-        if enabled and (self.open or hover):
+        held = enabled and (self.open or self.isDown())  # pressed, or its menu is showing
+        if held or hover:
             p.setPen(Qt.PenStyle.NoPen)
             p.setBrush(q("select"))
             p.drawRoundedRect(r, 3, 3)
-        if theme.kbd_focus(self) and not self.open:
+        if theme.kbd_focus(self) and not held:
             p.setPen(QPen(q("blue"), 2))
             p.setBrush(Qt.BrushStyle.NoBrush)
             p.drawRoundedRect(r.adjusted(1, 1, -1, -1), 3, 3)
+        elif held:
+            p.setPen(QPen(q("text3"), 1))
+            p.setBrush(Qt.BrushStyle.NoBrush)
+            p.drawRoundedRect(r.adjusted(0.5, 0.5, -0.5, -0.5), 3, 3)
         elif self.on and enabled:
             p.setPen(QPen(q("blue_ink"), 1))
             p.setBrush(Qt.BrushStyle.NoBrush)
             p.drawRoundedRect(r.adjusted(0.5, 0.5, -0.5, -0.5), 3, 3)
         if not enabled:
             color = q("text2")  # the search box fades the whole row
-        elif self.open:
+        elif held:
             color = QColor("white")
         elif self.on:
             color = q("blue_ink")
@@ -429,6 +469,13 @@ class ViewMenu(PopupMenu):
         super().__init__("VIEW", "Library view", [ViewRow(key, text, icon) for key, text, icon in VIEWS], 200, parent)
 
 
+class SortMenu(PopupMenu):
+    """The popup beside the Home bar: the order games are listed in."""
+
+    def __init__(self, parent=None):
+        super().__init__("SORT BY", "Sort games", [ViewRow(key, text, icon) for key, text, icon in SORTS], 250, parent)
+
+
 class SearchBox(QFrame):
     """The search field with the filter button inside it on the right."""
 
@@ -536,23 +583,25 @@ class HomeButton(QAbstractButton):
 
 
 class ViewButton(QAbstractButton):
-    """The square beside the Home bar, showing the library view in use; opens the view menu."""
+    """A square beside the Home bar showing the choice in use (the library view, or its
+    order); opens its menu."""
 
-    def __init__(self, parent=None):
+    def __init__(self, options=VIEWS, label: str = "View", spoken: str = "Library view", parent=None):
         super().__init__(parent)
-        self.view = "grid"
+        self.options, self.label, self.spoken = options, label, spoken
+        self.view = options[0][0]
         self.open = False
         self.setFixedSize(32, 32)
         self.setCursor(Qt.CursorShape.PointingHandCursor)
         self.setAttribute(Qt.WidgetAttribute.WA_Hover)
         self.setFocusPolicy(Qt.FocusPolicy.StrongFocus)
-        self.set_view("grid")
+        self.set_view("grid" if options is VIEWS else self.view)
 
     def set_view(self, view: str):
         self.view = view
-        name = next(n for k, n, _ in VIEWS if k == view)
-        self.setToolTip(f"View: {name}")
-        self.setAccessibleName(f"Library view: {name}")
+        name = next(n for k, n, _ in self.options if k == view)
+        self.setToolTip(f"{self.label}: {name}")
+        self.setAccessibleName(f"{self.spoken}: {name}")
         self.update()
 
     def set_open(self, open: bool):
@@ -564,20 +613,25 @@ class ViewButton(QAbstractButton):
         p.setRenderHint(QPainter.RenderHint.Antialiasing)
         r = QRectF(self.rect())
         hover = self.underMouse() and self.isEnabled()
+        held = self.open or self.isDown()  # pressed, or its menu is showing
         p.setPen(Qt.PenStyle.NoPen)
-        p.setBrush(q("select") if self.open else q("raised") if hover else q("input"))
+        p.setBrush(q("select") if held else q("raised") if hover else q("input"))
         p.drawRoundedRect(r, 3, 3)
-        if theme.kbd_focus(self) and not self.open:
+        if theme.kbd_focus(self) and not held:
             p.setPen(QPen(q("blue"), 2))
             p.setBrush(Qt.BrushStyle.NoBrush)
             p.drawRoundedRect(r.adjusted(1, 1, -1, -1), 3, 3)
-        icon = next(i for k, _, i in VIEWS if k == self.view)
-        fg = QColor("white") if self.open else q("text") if hover else q("text2")
+        elif held:
+            p.setPen(QPen(q("text3"), 1))
+            p.setBrush(Qt.BrushStyle.NoBrush)
+            p.drawRoundedRect(r.adjusted(0.5, 0.5, -0.5, -0.5), 3, 3)
+        icon = next(i for k, _, i in self.options if k == self.view)
+        fg = QColor("white") if held else q("text") if hover else q("text2")
         icons.draw(p, icon, QRectF(r.center().x() - 8, r.center().y() - 8, 16, 16), fg)
 
 
 class HomeBar(QWidget):
-    """Home, full width, with the library view button beside it."""
+    """Home, full width, with the sort and library view buttons beside it."""
 
     def __init__(self, parent=None):
         super().__init__(parent)
@@ -585,20 +639,28 @@ class HomeBar(QWidget):
         lay.setContentsMargins(0, 0, 0, 0)
         lay.setSpacing(6)
         self.home = HomeButton()
+        self.sort = ViewButton(SORTS, "Sort", "Sort games")
         self.view = ViewButton()
         lay.addWidget(self.home, 1)
+        lay.addWidget(self.sort)
         lay.addWidget(self.view)
+        self.sort_menu = SortMenu(self)
+        self.sort_menu.closed.connect(lambda: self.sort.set_open(False))
+        self.sort.clicked.connect(lambda: self._open(self.sort, self.sort_menu))
         self.menu = ViewMenu(self)
         self.menu.closed.connect(lambda: self.view.set_open(False))
         self.view.clicked.connect(self.open_menu)
 
     def open_menu(self):
-        if self.menu.isVisible():
-            self.menu.close()
+        self._open(self.view, self.menu)
+
+    def _open(self, button: ViewButton, menu: PopupMenu):
+        if menu.isVisible():
+            menu.close()
             return
-        self.menu.set_mode(self.view.view)
-        self.view.set_open(True)
-        self.menu.popup_at(self.view.mapToGlobal(QPoint(self.view.width(), self.view.height() + 6)))
+        menu.set_mode(button.view)
+        button.set_open(True)
+        menu.popup_at(button.mapToGlobal(QPoint(button.width(), button.height() + 6)))
 
 
 class GameList(QWidget):
@@ -661,7 +723,9 @@ class GameList(QWidget):
         cur = self.current_index()
         self.list.blockSignals(True)
         self.list.clear()
-        for i, sc in enumerate(self.win.sfile.shortcuts):
+        scs = self.win.sfile.shortcuts
+        for i in sorted_indices(self.win, self.win.library_sort):
+            sc = scs[i]
             it = QListWidgetItem(sc.name)  # text is read by screen readers; the delegate paints
             it.setData(ROLE_INDEX, i)
             it.setToolTip(sc.name)
@@ -669,6 +733,10 @@ class GameList(QWidget):
         self.select(cur if cur is not None else -1)
         self.list.blockSignals(False)
         self.update_counts()
+
+    def order(self) -> list[int]:
+        """The shortcut indexes of the rows, top to bottom."""
+        return [self.list.item(row).data(ROLE_INDEX) for row in range(self.list.count())]
 
     def refresh_spoken(self):
         n = len(self.win.sfile.shortcuts)
@@ -681,7 +749,7 @@ class GameList(QWidget):
         scs = self.win.sfile.shortcuts
         return {
             "all": len(scs),
-            "missing": sum(1 for sc in scs if not all(self.win.coverage(sc))),
+            "missing": sum(1 for sc in scs if not self.win.complete(sc)),
             "check": sum(1 for sc in scs if needs_check(self.win, sc)),
         }
 
@@ -729,18 +797,28 @@ class GameList(QWidget):
         self.filter_button.setAccessibleName(f"Show: {name}")
         self.filter_button.set_state(on=self.filter_mode != "all")
 
+    def narrowed(self) -> bool:
+        """Whether the search or the filter hides any games (the start page shows the same games)."""
+        return bool(self.search.text().strip()) or self.filter_mode != "all"
+
+    def matches(self, sc) -> bool:
+        """Whether the search and the filter let this game through."""
+        term = self.search.text().strip().casefold()
+        if term and term not in sc.name.casefold():
+            return False
+        if self.filter_mode == "missing":
+            return not self.win.complete(sc)
+        if self.filter_mode == "check":
+            return needs_check(self.win, sc)
+        return True
+
     def apply_filter(self):
         term = self.search.text().strip().casefold()
-        mode = self.filter_mode
         shown = 0
         for row in range(self.list.count()):
             it = self.list.item(row)
             sc = self.win.sfile.shortcuts[it.data(ROLE_INDEX)]
-            show = self.empty_reason is None and (not term or term in sc.name.casefold())
-            if mode == "missing":
-                show = show and not all(self.win.coverage(sc))
-            elif mode == "check":
-                show = show and needs_check(self.win, sc)
+            show = self.empty_reason is None and self.matches(sc)
             it.setHidden(not show)
             shown += show
         self._show_empty(term, shown)
@@ -811,8 +889,13 @@ class WallDelegate(QStyledItemDelegate):
         return self.COVER.height() + 8 + QFontMetrics(f).height() + 4 + QFontMetrics(m).height() + 4 + self.GAP
 
     def sizeHint(self, option, index):
-        # As wide as the wall's cell, so clicks and hover cover the whole cell the cover moves in.
+        # As wide as the wall's cell; hit_rect() keeps clicks and hover to the tile itself.
         return QSize(max(self.MIN_W, self.view.gridSize().width()), self.tile_height(option.font))
+
+    def hit_rect(self, cell: QRect) -> QRect:
+        """The cover, its name and its artwork line: the gaps around them are empty wall."""
+        return QRect(self.tile_x(cell), cell.y() + 2, self.COVER.width(),
+                     self.tile_height(self.view.font()) - self.GAP - 2)
 
     def tile_x(self, cell: QRect) -> int:
         """Where the cover sits in its cell: the spare width goes between the columns, so the first
@@ -841,7 +924,7 @@ class WallDelegate(QStyledItemDelegate):
             clip = QPainterPath()
             clip.addRoundedRect(r, 3, 3)
             p.setClipPath(clip)
-            pm = small_cover(self, sc, self.COVER)
+            pm = small_cover(self, sc, self.COVER, option.rect)
             if pm is None or pm.isNull():
                 p.fillRect(r, q("raised"))  # decoding, or not an image
             else:
@@ -950,7 +1033,102 @@ class Chip(QAbstractButton):
         p.drawText(QRectF(x, 0, 1000, self.height()), Qt.AlignmentFlag.AlignVCenter, b)
 
 
-def small_cover(delegate, sc, size: QSize) -> QPixmap | None:
+class CoverAnimator(QObject):
+    """Plays animated covers in the library, as Steam's library does.
+
+    Only covers painted lately (on screen) play: each is decoded once, at the size it's
+    drawn and within a small budget, one at a time in the background. A cover that stops
+    being painted (scrolled away, another page shown) stops, and its frames are dropped
+    once it has been out of sight for KEEP seconds, or sooner when the total passes CAP.
+    """
+
+    BUDGET = 6 * 1024 * 1024  # decoded frames for one cover
+    CAP = 64 * 1024 * 1024  # all covers' frames together
+    KEEP = 20.0
+
+    def __init__(self, win, view):
+        super().__init__(view)
+        self.win, self.view = win, view
+        self.animated: dict[tuple, bool] = {}  # (file, mtime) -> animated?
+        self.anims: dict[tuple, dict] = {}
+        self.timer = QTimer(self)
+        self.timer.timeout.connect(self._tick)
+
+    def frame(self, path, size: QSize, dpr: float, rect: QRect) -> QPixmap | None:
+        """The frame due now for an animated cover drawn in `rect`; None for a still (or not decoded yet)."""
+        if not self.win.show_animated:
+            if self.anims:
+                self.anims.clear()
+            return None
+        try:
+            fk = (str(path), path.stat().st_mtime_ns)
+        except OSError:
+            return None
+        if fk not in self.animated:
+            self.animated[fk] = file_is_animated(path)
+        if not self.animated[fk]:
+            return None
+        key = fk + (size.width(), size.height(), dpr)
+        now = time.monotonic()
+        a = self.anims.get(key)
+        if a is None:
+            a = self.anims[key] = {"frames": None, "i": 0, "due": 0.0, "bytes": 0}
+            bound = QSize(round(size.width() * dpr), round(size.height() * dpr))
+            workers.run(motion.decode_frames, str(path), bound, budget=self.BUDGET,
+                        on_done=lambda fr, key=key: self._decoded(key, fr, size, dpr),
+                        on_error=lambda _m, key=key: self.anims.pop(key, None), pool=motion.decode_pool())
+        a["seen"], a["rect"] = now, QRect(rect)
+        if self.timer.interval() != 30 or not self.timer.isActive():
+            self.timer.start(30)
+        return a["frames"][a["i"]][0] if a["frames"] else None
+
+    def _decoded(self, key, frames, size, dpr):
+        a = self.anims.get(key)
+        if a is None:  # dropped while it decoded
+            return
+        if len(frames) < 2:
+            self.anims.pop(key, None)
+            self.animated[key[:2]] = False
+            return
+        a["frames"] = [(fill_rect(QPixmap.fromImage(img), size, dpr), ms) for img, ms in frames]
+        a["bytes"] = sum(img.sizeInBytes() for img, _ in frames)
+        a["due"] = time.monotonic() + frames[0][1] / 1000
+        self.view.viewport().update(a["rect"])
+
+    def _on_screen(self, a, now) -> bool:
+        # Every frame change repaints the cover, which marks it seen again; one that isn't
+        # repainted within its frame's time and a little more is off screen.
+        ms = a["frames"][a["i"]][1] if a["frames"] else 0
+        return now - a["seen"] < ms / 1000 + 0.5
+
+    def _tick(self):
+        now = time.monotonic()
+        playing = False
+        for key, a in list(self.anims.items()):
+            if now - a["seen"] > self.KEEP:
+                del self.anims[key]
+                continue
+            if not self._on_screen(a, now):
+                continue
+            playing = True
+            if a["frames"] and now >= a["due"]:
+                a["i"] = (a["i"] + 1) % len(a["frames"])
+                a["due"] = max(a["due"] + a["frames"][a["i"]][1] / 1000, now)
+                self.view.viewport().update(a["rect"])
+        total = sum(a["bytes"] for a in self.anims.values())
+        if total > self.CAP:  # drop the covers seen longest ago until back under
+            for key, a in sorted(self.anims.items(), key=lambda kv: kv[1]["seen"]):
+                if total <= self.CAP or self._on_screen(a, now):
+                    break
+                total -= a["bytes"]
+                del self.anims[key]
+        if not self.anims:
+            self.timer.stop()
+        elif not playing:
+            self.timer.start(1000)  # nothing on screen: only check now and then for frames to drop
+
+
+def small_cover(delegate, sc, size: QSize, rect: QRect | None = None) -> QPixmap | None:
     """The game's cover (or its waiting pick) cropped to `size`; None if it has none or it's decoding."""
     win, view = delegate.win, delegate.view
     dpr = view.devicePixelRatioF()
@@ -969,7 +1147,14 @@ def small_cover(delegate, sc, size: QSize) -> QPixmap | None:
             out = delegate.picks[key] = fill_rect(pm, size, dpr)
         return out
     path = win.cover_path(sc)
-    return delegate.covers.get(path, size, view.viewport().update, dpr) if path else None
+    if path is None:
+        return None
+    anim = getattr(view, "anim", None)
+    if anim is not None and rect is not None:
+        pm = anim.frame(path, size, dpr, rect)
+        if pm is not None:
+            return pm
+    return delegate.covers.get(path, size, view.viewport().update, dpr)
 
 
 def draw_small_cover(p: QPainter, r: QRectF, pm: QPixmap | None, name: str):
@@ -1017,6 +1202,9 @@ class ListDelegate(QStyledItemDelegate):
     def sizeHint(self, option, index):
         return QSize(300, self.COVER.height() + 14)
 
+    def hit_rect(self, cell: QRect) -> QRect:
+        return cell.adjusted(0, 2, -8, -2)  # the row as painted, without the gaps between rows
+
     def paint(self, p: QPainter, option, index):
         p.save()
         p.setRenderHint(QPainter.RenderHint.Antialiasing)
@@ -1026,7 +1214,7 @@ class ListDelegate(QStyledItemDelegate):
         idx = index.data(ROLE_INDEX)
         sc = self.win.sfile.shortcuts[idx]
         cv = QRectF(r.x() + 8, r.center().y() - self.COVER.height() / 2, self.COVER.width(), self.COVER.height())
-        draw_small_cover(p, cv, small_cover(self, sc, self.COVER), sc.name)
+        draw_small_cover(p, cv, small_cover(self, sc, self.COVER, option.rect), sc.name)
         f = QFont(option.font)
         f.setPointSizeF(theme.pt("control"))
         f.setWeight(QFont.Weight.DemiBold)
@@ -1081,7 +1269,7 @@ def detail_status(win, idx: int) -> tuple[str, QColor]:
         return TAGS[tag][0], QColor(TAGS[tag][2])
     if is_ready(win, idx):
         return "Ready to apply", q("blue_ink")
-    return ("Complete", q("text2")) if all(win.coverage(sc)) else ("Missing art", q("text3"))
+    return ("Complete", q("text2")) if win.complete(sc) else ("Missing art", q("text3"))
 
 
 class DetailsDelegate(QStyledItemDelegate):
@@ -1097,6 +1285,9 @@ class DetailsDelegate(QStyledItemDelegate):
 
     def sizeHint(self, option, index):
         return QSize(300, 42)
+
+    def hit_rect(self, cell: QRect) -> QRect:
+        return cell.adjusted(0, 1, -8, -1)
 
     def helpEvent(self, event, view, option, index):
         """Narrow, the status column is gone: the tooltip says it instead."""
@@ -1119,7 +1310,7 @@ class DetailsDelegate(QStyledItemDelegate):
         idx = index.data(ROLE_INDEX)
         sc = self.win.sfile.shortcuts[idx]
         cv = QRectF(r.x() + 8, r.center().y() - self.COVER.height() / 2, self.COVER.width(), self.COVER.height())
-        draw_small_cover(p, cv, small_cover(self, sc, self.COVER), sc.name)
+        draw_small_cover(p, cv, small_cover(self, sc, self.COVER, option.rect), sc.name)
         name_end, centres, status_x, _col = detail_columns(r.width())
         f = QFont(option.font)
         f.setPointSizeF(theme.pt("control"))
@@ -1130,8 +1321,12 @@ class DetailsDelegate(QStyledItemDelegate):
         name = QFontMetrics(f).elidedText(sc.name or "(unnamed)", Qt.TextElideMode.ElideRight, int(name_end - tx - 12))
         p.drawText(QRectF(tx, r.y(), name_end - tx, r.height()), Qt.AlignmentFlag.AlignVCenter, name)
         cy = r.center().y()
-        for have, x in zip(self.win.coverage(sc), centres):
-            if have:
+        for have, x in zip(self.win.art_states(sc), centres):
+            if have == "none":  # SteamGridDB has none: nothing to get
+                p.setPen(Qt.PenStyle.NoPen)
+                p.setBrush(q("text3"))
+                p.drawEllipse(QPointF(r.x() + x, cy), 2.0, 2.0)
+            elif have:
                 icons.draw(p, "check", QRectF(r.x() + x - 8, cy - 8, 16, 16), q("ok"))
             else:
                 p.setPen(QPen(q("text3"), 1.5))
@@ -1195,9 +1390,11 @@ class CoverWall(QListWidget):
     """The library: a cover grid whose columns stretch to use the whole width, or a list or details table."""
 
     menu_requested = Signal(int, QPoint)
+    GUTTER = 14  # between the covers and the scrollbar, which sits at the page's right edge
 
     def __init__(self, delegate_cls, win):
         super().__init__()
+        self.setViewportMargins(0, 0, self.GUTTER, 0)
         self.setUniformItemSizes(True)
         self.setMouseTracking(True)
         self.setSpacing(0)
@@ -1206,6 +1403,7 @@ class CoverWall(QListWidget):
         self.delegates = {"grid": self.delegate, "list": ListDelegate(win, self), "details": DetailsDelegate(win, self)}
         self.view = ""
         self.cols = 1  # grid columns, set by fit()
+        self.anim = CoverAnimator(win, self)
         self.set_view("grid")
 
     def set_view(self, view: str):
@@ -1231,7 +1429,7 @@ class CoverWall(QListWidget):
         """Pick the column count that fits and share the spare width between the columns."""
         if self.view != "grid":
             return
-        avail = self.width() - 2 * self.frameWidth() - self.verticalScrollBar().sizeHint().width() - 1
+        avail = self.width() - 2 * self.frameWidth() - self.verticalScrollBar().sizeHint().width() - self.GUTTER - 1
         cols = max(1, avail // self.delegate.MIN_W)
         self.cols = cols
         size = QSize(max(self.delegate.MIN_W, avail // cols), self.delegate.tile_height(self.font()))
@@ -1241,6 +1439,13 @@ class CoverWall(QListWidget):
     def resizeEvent(self, e):
         self.fit()
         super().resizeEvent(e)
+
+    def indexAt(self, pos: QPoint) -> QModelIndex:
+        """Only a game's tile or row counts: clicks, hover, tooltips and menus in the gaps find nothing."""
+        index = super().indexAt(pos)
+        if index.isValid() and not self.delegates[self.view].hit_rect(self.visualRect(index)).contains(pos):
+            return QModelIndex()
+        return index
 
     def contextMenuEvent(self, e):
         if e.reason() == e.Reason.Keyboard:
@@ -1257,6 +1462,9 @@ class CoverWall(QListWidget):
         self.menu_requested.emit(it.data(ROLE_INDEX), pos)
 
 
+RIGHT = 24  # the chips' right margin: in line with the covers' right edge (scrollbar + gutter)
+
+
 class StartPage(QWidget):
     picked = Signal(int)
 
@@ -1265,11 +1473,11 @@ class StartPage(QWidget):
         self.win = win
         self.piece: int | None = None  # chip that is on: index into PIECES / ORDER
         lay = QVBoxLayout(self)
-        lay.setContentsMargins(24, 18, 16, 0)
+        lay.setContentsMargins(24, 18, 0, 0)  # the wall's scrollbar runs down the right edge
         lay.setSpacing(0)
         chips = QWidget()
         self.chip_flow = FlowLayout(chips, spacing=8)
-        self.chip_flow.setContentsMargins(0, 0, 0, 0)
+        self.chip_flow.setContentsMargins(0, 0, RIGHT, 0)
         self.chips: list[Chip] = []
         for i, name in enumerate(PIECES):
             c = Chip(name)
@@ -1280,7 +1488,7 @@ class StartPage(QWidget):
         lay.addSpacing(12)
         self.note = QWidget()
         nl = QHBoxLayout(self.note)
-        nl.setContentsMargins(0, 0, 0, 4)
+        nl.setContentsMargins(0, 0, RIGHT, 4)
         nl.setSpacing(4)
         self.note_text = QLabel()
         self.note_text.setStyleSheet(f"color: {C['text2']};")
@@ -1291,6 +1499,17 @@ class StartPage(QWidget):
         self.note.hide()
         lay.addWidget(self.note)
         lay.addSpacing(10)
+        self.empty = QWidget()  # when the sidebar's search or filter (and a chip) leave no games
+        el = QHBoxLayout(self.empty)
+        el.setContentsMargins(0, 6, RIGHT, 0)
+        el.setSpacing(4)
+        empty_text = QLabel("No games match this filter.")
+        empty_text.setStyleSheet(f"color: {C['text2']};")
+        el.addWidget(empty_text)
+        el.addWidget(quiet_button("Show all games", self._show_everything))
+        el.addStretch(1)
+        self.empty.hide()
+        lay.addWidget(self.empty)
         self.wall = CoverWall(WallDelegate, win)
         self.delegate = self.wall.delegate
         self.wall.itemClicked.connect(lambda it: self.picked.emit(it.data(ROLE_INDEX)))
@@ -1303,16 +1522,26 @@ class StartPage(QWidget):
 
     def set_view(self, view: str):
         self.wall.set_view(view)
-        self.header.setVisible(view == "details")
+        self.header.setVisible(view == "details" and self.empty.isHidden())
+
+    def _show_everything(self):
+        self.win.game_list.search.clear()
+        self.win.game_list.set_filter("all")
+        self.set_piece(None)
 
     def rebuild(self):
         self.wall.clear()
-        for i, sc in enumerate(self.win.sfile.shortcuts):
+        scs = self.win.sfile.shortcuts
+        for i in sorted_indices(self.win, self.win.library_sort):
+            sc = scs[i]
             it = QListWidgetItem(sc.name)
             it.setData(ROLE_INDEX, i)
             it.setToolTip(sc.name)
             self.wall.addItem(it)
         self.refresh()
+
+    def order(self) -> list[int]:
+        return [self.wall.item(row).data(ROLE_INDEX) for row in range(self.wall.count())]
 
     def toggle_piece(self, i: int):
         if self.chips[i].full and self.piece != i:
@@ -1342,9 +1571,11 @@ class StartPage(QWidget):
             if idx >= n:
                 continue
             set_spoken(it, spoken(win, idx))
-            show = self.piece is None or not cov[idx][self.piece]
+            show = (self.piece is None or not cov[idx][self.piece]) and win.game_list.matches(win.sfile.shortcuts[idx])
             it.setHidden(not show)
             shown += show
+        self.empty.setVisible(n > 0 and not shown)
+        self.header.setVisible(self.wall.view == "details" and shown > 0)
         if self.piece is None:
             self.note.hide()
         else:

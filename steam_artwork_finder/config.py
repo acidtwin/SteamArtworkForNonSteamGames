@@ -51,28 +51,72 @@ class Config:
         self.data.setdefault("matches", {})[str(appid)] = {"id": game_id, "name": name, "year": year}
         self.save()
 
+    def get_steam_match(self, appid: int) -> dict | None:
+        """The Steam store game picked for a shortcut's official artwork: {id, name}, id 0 for
+        "not on Steam"; None when the user hasn't picked one."""
+        m = self.data.get("steam_matches", {}).get(str(appid))
+        return m if isinstance(m, dict) else None
+
+    def set_steam_match(self, appid: int, store_appid: int, name: str = ""):
+        self.data.setdefault("steam_matches", {})[str(appid)] = {"id": store_appid, "name": name}
+        self.save()
+
     def pending_icons(self, shortcuts_path) -> dict:
         """appid -> icon path (or "" to clear) waiting until Steam closes, for
         the account whose shortcuts.vdf is `shortcuts_path`."""
-        queues = self.data.get("pending_icons")
+        return self._queue("pending_icons", shortcuts_path)
+
+    def set_pending_icon(self, shortcuts_path, appid: int, path: str | None):
+        self._set_queued("pending_icons", shortcuts_path, appid, path)
+
+    def pending_names(self, shortcuts_path) -> dict:
+        """appid -> new title waiting until Steam closes, like `pending_icons`."""
+        return self._queue("pending_names", shortcuts_path)
+
+    def set_pending_name(self, shortcuts_path, appid: int, name: str | None):
+        self._set_queued("pending_names", shortcuts_path, appid, name)
+
+    def _queue(self, what: str, shortcuts_path) -> dict:
+        queues = self.data.get(what)
         if not isinstance(queues, dict):
             return {}
         queue = queues.get(str(shortcuts_path))
         return dict(queue) if isinstance(queue, dict) else {}
 
-    def set_pending_icon(self, shortcuts_path, appid: int, path: str | None):
-        queues = self.data.get("pending_icons")
+    def _set_queued(self, what: str, shortcuts_path, appid: int, value: str | None):
+        queues = self.data.get(what)
         if not isinstance(queues, dict):
-            queues = self.data["pending_icons"] = {}
+            queues = self.data[what] = {}
         for k in [k for k, v in queues.items() if not isinstance(v, dict)]:
             del queues[k]  # the old format, not tied to an account
         queue = queues.setdefault(str(shortcuts_path), {})
-        if path is None:
+        if value is None:
             queue.pop(str(appid), None)
             if not queue:
                 del queues[str(shortcuts_path)]
         else:
-            queue[str(appid)] = path
+            queue[str(appid)] = value
+        self.save()
+
+    NO_ART_DAYS = 7  # how long "SteamGridDB has none" is believed before Get Artwork looks again
+
+    def no_art(self, appid: int) -> set[str]:
+        """The pieces SteamGridDB had no options for when last asked, within NO_ART_DAYS."""
+        import time
+
+        seen = self.data.get("no_art", {}).get(str(appid), {})
+        return {k for k, t in seen.items() if time.time() - t < self.NO_ART_DAYS * 86400}
+
+    def set_no_art(self, appid: int, slot: str, none: bool):
+        import time
+
+        per_game = self.data.setdefault("no_art", {}).setdefault(str(appid), {})
+        if none:
+            per_game[slot] = time.time()
+        elif per_game.pop(slot, None) is None:
+            return
+        if not per_game:
+            self.data["no_art"].pop(str(appid), None)
         self.save()
 
     def get_applied(self, appid: int, slot: str) -> dict | None:

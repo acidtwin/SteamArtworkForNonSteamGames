@@ -44,6 +44,16 @@ class Shortcut:
         self.entry.set_string(key or "icon", path)
         self.icon = path
 
+    def set_name(self, name: str):
+        """Retitle the shortcut. One with no stored appid gets its current id written in first:
+        Steam would otherwise work a new one out from the new name, losing its artwork."""
+        stored, idkey = _get(self.entry, "appid", default=None)
+        if not stored:
+            self.entry.set_int32(idkey or "appid", binvdf._to_int32(self.appid))
+        _, key = _get(self.entry, "AppName", "appname")
+        self.entry.set_string(key or "AppName", name)
+        self.name = name
+
 
 class ShortcutsChanged(Exception):
     """The file on disk changed since it was loaded (Steam rewrote it)."""

@@ -8,7 +8,7 @@ from PySide6.QtCore import QBuffer, QByteArray, QIODevice, QPoint, QPointF, QRec
 from PySide6.QtGui import QColor, QFont, QImage, QImageReader, QPainter, QPainterPath, QPen, QPixmap
 from PySide6.QtWidgets import QFrame, QHBoxLayout, QLabel, QLayout, QPushButton, QSizePolicy, QWidget
 
-from . import icons, theme, workers
+from . import icons, motion, theme, workers
 from .theme import C, q
 
 _cache: dict[tuple, QPixmap] = {}
@@ -60,8 +60,9 @@ def load_pixmap(path: Path | None = None, data: bytes | None = None, key=None) -
     return pm
 
 
-def decode_scaled(path: str, w: int, h: int) -> QImage:
-    """Worker: decode an image file straight to a `w`×`h` cover-cropped QImage.
+def decode_scaled(path: str, w: int, h: int, contain: bool = False) -> QImage:
+    """Worker: decode an image file straight to a `w`×`h` cover-cropped QImage
+    (or, with `contain`, the whole picture centred on a clear `w`×`h`).
 
     Never holds the full-size image longer than the decode itself, so a
     300-game wall costs a few megabytes instead of hundreds.
@@ -71,11 +72,22 @@ def decode_scaled(path: str, w: int, h: int) -> QImage:
     _largest_frame(reader)
     size = reader.size()
     if size.isValid() and w > 0 and h > 0:
-        scale = max(w / size.width(), h / size.height())
-        reader.setScaledSize(QSize(max(w, round(size.width() * scale)), max(h, round(size.height() * scale))))
+        if contain:
+            scale = min(w / size.width(), h / size.height())
+            reader.setScaledSize(QSize(max(1, round(size.width() * scale)), max(1, round(size.height() * scale))))
+        else:
+            scale = max(w / size.width(), h / size.height())
+            reader.setScaledSize(QSize(max(w, round(size.width() * scale)), max(h, round(size.height() * scale))))
     img = reader.read()
     if img.isNull():
         return img
+    if contain:
+        out = QImage(w, h, QImage.Format.Format_ARGB32_Premultiplied)
+        out.fill(Qt.GlobalColor.transparent)
+        painter = QPainter(out)
+        painter.drawImage((w - img.width()) // 2, (h - img.height()) // 2, img)
+        painter.end()
+        return out
     x = (img.width() - w) // 2
     y = (img.height() - h) // 2
     return img.copy(x, y, w, h)
@@ -93,11 +105,13 @@ class ScaledCache:
         self.pending: set[tuple] = set()
         self.limit = limit
 
-    def get(self, path: Path, size: QSize, on_ready=None, dpr: float = 1.0) -> QPixmap | None:
-        """`dpr` is the screen's scale, so the decode has enough pixels to stay sharp."""
+    def get(self, path: Path, size: QSize, on_ready=None, dpr: float = 1.0,
+            contain: bool = False) -> QPixmap | None:
+        """`dpr` is the screen's scale, so the decode has enough pixels to stay sharp;
+        `contain` fits the whole picture in, rather than cropping it to fill."""
         w, h = round(size.width() * dpr), round(size.height() * dpr)
         try:
-            key = (str(path), path.stat().st_mtime_ns, w, h)
+            key = (str(path), path.stat().st_mtime_ns, w, h, contain)
         except OSError:
             return QPixmap()
         pm = self.ready.get(key)
@@ -117,7 +131,7 @@ class ScaledCache:
             if on_ready:
                 on_ready()
 
-        workers.run(decode_scaled, key[0], w, h, on_done=done,
+        workers.run(decode_scaled, key[0], w, h, contain, on_done=done,
                     on_error=lambda _m, key=key: done(QImage(), key))
         return None
 
@@ -127,15 +141,20 @@ class ScaledCache:
             del self.ready[k]
 
 
-def fill_rect(pm: QPixmap, target: QSize, dpr: float = 1.0) -> QPixmap:
+def fill_rect(pm: QPixmap, target: QSize, dpr: float = 1.0, top: bool = False) -> QPixmap:
     """Scale to cover target, cropping the overflow (like CSS object-fit: cover).
 
-    With `dpr` above 1 the result has that many more pixels, for sharp HiDPI drawing."""
+    With `dpr` above 1 the result has that many more pixels, for sharp HiDPI drawing.
+    `top` keeps the top of the image and crops only the bottom, as Steam does with a banner."""
     target = QSize(round(target.width() * dpr), round(target.height() * dpr))
+    if pm.size() == target:  # made to measure (an animation's frame): drawn as it is
+        out = QPixmap(pm)
+        out.setDevicePixelRatio(dpr)
+        return out
     s = pm.scaled(target, Qt.AspectRatioMode.KeepAspectRatioByExpanding,
                   Qt.TransformationMode.SmoothTransformation)
     x = (s.width() - target.width()) // 2
-    y = (s.height() - target.height()) // 2
+    y = 0 if top else (s.height() - target.height()) // 2
     out = s.copy(x, y, target.width(), target.height())
     out.setDevicePixelRatio(dpr)
     return out
@@ -201,11 +220,42 @@ def draw_badge(p: QPainter, rect: QRectF, text: str = "IN USE"):
     p.restore()
 
 
-def draw_dots(p: QPainter, x: float, y: float, states: list[bool], d: float = 7, gap: float = 4):
+def draw_animated_tag(p: QPainter, rect: QRectF):
+    """A small dark pill in the bottom-right corner marking an animated option: a play
+    triangle, with the word when there's room."""
+    p.save()
+    f = QFont(p.font())
+    f.setPointSizeF(theme.pt("tag"))
+    f.setWeight(QFont.Weight.Bold)
+    p.setFont(f)
+    fm = p.fontMetrics()
+    h = fm.height() + 4
+    text = "ANIMATED" if rect.width() >= 120 else ""
+    w = h + (fm.horizontalAdvance(text) + 6 if text else 0)
+    r = QRectF(rect.right() - w - 4, rect.bottom() - h - 4, w, h)
+    p.setRenderHint(QPainter.RenderHint.Antialiasing)
+    p.setPen(Qt.PenStyle.NoPen)
+    p.setBrush(QColor(11, 16, 22, 200))
+    p.drawRoundedRect(r, h / 2, h / 2)
+    icons.draw(p, "play", QRectF(r.left() + 3, r.top() + 2, h - 4, h - 4), QColor("white"))
+    if text:
+        p.setPen(QColor("white"))
+        p.drawText(r.adjusted(h - 2, 0, -6, 0), Qt.AlignmentFlag.AlignCenter, text)
+    p.restore()
+
+
+def draw_dots(p: QPainter, x: float, y: float, states: list, d: float = 7, gap: float = 4):
+    """One dot per piece: filled (has it), ring (missing), or a small grey dot ("none":
+    SteamGridDB has nothing for it, so there's nothing to get)."""
     p.save()
     p.setRenderHint(QPainter.RenderHint.Antialiasing)
     for i, on in enumerate(states):
         r = QRectF(x + i * (d + gap), y, d, d)
+        if on == "none":
+            p.setPen(Qt.PenStyle.NoPen)
+            p.setBrush(q("text3"))
+            p.drawEllipse(r.adjusted(d * 0.3, d * 0.3, -d * 0.3, -d * 0.3))
+            continue
         if on:
             p.setPen(Qt.PenStyle.NoPen)
             p.setBrush(q("blue_ink"))
@@ -215,6 +265,9 @@ def draw_dots(p: QPainter, x: float, y: float, states: list[bool], d: float = 7,
         p.drawEllipse(r.adjusted(0.6, 0.6, -0.6, -0.6))
     p.restore()
     return x + len(states) * (d + gap)
+
+
+FRAME_CACHE = 64 * 1024 * 1024  # bytes of scaled animation frames one ArtView keeps
 
 
 class ArtView(QWidget):
@@ -232,8 +285,13 @@ class ArtView(QWidget):
         self.checker = checker
         self.badge = False
         self.selected = False
+        self.animated = False  # marks an animated option with a small tag
         self.round = 3
         self._scaled: tuple | None = None  # (key, backdrop, art) as drawn at this size
+        self._frames: dict = {}  # scaled frames of a looping animation, so each loop only draws
+        self._frames_bytes = 0
+        self._motion = None
+        self.motion_spec: tuple = (None, None)  # (key, factory) of what's playing, for previews
         self.setCursor(Qt.CursorShape.PointingHandCursor)
         self.setFocusPolicy(Qt.FocusPolicy.StrongFocus)
         self.setAttribute(Qt.WidgetAttribute.WA_Hover)
@@ -250,14 +308,57 @@ class ArtView(QWidget):
         self._scaled = None
         self.update()
 
+    def set_motion(self, key=None, factory=None):
+        """Play an animation here: `factory()` makes the Motion, `key` says what it is, so asking
+        again for the same thing carries on rather than restarting. No key stops it."""
+        if key is not None and key == self.motion_spec[0]:
+            return
+        if self._motion is not None:
+            self._motion.stop()
+            self._motion.deleteLater()
+            self._motion = None
+        self._frames = {}
+        self._frames_bytes = 0
+        self.motion_spec = (key, factory)
+        if key is None or factory is None:
+            return
+        self._motion = factory()
+        self._motion.frame.connect(self._frame)
+        if self.isVisible():
+            self._motion.start()
+
+    def _frame(self, pm: QPixmap):
+        first = self.pixmap.isNull()
+        self.pixmap = pm
+        self.update()
+        if first:
+            self.frame_arrived()
+
+    def frame_arrived(self):
+        """The first picture of an animation has arrived (for subclasses)."""
+
+    def showEvent(self, e):
+        if self._motion is not None:
+            self._motion.start()
+        super().showEvent(e)
+
+    def hideEvent(self, e):
+        if self._motion is not None:
+            self._motion.stop()  # nothing plays where it can't be seen
+        super().hideEvent(e)
+
     def resizeEvent(self, e):
         self._scaled = None
+        self._frames = {}
+        self._frames_bytes = 0
         super().resizeEvent(e)
 
     def _render(self) -> tuple[QPixmap | None, QPixmap | None]:
         """The backdrop and the art scaled for this size, made once rather than on every repaint."""
         dpr = self.devicePixelRatioF()
         key = (self.pixmap.cacheKey(), self.backdrop.cacheKey(), self.checker, dpr)
+        if (self._scaled is None or self._scaled[0] != key) and key in self._frames:
+            self._scaled = self._frames[key]
         if self._scaled is None or self._scaled[0] != key:
             bd = fill_rect(self.backdrop, self.size(), dpr) if not self.backdrop.isNull() else None
             art = None
@@ -271,6 +372,9 @@ class ArtView(QWidget):
                 else:
                     art = fill_rect(self.pixmap, self.size(), dpr)
             self._scaled = (key, bd, art)
+            if isinstance(self._motion, motion.FrameMotion) and self._frames_bytes < FRAME_CACHE:
+                self._frames[key] = self._scaled  # the same frames come round again
+                self._frames_bytes += sum(pm.width() * pm.height() * 4 for pm in (bd, art) if pm is not None)
         return self._scaled[1], self._scaled[2]
 
     def paintEvent(self, _):
@@ -310,6 +414,8 @@ class ArtView(QWidget):
         p.setClipping(False)
         if self.badge:
             draw_badge(p, r)
+        if self.animated:
+            draw_animated_tag(p, r)
         # Picked: a blue outline and a ticked corner. Keyboard focus: a white ring inside it, so the
         # option you're on never looks like a second pick.
         if self.selected or self.underMouse():
