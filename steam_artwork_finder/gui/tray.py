@@ -49,7 +49,7 @@ COLUMNS = {"grid": 4, "wide": 3, "hero": 2, "logo": 3, "icon": 6}
 SHAPE = {"grid": 900 / 600, "wide": 430 / 920, "hero": 620 / 1920, "logo": 70 / 150, "icon": 1.0}  # height / width
 CELL_PAD = 8 + 4 * 2  # around each option: the delegate's margin and the list's spacing
 GRID_W = 4 * (108 + CELL_PAD)  # four 108 px covers
-ANIM_BUDGET = 16 * 1024 * 1024  # bytes of frames one playing option may keep (a dozen can play at once)
+ANIM_BUDGET = 12 * 1024 * 1024  # bytes of frames one playing option may keep (up to MAX play at once)
 
 
 def thumb_size(slot_key: str) -> QSize:
@@ -180,7 +180,7 @@ class _Playing(QObject):
     option plays SteamGridDB's small preview. Scrolled away, filtered out, or the panel
     closed, and it stops and lets go of its frames."""
 
-    MAX = 12  # at most this many play at once (a full view of covers is twelve)
+    MAX = 20  # at most this many play at once: a full view of covers is four rows of four
 
     def __init__(self, tray):
         super().__init__(tray)
