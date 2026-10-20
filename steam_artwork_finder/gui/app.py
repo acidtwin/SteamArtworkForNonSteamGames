@@ -44,7 +44,7 @@ from . import icons, localfile, motion, theme, workers
 from .chrome import ContentBar, Header, StatusBar, SteamPopover
 from .steamfolder import SteamFolderPopover
 from .dialogs import (
-    AboutDialog, ConfirmDialog, KeyPopover, MatchDialog, QuitDialog, RestoreDialog, SteamMatchDialog,
+    AboutDialog, ConfirmDialog, KeyPopover, MatchDialog, QuitDialog, RestoreDialog,
 )
 from .gamepage import GamePage
 from .library import GameList, StartPage
@@ -515,31 +515,24 @@ class MainWindow(QMainWindow):
         if self.tray.isVisible():
             self.tray.open_slot(self.tray.slot)
 
-    def change_steam_match(self):
-        sc = self.current_shortcut()
-        if not sc or self.busy == "apply":
-            return
+    def _steam_now(self, sc: Shortcut):
+        """For the game picker: the Steam store game in use, MatchDialog.NOT_ON_STEAM, or None if unknown."""
         found = self.steam_found.get(sc.appid)
-        if found is None:  # the store couldn't be reached: try again
-            self.load_steam()
-            return
-        dlg = SteamMatchDialog(self, self.steam, sc.name, found[0].name if found[0] else "")
-        try:
-            answer = dlg.answer if dlg.exec() else None
-        finally:
-            dlg.deleteLater()
-        if answer is None:
-            return
-        if answer is SteamMatchDialog.NONE:
+        if found is not None and found[0] is not None:
+            return found[0]
+        saved = self.config.get_steam_match(sc.appid)
+        return MatchDialog.NOT_ON_STEAM if saved is not None and not saved.get("id") else None
+
+    def _set_steam_game(self, sc: Shortcut, choice):
+        """Use Steam store game `choice` (or MatchDialog.NOT_ON_STEAM) for a shortcut's official art."""
+        if choice is MatchDialog.NOT_ON_STEAM:
             self.config.set_steam_match(sc.appid, 0)
         else:
-            self.config.set_steam_match(sc.appid, answer.appid, answer.name)
+            self.config.set_steam_match(sc.appid, choice.appid, choice.name)
         for key, pick in self.pending.for_game(sc.appid).items():
             if isinstance(pick.asset, SteamAsset):  # the other game's art no longer fits
                 self.pending.drop(sc.appid, key)
         self.steam_found.pop(sc.appid, None)
-        self.load_steam()
-        self.refresh_all()
 
     def fetch_assets(self, game_id: int, slot_key: str, page: int, callback):
         animated = self.show_animated
@@ -1478,13 +1471,22 @@ class MainWindow(QMainWindow):
 
     def change_match(self):
         sc = self.current_shortcut()
-        if not sc or self.busy == "apply" or not self.ensure_key():
+        if not sc or self.busy == "apply" or (not self.steam_art and not self.ensure_key()):
             return
-        dlg = MatchDialog(self, self.sgdb, sc.name, sc.exe)
+        dlg = MatchDialog(self, self.sgdb, sc.name, sc.exe, self.steam if self.steam_art else None,
+                          self._steam_now(sc))
         try:
-            g = dlg.selected() if dlg.exec() else None
+            ok = dlg.exec()
+            g = dlg.selected() if ok and self.config.api_key else None
+            steam = dlg.steam_choice() if ok else None
         finally:
             dlg.deleteLater()
+        if steam is not None:
+            self._set_steam_game(sc, steam)
+            self.load_steam()
+            self.refresh_all()
+        elif ok and self.steam_art and sc.appid not in self.steam_found:
+            self.load_steam()  # the store couldn't be reached before: try again
         if g is not None:
             old = self.match_info(sc)
             self.config.set_match(sc.appid, g.id, g.name, g.year)

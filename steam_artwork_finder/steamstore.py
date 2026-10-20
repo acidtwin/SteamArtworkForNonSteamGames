@@ -60,7 +60,7 @@ class SteamAsset(Asset):
         return False
 
 
-def _norm(name: str) -> str:
+def norm_name(name: str) -> str:
     """Names compared loosely: case, symbols and spacing don't count."""
     return re.sub(r"[^0-9a-z]+", "", name.casefold())
 
@@ -136,11 +136,11 @@ class SteamStore:
         """The store game with the same name, or None. A near name isn't taken: a wrong game's
         official art looks right and isn't, so anything less than a match waits for the user."""
         for term in name_variants(name):
-            want = _norm(term)
+            want = norm_name(term)
             if not want:
                 continue
             for g in self.search(term):
-                if _norm(g.name) == want:
+                if norm_name(g.name) == want:
                     return g
         return None
 

@@ -869,7 +869,6 @@ class MatchCard(QWidget):
 
     confirm = Signal()
     change = Signal()
-    steam = Signal()  # change which Steam store game the official artwork comes from
     add_key = Signal()
     home = Signal()
     get_all = Signal()
@@ -923,10 +922,9 @@ class MatchCard(QWidget):
         self.meta.setContentsMargins(0, 4, 0, 5)  # where the old one-line row with a button put it
         self.meta.setTextInteractionFlags(Qt.TextInteractionFlag.LinksAccessibleByMouse
                                           | Qt.TextInteractionFlag.LinksAccessibleByKeyboard)
-        self.meta.linkActivated.connect(
-            lambda href: {"confirm": self.confirm, "steam": self.steam}.get(href, self.change).emit())
-        self._sgdb_html = ""
-        self._steam_html = ""
+        self.meta.linkActivated.connect(lambda href: (self.confirm if href == "confirm" else self.change).emit())
+        self._match = ("", "", 0)
+        self._steam = ("off", "")
         info.addWidget(self.meta)
         row.addLayout(info, 1)
 
@@ -1017,47 +1015,55 @@ class MatchCard(QWidget):
     def set_state(self, state: str, name: str, year: str = "", candidates: int = 0):
         """state: "exact", "check", "notfound", "finding" or "key" (no API key yet)."""
         self.state = state
-        yr = f"&nbsp;<span style='color:{C['text2']}'>{escape(str(year))}</span>" if year else ""
-        game = f"<b style='color:white'>{escape(name)}</b>{yr}"
-        text, colour = {
-            "exact": (f"Artwork from {game} on SteamGridDB&nbsp;·", C["text2"]),
-            "check": ((f"We picked {game} from {candidates} similar names. Is it right?" if candidates > 1
-                       else f"We picked {game}, the closest name we found. Is it right?") + "&nbsp;·", WAIT),
-            "notfound": ("Not found on SteamGridDB&nbsp;·", C["bad"]),
-            "finding": ("Finding this game on SteamGridDB…", C["text2"]),
-            "key": ("Add a free SteamGridDB API key to find this game's artwork.", C["text2"]),
-        }[state]
-        link = ""
-        if state not in ("finding", "key"):
-            words = ("Search by Another Name" if state == "notfound" else "Change Game").replace(" ", "&nbsp;")
-            a = f"<a style='color:{C['blue_ink']}; text-decoration:none; font-weight:600'"
-            if state == "check":  # a quiet link, so Apply or Get All Artwork stays the one filled button
-                link = f"&nbsp;&nbsp;{a} href='confirm'>Yes,&nbsp;That's&nbsp;It</a>&nbsp;&nbsp;·"
-            link += f"&nbsp;&nbsp;{a} href='change'>{words}</a>"
-        self._sgdb_html = f"<span style='color:{colour}'>{text}</span>{link}"
-        self.meta.setText(self._sgdb_html + self._steam_html)
-        self.key_btn.setVisible(state == "key")
-        plain = {"exact": f"Artwork from {name} on SteamGridDB", "check": f"Check this match: {name}",
-                 "notfound": "Not found on SteamGridDB", "finding": "Finding this game on SteamGridDB",
-                 "key": "SteamGridDB API key needed"}[state]
-        self.setAccessibleName(plain)
+        self._match = (name, year, candidates)
+        self._render_meta()
         self._style_get()
         self._fit()
         self.update()
 
     def set_steam(self, state: str, name: str = ""):
-        """The line about Steam's official artwork. state: "found", "none", "finding", "error" or "off"."""
-        a = f"<a style='color:{C['blue_ink']}; text-decoration:none; font-weight:600' href='steam'>"
-        text = {
-            "found": f"Official art from <b style='color:white'>{escape(name)}</b> on Steam&nbsp;·&nbsp;&nbsp;"
-                     f"{a}Change</a>",
-            "none": f"Not matched on the Steam store&nbsp;·&nbsp;&nbsp;{a}Search&nbsp;Steam</a>",
-            "finding": "Looking on the Steam store…",
-            "error": f"Couldn't reach the Steam store&nbsp;·&nbsp;&nbsp;{a}Try&nbsp;Again</a>",
-            "off": "",
+        """Steam's official artwork: state "found" (from the store game `name`), "none", "finding",
+        "error" or "off". It shares the match line, so one Change Game covers both."""
+        self._steam = (state, name)
+        self._render_meta()
+
+    def _render_meta(self):
+        from ..steamstore import norm_name
+
+        state = self.state
+        name, year, candidates = self._match
+        steam = self._steam[1] if self._steam[0] == "found" else ""
+        yr = f"&nbsp;<span style='color:{C['text2']}'>{escape(str(year))}</span>" if year else ""
+        game = f"<b style='color:white'>{escape(name)}</b>{yr}"
+        on_steam = f"<b style='color:white'>{escape(steam)}</b> on Steam"
+        same = steam and norm_name(steam) == norm_name(name)
+        exact = f"Artwork from {game} on SteamGridDB"
+        if steam:
+            exact += " and Steam" if same else f" and {on_steam}"
+        text, colour = {
+            "exact": (exact + "&nbsp;·", C["text2"]),
+            "check": ((f"We picked {game} from {candidates} similar names. Is it right?" if candidates > 1
+                       else f"We picked {game}, the closest name we found. Is it right?") + "&nbsp;·", WAIT),
+            "notfound": ((f"Official art from {on_steam}, not found on SteamGridDB&nbsp;·" if steam
+                          else "Not found on SteamGridDB&nbsp;·"), C["text2"] if steam else C["bad"]),
+            "finding": ("Finding this game on SteamGridDB…", C["text2"]),
+            "key": ((f"Official art from {on_steam}. Add a free SteamGridDB API key for more&nbsp;·" if steam
+                     else "Add a free SteamGridDB API key to find this game's artwork."), C["text2"]),
         }[state]
-        self._steam_html = f"<br><span style='color:{C['text2']}'>{text}</span>" if text else ""
-        self.meta.setText(self._sgdb_html + self._steam_html)
+        link = ""
+        if state not in ("finding", "key") or steam:
+            words = ("Search by Another Name" if state == "notfound" and not steam else "Change Game").replace(" ", "&nbsp;")
+            a = f"<a style='color:{C['blue_ink']}; text-decoration:none; font-weight:600'"
+            if state == "check":  # a quiet link, so Apply or Get All Artwork stays the one filled button
+                link = f"&nbsp;&nbsp;{a} href='confirm'>Yes,&nbsp;That's&nbsp;It</a>&nbsp;&nbsp;·"
+            link += f"&nbsp;&nbsp;{a} href='change'>{words}</a>"
+        self.meta.setText(f"<span style='color:{colour}'>{text}</span>{link}")
+        self.key_btn.setVisible(state == "key")
+        plain = {"exact": f"Artwork from {name} on SteamGridDB" + (" and Steam" if steam else ""),
+                 "check": f"Check this match: {name}",
+                 "notfound": "Not found on SteamGridDB", "finding": "Finding this game on SteamGridDB",
+                 "key": "SteamGridDB API key needed"}[state]
+        self.setAccessibleName(plain)
 
     def resizeEvent(self, e):
         self._scaled = None
@@ -1145,7 +1151,6 @@ class GamePage(QWidget):
         self.card = MatchCard()
         self.card.confirm.connect(self.confirm_match.emit)
         self.card.change.connect(self.change_match.emit)
-        self.card.steam.connect(win.change_steam_match)
         self.card.add_key.connect(win.ask_api_key)
         self.card.home.connect(win.go_home)
         self.card.get_all.connect(win.fill_current)

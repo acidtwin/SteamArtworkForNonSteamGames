@@ -873,7 +873,8 @@ def test_steam_official_artwork_comes_first_and_fills_without_a_key(qapp, window
     row = win.page.rows["grid"]
     assert row.assets[0] is official["grid"] and row.thumbs[0].official
     assert "Official" in row.count.text()
-    assert "Celeste" in win.page.card.meta.text() and "Steam" in win.page.card.meta.text()
+    meta = win.page.card.meta.text()
+    assert "Celeste" in meta and "Steam" in meta and meta.count("href") == 1  # one line, one Change Game
     assert win.steam_option("hero") is official["hero"]
 
     # No SteamGridDB key: Get All Artwork still fills from Steam, all but the (tiny) icon.
@@ -897,8 +898,10 @@ def test_steam_official_artwork_comes_first_and_fills_without_a_key(qapp, window
     win._set_steam_art(True)
 
 
-def test_steam_match_can_be_changed_or_turned_off(qapp, window, monkeypatch):
+def test_steam_game_is_changed_in_the_game_picker(qapp, window, monkeypatch):
     from steam_artwork_finder.gui import app as appmod
+    from steam_artwork_finder.gui.dialogs import MatchDialog
+    from steam_artwork_finder.sgdb import Game
     from steam_artwork_finder.steamstore import StoreGame
 
     win = window
@@ -907,12 +910,24 @@ def test_steam_match_can_be_changed_or_turned_off(qapp, window, monkeypatch):
     win.steam.assets = lambda appid: looked.append(appid) or {}
     win.open_game(0)
     _pump(qapp, 1000, until=lambda: win.current_shortcut().appid in win.steam_found)
-    assert "Not matched on the Steam store" in win.page.card.meta.text()
     sc = win.current_shortcut()
 
+    # The picker: the Steam game follows the SteamGridDB pick by name until one is chosen.
+    win.sgdb.search = lambda term: [Game(9, "Celeste", "2018")]
+    win.sgdb.assets = lambda *a, **k: []
+    win.steam.search = lambda term: [StoreGame(7, "Celeste Classic"), StoreGame(504230, "Celeste™")]
+    dlg = MatchDialog(win, win.sgdb, sc.name, sc.exe, win.steam, win._steam_now(sc))
+    _pump(qapp, 1000, until=lambda: dlg.steam_box.count() == 3)
+    assert dlg.steam_box.currentData().appid == 504230
+    assert dlg.steam_choice().appid == 504230
+    dlg.steam_box.setCurrentIndex(dlg.steam_box.count() - 1)
+    assert dlg.steam_choice() is None  # back where it started: no store game, nothing to change
+    dlg.done(0)
+    dlg.deleteLater()
+
     class Dlg:
-        NONE = appmod.SteamMatchDialog.NONE
-        answer = StoreGame(42, "Celeste Classic")
+        NOT_ON_STEAM = MatchDialog.NOT_ON_STEAM
+        steam = StoreGame(42, "Celeste Classic")
 
         def __init__(self, *a):
             pass
@@ -920,15 +935,22 @@ def test_steam_match_can_be_changed_or_turned_off(qapp, window, monkeypatch):
         def exec(self):
             return 1
 
+        def selected(self):
+            return None
+
+        def steam_choice(self):
+            return Dlg.steam
+
         def deleteLater(self):
             pass
 
-    monkeypatch.setattr(appmod, "SteamMatchDialog", Dlg)
-    win.change_steam_match()
+    monkeypatch.setattr(appmod, "MatchDialog", Dlg)
+    win.change_match()  # no SteamGridDB key: the picker still opens, for the Steam game
     _pump(qapp, 1000, until=lambda: sc.appid in win.steam_found)
     assert win.config.get_steam_match(sc.appid) == {"id": 42, "name": "Celeste Classic"}
     assert looked == [42]
-    Dlg.answer = Dlg.NONE
-    win.change_steam_match()
+    assert "Celeste Classic" in win.page.card.meta.text() and "Change" in win.page.card.meta.text()
+    Dlg.steam = Dlg.NOT_ON_STEAM
+    win.change_match()
     _pump(qapp, 500)
     assert win.config.get_steam_match(sc.appid)["id"] == 0 and looked == [42]
