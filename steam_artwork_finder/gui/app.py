@@ -1504,8 +1504,7 @@ class MainWindow(QMainWindow):
 
     def _fetch_missing(self, jobs, progress, use_sgdb: bool = True, notfound: frozenset = frozenset()):
         """Worker: for each (shortcut, slots, saved match, single, Steam lookup), match and download
-        the top pick: Steam's official piece where there is one (not icons: Steam's are tiny),
-        else SteamGridDB's top option."""
+        the top pick: Steam's official piece where there is one, else SteamGridDB's top option."""
         report = {"found": 0, "notfound": [], "gaps": 0, "errors": [], "unsure": 0, "stopped": False}
         for i, (sc, slots, saved, single, steam) in enumerate(jobs):
             if self._stop_fill:  # Stop in the status bar: finish the game in hand, then stop
@@ -1544,7 +1543,7 @@ class MainWindow(QMainWindow):
                         game = None
             got = False
             for slot in slots:
-                a = official.get(slot.key) if slot.key != "icon" else None
+                a = official.get(slot.key)
                 if a is not None:
                     try:
                         progress(("asset", sc, slot, self.sgdb.download(a.url), a))

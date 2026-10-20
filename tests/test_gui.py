@@ -865,7 +865,7 @@ def test_steam_official_artwork_comes_first_and_fills_without_a_key(qapp, window
     win.sgdb.download = lambda url: PNG
     official = {k: SteamAsset(-(504230 * 10 + i), f"https://cdn/{k}.jpg", f"https://cdn/{k}_s.jpg", 600, 900,
                               "image/jpeg", 0, "official", "Steam", appid=504230)
-                for i, k in enumerate(("grid", "wide", "hero", "logo", "icon"), 1)}
+                for i, k in enumerate(("grid", "wide", "hero", "logo"), 1)}  # the store's icons are never offered
     win.steam.match = lambda name: StoreGame(504230, "Celeste") if name == "Celeste" else None
     win.steam.assets = lambda appid: dict(official)
     win.open_game(0)
@@ -877,7 +877,7 @@ def test_steam_official_artwork_comes_first_and_fills_without_a_key(qapp, window
     assert "Celeste" in meta and "Steam" in meta and meta.count("href") == 1  # one line, one Change Game
     assert win.steam_option("hero") is official["hero"]
 
-    # No SteamGridDB key: Get All Artwork still fills from Steam, all but the (tiny) icon.
+    # No SteamGridDB key: Get All Artwork still fills from Steam.
     sc = win.current_shortcut()
     win.fill_current()
     _pump(qapp, 3000, until=lambda: not win.busy)

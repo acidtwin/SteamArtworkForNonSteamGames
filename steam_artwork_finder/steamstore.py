@@ -23,7 +23,6 @@ from .sgdb import Asset, name_variants
 SEARCH = "https://store.steampowered.com/api/storesearch/"
 ITEMS = "https://api.steampowered.com/IStoreBrowseService/GetItems/v1/"
 CDN = "https://shared.akamai.steamstatic.com/store_item_assets/"
-ICONS = "https://cdn.akamai.steamstatic.com/steamcommunity/public/images/apps/"
 AGENT = (f"steam-artwork-finder/{__version__} "
          "(+https://github.com/acidtwin/steam-artwork-for-non-steam-games)")
 GAP = 1.0  # seconds between calls to the store, so a long Get Artwork stays gentle
@@ -154,7 +153,8 @@ class SteamStore:
         return items[0] if items else {}
 
     def assets(self, appid: int) -> dict[str, SteamAsset]:
-        """slot key -> the game's official piece, for the pieces it has."""
+        """slot key -> the game's official piece, for the pieces it has. Never the icon: the store's
+        is only 32 × 32, blurry wherever Steam shows it, so SteamGridDB's or the game's own wins."""
         if appid in self._assets:
             return dict(self._assets[appid])
         try:
@@ -184,10 +184,5 @@ class SteamStore:
                 thumb = url_for(listed[small]) if listed.get(small) else url_for(FALLBACK_SMALL[small])
             out[key] = SteamAsset(id=-(appid * 10 + i + 1), url=url, thumb=thumb, width=w, height=h,
                                   mime=_mime(url), score=0, style="official", author="Steam", appid=appid)
-        icon = listed.get("community_icon")
-        if icon:
-            url = f"{ICONS}{appid}/{icon}.jpg"
-            out["icon"] = SteamAsset(id=-(appid * 10 + 5), url=url, thumb=url, width=32, height=32,
-                                     mime="image/jpeg", score=0, style="official", author="Steam", appid=appid)
         self._assets[appid] = out
         return dict(out)

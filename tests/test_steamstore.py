@@ -55,13 +55,13 @@ def test_assets_use_the_listed_files_for_newer_games():
     s = store(Session(items={"appid": 9, "assets": {
         "asset_url_format": fmt, "library_capsule_2x": "/library_600x900_2x.jpg",
         "library_capsule": "/library_600x900.jpg", "header": "/header.jpg", "library_hero": "/library_hero.jpg",
-        "community_icon": "deadbeef"}}))
+        "community_icon": "deadbeef"}}))  # 32 × 32: never offered
     a = s.assets(9)
     assert a["grid"].url == CDN + "steam/apps/9/abc123/library_600x900_2x.jpg?t=5"
     assert a["grid"].thumb.endswith("/library_600x900.jpg?t=5") and a["grid"].mime == "image/jpeg"
     assert a["hero"].url.endswith("/library_hero.jpg?t=5") and a["wide"].url.endswith("/header.jpg?t=5")
     assert "logo" not in a  # not listed and not at the plain name
-    assert a["icon"].url.endswith("/9/deadbeef.jpg")
+    assert "icon" not in a
     assert all(x.author == "Steam" and x.id < 0 for x in a.values())
     assert len({x.id for x in a.values()}) == len(a)
 
