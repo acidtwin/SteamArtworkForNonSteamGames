@@ -930,6 +930,7 @@ def test_banner_header_has_one_filled_button(qapp, window):
 
     def filled():
         return [b.text() for b in card.acts.findChildren(type(card.apply_btn)) if b.isVisibleTo(card) and b.isEnabled()
+                and b.property("split") != "arrow"  # Get All Artwork's arrow is part of the same button
                 and (b.objectName() == "bannerget" or b.property("kind") in ("go", "confirm"))]
 
     for state, changes, want in (("exact", 0, ["Get All Artwork"]), ("exact", 2, ["Apply (2 Changes)"]),
@@ -942,6 +943,31 @@ def test_banner_header_has_one_filled_button(qapp, window):
     card.confirm.connect(lambda: confirmed.append(True))
     card.meta.linkActivated.emit("confirm")
     assert confirmed
+
+
+def test_get_all_arrow_chooses_still_or_animated(qapp, window):
+    win = window
+    win.config.data["api_key"] = "x"
+    win.sgdb.match = lambda name: (None, 0)
+    win.sgdb.assets = lambda *a, **k: []
+    win.open_game(0)
+    _pump(qapp)
+    card = win.page.card
+    assert not win.get_all_animated and not card.get_btn.animated
+    still = card.get_btn.sizeHint().width()
+    card.get_arrow.click()
+    _pump(qapp)
+    menu = win._get_menu
+    assert [r.text() for r in menu.rows] == ["Still Artwork", "Animated Artwork"]
+    assert menu.rows[0].item.checked and not menu.rows[1].item.checked
+    assert card.get_arrow.property("open")  # drawn held down while its menu shows
+    menu.rows[1].click()
+    _pump(qapp)
+    assert win.get_all_animated and win.config.data["get_all_animated"]
+    assert card.get_btn.animated and card.get_btn.sizeHint().width() > still  # room for the ANIMATED tag
+    assert card.get_arrow.objectName() == card.get_btn.objectName()  # both halves styled alike
+    win._set_get_all_animated(False)
+    assert not card.get_btn.animated
 
 
 def test_option_strips_line_up_and_banners_keep_their_top(qapp, window):
@@ -1582,3 +1608,57 @@ def test_minimising_keeps_a_pop_over_dimmed(qapp, window):
     pop.dismiss()
     _pump(qapp, 300)
     assert not win.scrim.is_covering()
+
+
+def test_get_all_can_prefer_animated_artwork(qapp, window):
+    from steam_artwork_finder.sgdb import Asset
+    from steam_artwork_finder.steamstore import SteamAsset, StoreGame
+
+    win = window
+    win.config.data["api_key"] = "x"
+    for g in win.sfile.shortcuts:
+        win.config.set_match(g.appid, 9, g.name)
+    sc = win.sfile.shortcuts[0]
+    asked = []
+
+    def assets(kind, game_id, page=0, animated=False):
+        asked.append((kind, animated))
+        still = Asset(10, f"https://x/{kind}.png", f"https://x/{kind}_t.png", 600, 900, "image/png", 5, "", "a")
+        moving = Asset(20, f"https://x/{kind}.webp", f"https://x/{kind}.webm", 600, 900, "image/webp", 1, "", "b")
+        if kind == "logo":
+            return [still]  # no animated logo: the still one, without asking again
+        return [still, moving] if animated else [still]
+
+    win.sgdb.assets = assets
+    win.sgdb.download = lambda url: PNG
+    official = {"grid": SteamAsset(-1, "https://cdn/grid.jpg", "https://cdn/grid_s.jpg", 600, 900,
+                                   "image/jpeg", 0, "official", "Steam", appid=504230)}
+    win.steam.match = lambda name: StoreGame(504230, sc.name) if name == sc.name else None
+    win.steam.assets = lambda appid: dict(official)
+
+    assert not win.get_all_animated  # off unless asked for: nothing changes
+    win.fill_everything()
+    _pump(qapp, 3000, until=lambda: not win.busy)
+    assert isinstance(win.pending.get(sc.appid, "grid").asset, SteamAsset)
+    assert not any(a for _, a in asked)
+    assert not any(p.asset.animated for p in win.pending.for_game(sc.appid).values())
+
+    win.pending.clear()
+    asked.clear()
+    win._set_get_all_animated(True)
+    assert win.config.data["get_all_animated"]
+    win.fill_everything()
+    _pump(qapp, 3000, until=lambda: not win.busy)
+    picks = win.pending.for_game(sc.appid)
+    for k in ("grid", "wide", "hero"):  # an animated piece beats Steam's still one
+        assert picks[k].asset.id == 20 and picks[k].asset.animated
+    assert picks["logo"].asset.id == 10
+    assert picks["icon"].asset.id == 10 and ("icon", True) not in asked  # icons stay still
+    assert asked.count(("logo", True)) == 3  # once for each game
+
+    # A one-off choice (the Get All button's own menu) overrides the setting.
+    win.pending.clear()
+    win.fill_everything(animated=False)
+    _pump(qapp, 3000, until=lambda: not win.busy)
+    assert not win.pending.get(sc.appid, "hero").asset.animated
+    win._set_get_all_animated(False)

@@ -44,12 +44,36 @@ C = {
     "disabled_bg": "#242c37",
     "disabled_text": "#5d6875",  # a disabled menu row
     "disabled_icon": "#4d5764",
+    "disabled_line": "rgba(255,255,255,0.08)",  # the faint outline round a disabled button (not a QColor)
     "menu": "#1d232b",  # popup menus
     "foot": "#1a1e25",  # the button strip at the bottom of a dialog
     "track_off": "#4a5462",  # a switch that's off; a place Steam wasn't found
     "dash": "#3a4656",  # dashed outlines: drop zone, empty option strip
     "undo_ink": "#0f5aa0",  # the Undo link on the light toast
+    # Buttons are drawn the Steam way (style B): green and blue gradients for the main actions,
+    # and Steam's pale-blue "hover fade" for everything else. Each pair runs left to right.
+    "fade": "rgba(103,193,245,0.2)",  # a plain button, and what a hovered quiet one fills with
+    "fade_ink": "#67c1f5",
+    "fade_a": "#66c0f4", "fade_b": "#417a9b",  # a plain button under the pointer
+    "fade_down_a": "#4f9cc8", "fade_down_b": "#2f5c76",
+    "go_a": "#75b022", "go_b": "#588a1b", "go_ink": "#d2efa9",  # Apply
+    "go_hot_a": "#8ed629", "go_hot_b": "#6aa621",
+    "go_down_a": "#5e8f1b", "go_down_b": "#466e15",
+    "get_a": "#2fb88a", "get_b": "#1d7a58", "get_ink": "#d4f5e7",  # Get All Artwork
+    "get_hot_a": "#3fd6a2", "get_hot_b": "#23916a",
+    "get_down_a": "#26966f", "get_down_b": "#176247",
+    "blue_a": "#47bfff", "blue_b": "#1a44c2",  # Restart Steam, Save and the other confirm buttons
+    "blue_hot_a": "#6fd0ff", "blue_hot_b": "#2c5be0",
+    "blue_down_a": "#3aa0d8", "blue_down_b": "#163aa5",
+    "red_a": "#d8604f", "red_b": "#9a3529", "red_ink": "#ffe1dc",  # a button that throws something away
+    "red_hot_a": "#ef7461", "red_hot_b": "#b5402f",
+    "red_down_a": "#b84f40", "red_down_b": "#7f2b21",
 }
+
+
+def grad(a: str, b: str) -> str:
+    """A Steam button fill: colour `a` on the left to `b` on the right (keys of C)."""
+    return f"qlineargradient(x1:0, y1:0, x2:1, y2:0, stop:0.05 {C[a]}, stop:0.95 {C[b]})"
 
 
 def q(name: str) -> QColor:
@@ -175,34 +199,50 @@ def stylesheet() -> str:
     QToolTip {{ background: {c['raised']}; color: {c['text']}; border: 1px solid {c['line']}; }}
 
     QPushButton {{
-        background: {c['raised']}; border: none; border-radius: 3px;
+        background: {c['fade']}; color: {c['fade_ink']}; border: none; border-radius: 2px;
         min-height: 40px; padding: 0 14px; font-weight: 600;
     }}
-    QPushButton:hover {{ background: {c['select']}; }}
-    QPushButton:disabled {{ color: {c['text3']}; background: {c['disabled_bg']}; }}
+    QPushButton:hover {{ background: {grad('fade_a', 'fade_b')}; color: white; }}
+    QPushButton:pressed {{ background: {grad('fade_down_a', 'fade_down_b')}; color: white; }}
     QPushButton:focus {{ outline: none; }}
-    QPushButton[kbd="true"]:focus {{ border: 2px solid {c['blue']}; }}
-    QPushButton[kind="go"] {{ background: {c['go']}; color: white; padding: 0 18px; font-size: {pt('go')}pt; }}
-    QPushButton[kind="go"]:hover {{ background: {c['go_hover']}; }}
-    QPushButton[kind="go"]:disabled {{ background: {c['disabled_bg']}; color: {c['text3']}; }}
-    QPushButton[kind="confirm"] {{ background: {c['action']}; color: white; }}
-    QPushButton[kind="confirm"]:hover {{ background: {c['action_hover']}; }}
-    QPushButton[kind="confirm"]:disabled {{ background: {c['disabled_bg']}; color: {c['text3']}; }}
-    QPushButton[kind="danger"] {{ background: {c['danger']}; color: white; }}
-    QPushButton[kind="danger"]:hover {{ background: {c['danger_hover']}; }}
-    QPushButton[drop="true"] {{ background: {c['info_ground']}; border: 1px dashed {c['blue_ink']}; color: {c['text']}; }}
-    QPushButton[kind="quiet"] {{ background: transparent; color: {c['blue_ink']}; padding: 0 6px; min-height: 40px; }}
-    QPushButton[kind="quiet"]:hover {{ text-decoration: underline; }}
-    QPushButton[kind="seg"] {{ background: transparent; color: {c['text2']}; min-height: 40px; padding: 0 10px; }}
-    QPushButton[kind="seg"]:checked {{ background: {c['select']}; color: white; }}
-    QPushButton[kind="chip"] {{
-        background: transparent; border: 1px solid {c['line']}; border-radius: 20px;
-        min-height: 40px; padding: 0 14px; color: {c['text2']};
+    QPushButton[kbd="true"]:focus {{ border: 2px solid white; }}
+    QPushButton[kind="go"] {{ background: {grad('go_a', 'go_b')}; color: {c['go_ink']}; padding: 0 18px; font-size: {pt('go')}pt; font-weight: 700; }}
+    QPushButton[kind="go"]:hover {{ background: {grad('go_hot_a', 'go_hot_b')}; color: white; }}
+    QPushButton[kind="go"]:pressed {{ background: {grad('go_down_a', 'go_down_b')}; color: white; }}
+    QPushButton[kind="confirm"] {{ background: {grad('blue_a', 'blue_b')}; color: white; font-weight: 700; }}
+    QPushButton[kind="confirm"]:hover {{ background: {grad('blue_hot_a', 'blue_hot_b')}; }}
+    QPushButton[kind="confirm"]:pressed {{ background: {grad('blue_down_a', 'blue_down_b')}; }}
+    QPushButton[kind="danger"] {{ background: {grad('red_a', 'red_b')}; color: {c['red_ink']}; font-weight: 700; }}
+    QPushButton[kind="danger"]:hover {{ background: {grad('red_hot_a', 'red_hot_b')}; color: white; }}
+    QPushButton[kind="danger"]:pressed {{ background: {grad('red_down_a', 'red_down_b')}; color: white; }}
+    QPushButton[drop="true"] {{
+        background: qlineargradient(x1:0, y1:0, x2:1, y2:0, stop:0 rgba(102,192,244,0.35), stop:1 rgba(65,122,155,0.35));
+        border: 1px dashed {c['fade_ink']}; color: white;
     }}
-    QPushButton[kind="chip"]:checked {{ background: {c['text']}; color: {c['ground']}; }}
-    QToolButton {{ background: transparent; border: 1px solid transparent; border-radius: 3px; min-width: 40px; min-height: 40px; }}
-    QToolButton:hover {{ background: {c['raised']}; }}
-    QToolButton:pressed, QToolButton[open="true"] {{ background: {c['select']}; border: 1px solid {c['text3']}; }}
+    QPushButton[kind="quiet"] {{ background: transparent; color: {c['fade_ink']}; padding: 0 6px; min-height: 40px; }}
+    QPushButton[kind="quiet"]:hover {{ background: {c['fade']}; color: white; }}
+    QPushButton[kind="quiet"]:pressed {{ background: rgba(103,193,245,0.12); color: white; }}
+    QPushButton[kind="seg"] {{ background: transparent; color: {c['text2']}; min-height: 40px; padding: 0 10px; }}
+    QPushButton[kind="seg"]:hover {{ background: {c['fade']}; color: white; }}
+    QPushButton[kind="seg"]:checked {{ background: {grad('fade_a', 'fade_b')}; color: white; }}
+    QPushButton[kind="chip"] {{
+        background: rgba(103,193,245,0.12); border: none; border-radius: 20px;
+        min-height: 40px; padding: 0 14px; color: #8fcff4;
+    }}
+    QPushButton[kind="chip"]:hover {{ background: {c['fade']}; color: white; }}
+    QPushButton[kind="chip"]:checked {{ background: {grad('fade_a', 'fade_b')}; color: white; }}
+    /* Off: a flat, faint fill inside a faint 1px outline. The outline takes the place of 1px of
+       padding, so nothing moves. Last, so it wins over every kind above. */
+    QPushButton:disabled {{
+        color: {c['text3']}; background: rgba(255,255,255,0.04);
+        border: 1px solid {c['disabled_line']}; min-height: 38px; padding: 0 13px;
+    }}
+    QPushButton[kind="go"]:disabled {{ padding: 0 17px; }}
+    QPushButton[kind="seg"]:disabled {{ padding: 0 9px; }}
+    QPushButton[kind="quiet"]:disabled {{ background: transparent; border: none; min-height: 40px; padding: 0 6px; }}
+    QToolButton {{ background: transparent; border: 1px solid transparent; border-radius: 2px; min-width: 40px; min-height: 40px; }}
+    QToolButton:hover {{ background: {c['fade']}; }}
+    QToolButton:pressed, QToolButton[open="true"] {{ background: rgba(103,193,245,0.32); border: 1px solid {c['fade_ink']}; }}
     QToolButton::menu-indicator {{ image: none; }}
 
     QLineEdit {{
@@ -253,15 +293,16 @@ def stylesheet() -> str:
     #toast {{ background: {c['text']}; border-radius: 4px; }}
     #toast QLabel {{ color: {c['ground']}; font-weight: 600; }}
     #toast QPushButton {{ background: transparent; color: {c['undo_ink']}; min-height: 40px; }}
+    #toast QPushButton:hover {{ color: {c['action']}; text-decoration: underline; }}
     #rowline {{ background: {c['line']}; max-height: 1px; }}
     #spop {{ background: {c['ground']}; border: 1px solid {c['line']}; border-radius: 4px; }}
     #spop QPushButton {{ min-height: 36px; padding: 0 12px; }}
     #spopcheck {{ color: {c['text']}; spacing: 10px; }}
     #spopx {{ min-width: 26px; min-height: 26px; max-width: 26px; max-height: 26px; }}
-    #fseg {{ background: {c['panel']}; border-radius: 4px; }}
-    #fseg QPushButton {{ background: transparent; color: {c['text2']}; min-height: 34px; border-radius: 3px; }}
-    #fseg QPushButton:hover {{ color: {c['text']}; }}
-    #fseg QPushButton:checked {{ background: {c['select']}; color: {c['text']}; }}
+    #fseg {{ background: rgba(0,0,0,0.3); border-radius: 4px; }}
+    #fseg QPushButton {{ background: transparent; color: {c['text2']}; min-height: 34px; border-radius: 2px; }}
+    #fseg QPushButton:hover {{ background: {c['fade']}; color: white; }}
+    #fseg QPushButton:checked {{ background: {grad('fade_a', 'fade_b')}; color: white; }}
     #facct {{ background: {c['panel']}; border-radius: 3px; }}
     #spopcheck::indicator {{ width: 18px; height: 18px; border-radius: 3px; border: 1px solid {c['text3']}; background: {c['raised']}; }}
     #spopcheck::indicator:checked {{ background: {c['action']}; border-color: {c['action']}; image: url("{tick}"); }}
