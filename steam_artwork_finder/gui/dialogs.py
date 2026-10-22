@@ -7,6 +7,7 @@ import time
 
 from PySide6.QtCore import QPoint, QRect, QRectF, QSize, QTimer, QUrl, Qt, Signal
 from PySide6.QtGui import QAction, QColor, QDesktopServices, QFont, QGuiApplication, QLinearGradient, QPainter, QPen, QPixmap
+from PySide6.QtSvg import QSvgRenderer
 from PySide6.QtWidgets import (
     QAbstractButton,
     QScrollArea,
@@ -1025,43 +1026,140 @@ class ConfirmDialog(QDialog):
         (cancel if bad else self.ok).setFocus()
 
 
+REPO_URL = "https://github.com/acidtwin/steam-artwork-for-non-steam-games"
+MAKER_URL = "https://aciddesign.uk"
+
+
+def _link(url: str, text: str) -> str:
+    return f"<a href='{url}' style='color:{C['blue_ink']}; text-decoration:none'>{text}</a>"
+
+
+def _maker_mark(height: int, dpr: float) -> QLabel:
+    """Acid Design's logo, scaled to `height`, or its name set as a wordmark when no logo ships."""
+    mark = QLabel()
+    mark.setAccessibleName("Acid Design")
+    for name in ("acid-design.svg", "acid-design.png"):
+        path = icons.ICON_DIR / name
+        if not path.exists():
+            continue
+        if path.suffix == ".svg":
+            r = QSvgRenderer(str(path))
+            size = r.defaultSize()
+            w = round(height * size.width() / max(1, size.height()))
+            pm = QPixmap(int(w * dpr), int(height * dpr))
+            pm.fill(Qt.GlobalColor.transparent)
+            p = QPainter(pm)
+            r.render(p, QRectF(0, 0, pm.width(), pm.height()))
+            p.end()
+        else:
+            pm = QPixmap(str(path)).scaledToHeight(int(height * dpr), Qt.TransformationMode.SmoothTransformation)
+        pm.setDevicePixelRatio(dpr)
+        mark.setPixmap(pm)
+        return mark
+    mark.setText("ACID<br>DESIGN")
+    f = QFont(mark.font())
+    f.setPointSizeF(theme.pt("heading"))
+    f.setWeight(QFont.Weight.Black)
+    f.setLetterSpacing(QFont.SpacingType.AbsoluteSpacing, 1.5)
+    mark.setFont(f)
+    mark.setStyleSheet("color: white;")
+    mark.setAlignment(Qt.AlignmentFlag.AlignCenter)
+    mark.setFixedHeight(height)
+    return mark
+
+
 class AboutDialog(QDialog):
-    """The app's name, version and where the artwork comes from."""
+    """The app's name and version, who made it and how, where the artwork comes from, and its licence."""
 
     def __init__(self, parent, name: str, version: str):
         super().__init__(parent)
         self.setWindowTitle(f"About {name}")
-        self.setMinimumWidth(420)
+        self.setFixedWidth(500)
+        dpr = self.devicePixelRatioF()
         body, fl = _dialog_frame(self, name)
+        body.setSpacing(14)
         head = body.itemAt(0).widget()
         body.removeWidget(head)
+
         top = QHBoxLayout()
-        top.setSpacing(14)
+        top.setSpacing(16)
         mark = QLabel()
-        mark.setPixmap(icons.app_pixmap(48, self.devicePixelRatioF()))
-        mark.setFixedSize(48, 48)
+        mark.setPixmap(icons.app_pixmap(64, dpr))
+        mark.setFixedSize(64, 64)
         top.addWidget(mark, 0, Qt.AlignmentFlag.AlignTop)
         col = QVBoxLayout()
-        col.setSpacing(2)
+        col.setSpacing(3)
         col.addWidget(head)
-        ver = QLabel(f"Version {version}")
+        ver = QLabel(f"Version {version}  ·  MIT licence")
         ver.setStyleSheet(f"color: {C['text3']};")
         col.addWidget(ver)
+        what = QLabel("Covers, banners, logos and icons for the games you've added to Steam yourself.")
+        what.setWordWrap(True)
+        what.setStyleSheet(f"color: {C['text2']};")
+        col.addWidget(what)
         top.addLayout(col, 1)
-        body.insertLayout(0, top)
-        words = QLabel(f"Artwork comes from <a href='https://www.steamgriddb.com' style='color:{C['blue_ink']};"
-                       " text-decoration:none'>SteamGridDB</a> and its artists.<br>"
-                       "Not affiliated with Valve or SteamGridDB.")
-        words.setTextFormat(Qt.TextFormat.RichText)
-        words.setOpenExternalLinks(True)
-        words.setWordWrap(True)
-        words.setStyleSheet(f"color: {C['text2']};")
-        body.addWidget(words)
+        body.addLayout(top)
+
+        # Who made it: a card in Steam's raised panel colour, the logo on the left.
+        card = QFrame()
+        card.setObjectName("aboutmaker")
+        card.setStyleSheet(f"#aboutmaker {{ background: {C['panel']}; border-radius: 3px; }}")
+        cl = QHBoxLayout(card)
+        cl.setContentsMargins(14, 12, 14, 12)
+        cl.setSpacing(14)
+        self.maker_mark = _maker_mark(52, dpr)
+        cl.addWidget(self.maker_mark, 0, Qt.AlignmentFlag.AlignVCenter)
+        words = QVBoxLayout()
+        words.setSpacing(3)
+        label = QLabel("MADE BY")
+        label.setObjectName("label")
+        words.addWidget(label)
+        maker = QLabel(f"Designed, directed and tested by {_link(MAKER_URL, 'Acid Design')}.")
+        maker.setTextFormat(Qt.TextFormat.RichText)
+        maker.setOpenExternalLinks(True)
+        maker.setWordWrap(True)
+        words.addWidget(maker)
+        claude = QLabel(f"Built with the help of {_link('https://claude.com/claude-code', 'Claude Code')}, "
+                        "which wrote the code to that direction.")
+        claude.setTextFormat(Qt.TextFormat.RichText)
+        claude.setOpenExternalLinks(True)
+        claude.setWordWrap(True)
+        claude.setStyleSheet(f"color: {C['text2']};")
+        words.addWidget(claude)
+        cl.addLayout(words, 1)
+        body.addWidget(card)
+
+        art = QLabel(f"Artwork comes from {_link('https://www.steamgriddb.com', 'SteamGridDB')} and its artists, "
+                     "and from Steam's own store pages. Not affiliated with Valve or SteamGridDB.")
+        art.setTextFormat(Qt.TextFormat.RichText)
+        art.setOpenExternalLinks(True)
+        art.setWordWrap(True)
+        art.setStyleSheet(f"color: {C['text2']};")
+        body.addWidget(art)
+        lic = QLabel(f"Free and open source under the MIT licence. © {time.localtime().tm_year} Acid Design.")
+        lic.setWordWrap(True)
+        lic.setStyleSheet(f"color: {C['text3']};")
+        body.addWidget(lic)
+
+        fl.takeAt(0)  # the frame's stretch: the links sit on the left, Close on the right
+        self.site = QPushButton("aciddesign.uk")
+        self.site.setIcon(icons.icon("external", 15, C["fade_ink"]))
+        self.site.setToolTip(MAKER_URL)
+        self.site.clicked.connect(lambda: QDesktopServices.openUrl(QUrl(MAKER_URL)))
+        fl.addWidget(self.site)
+        self.source = QPushButton("Source Code")
+        self.source.setIcon(icons.icon("external", 15, C["fade_ink"]))
+        self.source.setToolTip(REPO_URL)
+        self.source.clicked.connect(lambda: QDesktopServices.openUrl(QUrl(REPO_URL)))
+        fl.addWidget(self.source)
+        fl.addStretch(1)
         close = QPushButton("Close")
         close.setProperty("kind", "confirm")
         close.setDefault(True)
         close.clicked.connect(self.accept)
         fl.addWidget(close)
+        # Wrapped lines only know their height once the width is set; size to fit them all.
+        self.setFixedHeight(self.layout().totalHeightForWidth(self.width()))
 
 
 def friendly_time(t: float, now: float | None = None) -> tuple[str, str]:

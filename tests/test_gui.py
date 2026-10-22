@@ -1662,3 +1662,18 @@ def test_get_all_can_prefer_animated_artwork(qapp, window):
     _pump(qapp, 3000, until=lambda: not win.busy)
     assert not win.pending.get(sc.appid, "hero").asset.animated
     win._set_get_all_animated(False)
+
+
+def test_about_credits_acid_design_and_fits_its_text(qapp, tmp_path, monkeypatch):
+    from PySide6.QtWidgets import QLabel
+
+    from steam_artwork_finder.gui import dialogs, icons
+
+    monkeypatch.setattr(icons, "ICON_DIR", tmp_path)  # no logo shipped: the name stands in
+    d = dialogs.AboutDialog(None, "Steam Artwork for Non-Steam Games", "1.2.3")
+    text = " ".join(lab.text() for lab in d.findChildren(QLabel))
+    assert "Version 1.2.3" in text and "MIT licence" in text
+    assert "https://aciddesign.uk" in text and "Claude Code" in text and "SteamGridDB" in text
+    assert "ACID" in d.maker_mark.text()
+    assert d.height() >= d.layout().totalHeightForWidth(d.width())  # no wrapped line cut off
+    d.deleteLater()
