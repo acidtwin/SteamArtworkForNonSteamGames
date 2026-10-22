@@ -36,7 +36,7 @@ from ..steamstore import SteamAsset
 from . import icons, localfile, theme
 from .chrome import _Elided
 from .theme import C, q
-from .widgets import ArtView, fill_rect, label, load_pixmap, quiet_button
+from .widgets import ArtView, draw_loading, fill_rect, label, load_pixmap, pulse, quiet_button
 
 WAIT = C["wait"]
 NEW_BG = C["action"]
@@ -254,13 +254,16 @@ class CurrentArt(ArtView):
 
 class GhostStrip(QWidget):
     """Stands in for the option strip while there are no options: faint dashed
-    outlines in the options' shape, fading out, with the message in a pill."""
+    outlines in the options' shape, fading out, with the message in a pill. While
+    options are loading: shimmering tiles instead, as the options themselves show
+    while their pictures load, and no pill (the text is for screen readers)."""
 
     def __init__(self, thumb: QSize, parent=None):
         super().__init__(parent)
         self.thumb = thumb
         self.text = ""
         self.icon = ""
+        self.loading = False
         self.setFixedHeight(thumb.height() + 6)
         self.setMinimumWidth(120)
         self.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
@@ -268,11 +271,12 @@ class GhostStrip(QWidget):
         f.setPointSizeF(theme.pt("body"))
         self.setFont(f)
 
-    def setText(self, text: str, icon: str = ""):
+    def setText(self, text: str, icon: str = "", loading: bool = False):
         self.text = text
         self.icon = icon
+        self.loading = loading
         self.setAccessibleName(text)
-        self.setToolTip(text)
+        self.setToolTip("" if loading else text)
         self.update()
 
     def paintEvent(self, _):
@@ -282,6 +286,22 @@ class GhostStrip(QWidget):
         tw, th = self.thumb.width(), self.thumb.height()
         y = (self.height() - th) / 2
         x = 0.75
+        if self.loading:
+            phase = pulse().phase()
+            while x + tw <= w + 1:
+                a = max(0.0, 1.0 - max(0.0, x - w * 0.3) / (w * 0.7))
+                if a > 0.02:
+                    r = QRectF(x - 0.75, y, tw, th)
+                    clip = QPainterPath()
+                    clip.addRoundedRect(r, 3, 3)
+                    p.save()
+                    p.setClipPath(clip)
+                    p.setOpacity(a)
+                    draw_loading(p, r, phase)
+                    p.restore()
+                x += tw + 10
+            pulse().want(self)
+            return
         while x + tw <= w + 1:  # whole outlines only, like the options' strip
             # fade from 100% to nothing across the strip
             a = max(0.0, 1.0 - max(0.0, x - w * 0.3) / (w * 0.7))
@@ -702,7 +722,7 @@ class ArtworkRow(QWidget):
     def _render(self):
         kind = self._sgdb[0]
         if self.steam_waiting and kind in ("assets", "loading"):
-            self._show_message("Loading options…", "")
+            self._show_message("Loading options…", "", loading=True)
             return
         sgdb = self._sgdb[1] if kind == "assets" else []
         if self.steam_assets or sgdb:
@@ -710,17 +730,17 @@ class ArtworkRow(QWidget):
         elif kind == "assets":
             self._show_message(f"No {self.slot.label.lower()} on SteamGridDB yet.")
         elif kind == "loading":
-            self._show_message("Loading options from SteamGridDB…", "")
+            self._show_message("Loading options from SteamGridDB…", "", loading=True)
         else:
             self._show_message(self._sgdb[1], self._sgdb[2])
 
-    def _show_message(self, text: str, icon: str = "info"):
+    def _show_message(self, text: str, icon: str = "info", loading: bool = False):
         self._clear_strip()
         self.count.setText("")
         self.count.hide()
         self.see_all.hide()
         self.scroll.hide()
-        self.message.setText(text, icon)
+        self.message.setText(text, icon, loading)
         self.message.show()
         self._right.setStretch(0, 1)
 
