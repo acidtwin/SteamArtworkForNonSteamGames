@@ -21,36 +21,60 @@ def _png() -> bytes:
     return bytes(buf.data())
 
 
-def test_fetch_whole_retries_then_gives_up(qapp):
+def test_downloads_retry_then_give_up(qapp):
     from steam_artwork_finder.gui import workers
     from steam_artwork_finder.sgdb import GoneError, SGDBError
 
     png = _png()
-    told, calls = [], []
+    calls, told, got, errors = [], [], [], []
 
     def flaky(url):  # dropped twice, then cut off once, then whole
         calls.append(url)
         if len(calls) <= 2:
             raise SGDBError("connection reset")
-        return png[:30] if len(calls) == 3 else png
+        return workers._fetch(url, lambda u: png[:30] if len(calls) == 3 else png)
 
-    assert workers.fetch_whole("u", flaky, told.append) == png
-    assert len(calls) == 4 and told == [1, 2, 3]
+    workers.run_retrying(flaky, "u", on_done=got.append, on_error=errors.append, on_retry=told.append)
+    _pump(qapp, 2000, until=lambda: got or errors)
+    assert got == [png] and not errors and len(calls) == 4 and told == [1, 2, 3]
 
     told.clear()
-    with pytest.raises(SGDBError):
-        workers.fetch_whole("u", lambda u: (_ for _ in ()).throw(SGDBError("down")), told.append)
-    assert told == [1, 2, 3]  # the first try and 3 retries
+    workers.run_retrying(lambda u: (_ for _ in ()).throw(SGDBError("down")), "u",
+                         on_done=got.append, on_error=errors.append, on_retry=told.append)
+    _pump(qapp, 2000, until=lambda: errors)
+    assert errors and told == [1, 2, 3]  # the first try and 3 retries
 
     calls.clear()
+    errors.clear()
 
     def gone(url):
         calls.append(url)
         raise GoneError("HTTP 404")
 
-    with pytest.raises(GoneError):
-        workers.fetch_whole("u", gone)
-    assert len(calls) == 1  # not there: not asked again
+    workers.run_retrying(gone, "u", on_error=errors.append)
+    _pump(qapp, 2000, until=lambda: errors)
+    _pump(qapp, 100)
+    assert errors and len(calls) == 1  # not there: not asked again
+
+
+def test_one_download_for_everyone_waiting(qapp):
+    import threading
+
+    from steam_artwork_finder.gui import workers
+
+    gate, calls, got = threading.Event(), [], []
+
+    def slow(url):
+        calls.append(url)
+        gate.wait(2)
+        return url.upper()
+
+    shared = workers.Shared()
+    shared.get("k", slow, "a", on_done=got.append)
+    shared.get("k", slow, "a", on_done=got.append)
+    gate.set()
+    _pump(qapp, 2000, until=lambda: len(got) == 2)
+    assert got == ["A", "A"] and calls == ["a"]
 
 
 def test_strip_option_shows_loading_then_failed_then_retries(qapp, window):

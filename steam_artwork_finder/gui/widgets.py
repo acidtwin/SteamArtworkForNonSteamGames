@@ -480,6 +480,7 @@ class ArtView(QWidget):
         self.load_state: tuple | None = None  # ("loading", retry n) or ("failed", retry fn) until a picture comes
         self._fade_since: float | None = None  # when the picture arrived over the shimmer, for its fade-in
         self._shimmered = False  # painted as loading since the last picture
+        self._desc: str | None = None  # what a screen reader said before "couldn't load"
         self.setCursor(Qt.CursorShape.PointingHandCursor)
         self.setFocusPolicy(Qt.FocusPolicy.StrongFocus)
         self.setAttribute(Qt.WidgetAttribute.WA_Hover)
@@ -493,19 +494,28 @@ class ArtView(QWidget):
     def set_loading(self, retry: int = 0):
         """A picture is on its way (`retry`: which retry this is, 0 for the first try)."""
         self.load_state = ("loading", retry)
-        self.setToolTip("")
+        self._not_failed()
         self.update()
 
     def set_failed(self, retry_fn):
         """It couldn't load even after retrying; a click (or Enter) calls `retry_fn`."""
         self.load_state = ("failed", retry_fn)
         self.setToolTip("Couldn't load this picture. Click to try again.")
+        if self._desc is None:
+            self._desc = self.accessibleDescription()
+        self.setAccessibleDescription("Couldn't load. Press Enter to try again")
         self.update()
+
+    def _not_failed(self):
+        if self._desc is not None:
+            self.setToolTip("")
+            self.setAccessibleDescription(self._desc)
+            self._desc = None
 
     def _arrived(self):
         if self.load_state is not None:
             self.load_state = None
-            self.setToolTip("")
+            self._not_failed()
         if self._shimmered:  # it was seen loading: fade the picture in
             self._shimmered = False
             self._fade_since = time.monotonic()

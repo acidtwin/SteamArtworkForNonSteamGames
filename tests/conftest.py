@@ -80,9 +80,9 @@ def steam_root(tmp_path, sample_bytes):
 
 @pytest.fixture(autouse=True)
 def _no_retry_pauses(monkeypatch):
-    """Download retries don't pause in tests (a failed fake download would otherwise wait 7 s)."""
+    """Download retries don't pause in tests (a failed fake download would otherwise wait 7 s in all)."""
     try:
         from steam_artwork_finder.gui import workers
     except ImportError:  # no Qt here: the GUI tests are skipped anyway
         return
-    monkeypatch.setattr(workers, "_sleep", lambda _s: None)
+    monkeypatch.setattr(workers, "RETRY_PAUSE", (0, 0, 0))

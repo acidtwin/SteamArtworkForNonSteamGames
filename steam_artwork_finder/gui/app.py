@@ -217,10 +217,12 @@ def _exe_icon_png(appid: int, exe_field: str) -> Path | None:
     return None
 
 
-
-def _thumb_image(url: str, fetch, progress=None) -> QImage:
+def _thumb_image(url: str, fetch) -> QImage:
     """Worker: a thumbnail downloaded (or from the cache) and decoded, so the GUI thread only shows it."""
-    return read_image(workers.cached_download(url, fetch, progress))
+    img = read_image(workers.cached_download(url, fetch))
+    if img.isNull():
+        raise workers.CutOff("Not a picture")
+    return img
 
 
 def _load_state(target, state: tuple):
@@ -236,6 +238,7 @@ def _load_state(target, state: tuple):
                 target.setData(ROLE_LOAD, state)
     except RuntimeError:  # gone meanwhile
         pass
+
 
 class MainWindow(QMainWindow):
     def __init__(self):
@@ -274,6 +277,7 @@ class MainWindow(QMainWindow):
         self.motion_files: dict[int, tuple[str, str]] = {}  # animated asset id -> (kind, cached file)
         self.full_files: dict[int, str] = {}  # animated asset id -> its full file, for big places
         self._full_loading: set[int] = set()
+        self._fetches = workers.Shared()  # thumbnails and preview files on their way, one download each
         self._anim_files: dict[tuple, bool] = {}  # (artwork file, mtime) -> animated?
         # Each game's artwork files in ORDER (None where it has none), so painting and
         # counting never touch the disk. Forgotten whenever the app writes a game's files.
@@ -638,19 +642,16 @@ class MainWindow(QMainWindow):
             return
 
         def done(img):
-            if img.isNull():
-                failed("Not a picture")
-                return
-            pm = QPixmap.fromImage(img)
-            remember(key, pm)
+            pm = pixmap_cache.get(key)  # made once for everyone who asked
+            if pm is None:
+                pm = QPixmap.fromImage(img)
+                remember(key, pm)
             self._deliver_thumb(target, pm)
 
-        def failed(_msg):
-            _load_state(target, ("failed", lambda: self.load_thumb(asset, target)))
-
-        _load_state(target, ("loading", 0))
-        workers.run(_thumb_image, asset.thumb, self.sgdb.download, on_done=done, on_error=failed,
-                    on_progress=lambda n: _load_state(target, ("loading", n)))
+        n = self._fetches.get(key, _thumb_image, asset.thumb, self.sgdb.download, on_done=done,
+                              on_error=lambda _m: _load_state(target, ("failed", lambda: self.load_thumb(asset, target))),
+                              on_retry=lambda n: _load_state(target, ("loading", n)))
+        _load_state(target, ("loading", n))
 
     @staticmethod
     def _deliver_thumb(target, pm: QPixmap):
@@ -714,12 +715,10 @@ class MainWindow(QMainWindow):
             except RuntimeError:
                 pass
 
-        def failed(_msg):
-            _load_state(target, ("failed", lambda: self._load_animated(asset, target)))
-
-        _load_state(target, ("loading", 0))
-        workers.run(workers.cached_file, url, self.sgdb.download, on_done=done, on_error=failed,
-                    on_progress=lambda n: _load_state(target, ("loading", n)))
+        n = self._fetches.get(("file", url), workers.cached_file, url, self.sgdb.download, on_done=done,
+                              on_error=lambda _m: _load_state(target, ("failed", lambda: self._load_animated(asset, target))),
+                              on_retry=lambda n: _load_state(target, ("loading", n)))
+        _load_state(target, ("loading", n))
 
     def motion_spec(self, asset: Asset | None, size, crop: bool = False) -> tuple:
         """(key, factory) for ArtView.set_motion to play an animated option, once it's downloaded.
@@ -756,8 +755,8 @@ class MainWindow(QMainWindow):
                     self.full_files[aid] = p
                     self.refresh_soon()
 
-                workers.run(workers.cached_file, asset.url, self.sgdb.download, on_done=done,
-                            on_error=lambda _m, aid=asset.id: self._full_loading.discard(aid))
+                workers.run_retrying(workers.cached_file, asset.url, self.sgdb.download, on_done=done,
+                                     on_error=lambda _m, aid=asset.id: self._full_loading.discard(aid))
             return self.motion_spec(asset, size, crop=bool(how.get("crop")))
         bound = self._bound(size)
         return ("full", asset.id), lambda: motion.make("frames", path, bound, budget, **how)

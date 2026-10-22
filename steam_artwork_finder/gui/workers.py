@@ -5,14 +5,13 @@ from __future__ import annotations
 import hashlib
 import os
 import tempfile
-import time
 import traceback
 
 from PySide6.QtCore import QObject, QRunnable, QThreadPool, Signal
 from PySide6.QtGui import QImage
 
 from ..config import cache_dir
-from ..sgdb import GoneError
+from ..sgdb import GoneError, SGDBError
 
 
 class _Signals(QObject):
@@ -26,6 +25,7 @@ class Task(QRunnable):
         super().__init__()
         self.fn, self.args, self.kwargs = fn, args, kwargs
         self.signals = _Signals()
+        self.error: Exception | None = None
 
     def run(self):
         try:
@@ -33,7 +33,9 @@ class Task(QRunnable):
         except Exception as e:  # report anything to the UI
             if isinstance(e, RuntimeError) and "Signal source has been deleted" in str(e):
                 return  # the app is closing: nobody is left to tell
-            traceback.print_exc()
+            if not isinstance(e, (SGDBError, CutOff, OSError)):
+                traceback.print_exc()  # a bug, not the network: worth seeing
+            self.error = e
             self._emit(self.signals.failed, str(e) or type(e).__name__)
             return
         self._emit(self.signals.done, result)
@@ -116,38 +118,80 @@ def _whole(data: bytes) -> bool:
     return not QImage.fromData(data).isNull()
 
 
-RETRIES = 3  # tries after the first before a picture is given up on (each shown as "Retrying (n of 3)")
-RETRY_PAUSE = (1.0, 2.0, 4.0)  # seconds before each retry
-_sleep = time.sleep  # swapped out by tests
+RETRIES = 3  # tries after the first before a download is given up on (each shown as "Retrying (n of 3)")
+RETRY_PAUSE = (1000, 2000, 4000)  # ms before each retry
 
 
 class CutOff(Exception):
-    """A download that arrived incomplete or isn't a picture."""
+    """A download that arrived incomplete."""
 
 
-def fetch_whole(url: str, fetch, progress=None) -> bytes:
-    """fetch(url), tried again up to RETRIES times with a growing pause when it fails or arrives
-    cut off: a dropped download usually works the second time. `progress(n)` is told before
-    retry n. A file that isn't there (GoneError) is given up on at once."""
-    for n in range(RETRIES + 1):
-        try:
-            data = fetch(url)
-            if _whole(data):
-                return data
-            err: Exception = CutOff("The download was cut off")
-        except GoneError:
-            raise
-        except Exception as e:  # network trouble, a server error: worth another go
-            err = e
-        if n == RETRIES:
-            raise err
-        if progress is not None:
-            progress(n + 1)
-        _sleep(RETRY_PAUSE[min(n, len(RETRY_PAUSE) - 1)])
-    raise AssertionError("unreachable")
+def run_retrying(fn, *args, on_done=None, on_error=None, on_retry=None, kind: str = "net", **kwargs) -> None:
+    """Like run(), but when fn fails it's tried again up to RETRIES times, after a growing pause,
+    before on_error hears of it: a dropped or cut-off download usually works the second time.
+    The pause is a timer on the GUI thread, so no worker sits idle through it. `on_retry(n)` is
+    told as retry n is scheduled. A file that isn't there (GoneError) is given up on at once."""
+    from PySide6.QtCore import QTimer
+
+    def attempt(n: int):
+        def failed(msg):
+            err = task.error
+            if n >= RETRIES or isinstance(err, GoneError):
+                if on_error is not None:
+                    on_error(msg)
+                return
+            if on_retry is not None:
+                on_retry(n + 1)
+            QTimer.singleShot(RETRY_PAUSE[min(n, len(RETRY_PAUSE) - 1)], lambda: attempt(n + 1))
+
+        task = run(fn, *args, on_done=on_done, on_error=failed, kind=kind, **kwargs)
+
+    attempt(0)
 
 
-def cached_file(url: str, fetch, progress=None) -> str:
+class Shared:
+    """One job for everyone who asks for the same thing while it's under way (the strip and
+    See all both wanting a thumbnail, say), rather than one each."""
+
+    def __init__(self):
+        self._waiting: dict = {}  # key -> [callbacks (done, error, retry)], and the retry it's on
+
+    def get(self, key, fn, *args, on_done=None, on_error=None, on_retry=None, **kwargs) -> int:
+        """Start fn (retrying) unless it's already running for `key`; returns the retry it's on (0: first try)."""
+        entry = self._waiting.get(key)
+        if entry is not None:
+            entry[0].append((on_done, on_error, on_retry))
+            return entry[1]
+        entry = self._waiting[key] = [[(on_done, on_error, on_retry)], 0]
+
+        def done(result):
+            for cb, _e, _r in self._waiting.pop(key, [[]])[0]:
+                if cb is not None:
+                    cb(result)
+
+        def failed(msg):
+            for _d, cb, _r in self._waiting.pop(key, [[]])[0]:
+                if cb is not None:
+                    cb(msg)
+
+        def retry(n):
+            entry[1] = n
+            for _d, _e, cb in entry[0]:
+                if cb is not None:
+                    cb(n)
+
+        run_retrying(fn, *args, on_done=done, on_error=failed, on_retry=retry, **kwargs)
+        return 0
+
+
+def _fetch(url: str, fetch) -> bytes:
+    data = fetch(url)
+    if not _whole(data):
+        raise CutOff("The download was cut off")
+    return data
+
+
+def cached_file(url: str, fetch) -> str:
     """Fetch url via fetch(url) into the cache folder (once) and return the file's path."""
     d = cache_dir() / "thumbs"
     d.mkdir(parents=True, exist_ok=True)
@@ -158,7 +202,7 @@ def cached_file(url: str, fetch, progress=None) -> str:
         p.unlink(missing_ok=True)  # cut off or broken: fetch it again
     except OSError:
         pass
-    data = fetch_whole(url, fetch, progress)
+    data = _fetch(url, fetch)
     # Written aside then renamed, so another thread never reads half a file.
     fd, tmp = tempfile.mkstemp(prefix=p.name + ".", suffix=".part", dir=d)
     try:
@@ -174,7 +218,7 @@ def cached_file(url: str, fetch, progress=None) -> str:
     return str(p)
 
 
-def cached_download(url: str, fetch, progress=None) -> bytes:
+def cached_download(url: str, fetch) -> bytes:
     """Fetch url via fetch(url), keeping a copy in the cache folder."""
     d = cache_dir() / "thumbs"
     d.mkdir(parents=True, exist_ok=True)
@@ -186,7 +230,7 @@ def cached_download(url: str, fetch, progress=None) -> bytes:
         p.unlink(missing_ok=True)  # cut off or broken: fetch it again
     except OSError:
         pass
-    data = fetch_whole(url, fetch, progress)
+    data = _fetch(url, fetch)
     # Written aside then renamed, so another thread never reads half a file.
     fd, tmp = tempfile.mkstemp(prefix=p.name + ".", suffix=".part", dir=d)
     try:

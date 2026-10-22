@@ -381,8 +381,8 @@ class _Playing(QObject):
             win.full_files[aid] = path
             self._asked.discard(key)
 
-        workers.run(workers.cached_file, a.url, win.sgdb.download, on_done=done,
-                    on_error=lambda _m: None)  # stays on the preview; not asked again this session
+        workers.run_retrying(workers.cached_file, a.url, win.sgdb.download, on_done=done,
+                             on_error=lambda _m: None)  # stays on the preview; not asked again this session
 
     def _sharpen(self, it, a):
         """Load an option's full-size artwork, shrunk to the panel (or to the page's preview, if bigger)."""
@@ -421,8 +421,8 @@ class _Playing(QObject):
             workers.run(decode_fit, path, w, h, cover, kind="cpu", on_done=decoded,
                         on_error=lambda _m: self._asked.discard(key))
 
-        workers.run(workers.cached_file, a.url, t.win.sgdb.download, on_done=got,
-                    on_error=lambda _m: None)  # a download that failed isn't asked for again this session
+        workers.run_retrying(workers.cached_file, a.url, t.win.sgdb.download, on_done=got,
+                             on_error=lambda _m: None)  # one that still fails isn't asked for again this session
 
     def _stop(self, aid):
         e = self.motions.pop(aid, None)

@@ -840,7 +840,8 @@ class MatchDialog(QDialog):
         if url in self._pix:
             done(None)
         else:
-            workers.run(workers.cached_download, url, self.sgdb.download, on_done=done, on_error=lambda _m: None)
+            workers.run_retrying(workers.cached_download, url, self.sgdb.download, on_done=done,
+                                 on_error=lambda _m: None)
 
     def selected(self) -> Game | None:
         return next((r.game for r in self.rows if r.isChecked()), None)
