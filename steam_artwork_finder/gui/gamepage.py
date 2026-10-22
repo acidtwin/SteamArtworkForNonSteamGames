@@ -102,6 +102,17 @@ def draw_steam_tag(p: QPainter, rect: QRectF):
     draw_new_tag(p, rect, "STEAM", QColor(11, 16, 22, 215))
 
 
+def _option_key(a) -> tuple:
+    """What makes two options the same one (Steam's and SteamGridDB's ids are separate)."""
+    return (type(a).__name__, a.id, a.animated)
+
+
+def _drop_view(v):
+    v.drop_motion()  # its decode, if still waiting, never runs
+    v.hide()
+    v.deleteLater()
+
+
 class OptionView(ArtView):
     """One option in a row's strip; says when its thumbnail arrives."""
 
@@ -690,7 +701,12 @@ class ArtworkRow(QWidget):
         self._right.setStretch(0, 1)
 
     def _show_assets(self, sgdb: list[Asset], more: bool):
-        self._clear_strip()
+        # Options already showing are kept as they are (picture, animation and all) rather than
+        # made again: Steam's piece and SteamGridDB's arrive separately, and a strip rebuilt for
+        # each made every picture load again (shimmering, showing, shimmering...).
+        keep = {_option_key(a): v for v, a in zip(self.thumbs, self.assets)}
+        first = self.thumbs[0] if self.thumbs else None
+        self._clear_strip(keep=set(map(id, keep.values())))
         steam = self.steam_assets
         self.assets = (steam + sgdb)[:STRIP]
         n = len(sgdb)
@@ -719,21 +735,28 @@ class ArtworkRow(QWidget):
         self.see_all.show()
         info = INFO[self.slot.key]
         for i, a in enumerate(self.assets):
-            v = OptionView(info.thumb, "", checker=self.slot.key == "logo")
-            v.animated = a.animated
-            v.official = isinstance(a, SteamAsset)
+            v = keep.pop(_option_key(a), None)
+            new = v is None
+            if new:
+                v = OptionView(info.thumb, "", checker=self.slot.key == "logo")
+                v.animated = a.animated
+                v.official = isinstance(a, SteamAsset)
+                v.setAccessibleDescription("Press Enter to pick it")
+                v.clicked.connect(lambda a=a: self._option_clicked(a))
+                v.hovered.connect(lambda on, v=v: self._preview(on, v))
+                v.loaded.connect(lambda v=v: self.thumbs and self.thumbs[0] is v and self.thumb_loaded.emit())
+                v.loaded.connect(lambda a=a: self._thumb_arrived(a))
             v.describe(f"{self.slot.label} option {i + 1} of {len(self.assets)}, "
                        + ("Steam's official artwork" if v.official else f"by {a.author or 'unknown'}")
                        + (", animated" if a.animated else "") + (f", {a.style}" if a.style else ""))
-            v.setAccessibleDescription("Press Enter to pick it")
-            v.clicked.connect(lambda a=a: self._option_clicked(a))
-            v.hovered.connect(lambda on, v=v: self._preview(on, v))
-            if i == 0:
-                v.loaded.connect(self.thumb_loaded.emit)
-            v.loaded.connect(lambda a=a: self._thumb_arrived(a))
             self.strip.insertWidget(self.strip.count() - 1, v)
             self.thumbs.append(v)
-            self.win.load_thumb(a, v)
+            if new:
+                self.win.load_thumb(a, v)
+        for v in keep.values():  # kept aside but no longer shown
+            _drop_view(v)
+        if (self.thumbs[0] if self.thumbs else None) is not first:
+            self.thumb_loaded.emit()
         self._fit()
         self.show_current()
 
@@ -767,18 +790,18 @@ class ArtworkRow(QWidget):
             self._set_caption("Previewing", "preview")
             self._previewing = True
 
-    def _clear_strip(self):
+    def _clear_strip(self, keep: set[int] = frozenset()):
+        """Empty the strip; views whose id() is in `keep` are only taken out, to be put back."""
         self._rest.stop()
         self._rest_view = None
         had = bool(self.thumbs)
         for v in self.thumbs:
             self.strip.removeWidget(v)
-            v.drop_motion()  # its decode, if still waiting, never runs
-            v.hide()
-            v.deleteLater()
+            if id(v) not in keep:
+                _drop_view(v)
         self.thumbs = []
         self.assets = []
-        if had:
+        if had and not keep:
             self.thumb_loaded.emit()
 
 

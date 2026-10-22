@@ -114,3 +114,26 @@ def test_see_all_option_counts_retries_and_retries_on_click(qapp, window):
     it.data(ROLE_LOAD)[1]()  # what a click on it does
     _pump(qapp, 2000, until=lambda: it.data(ROLE_PIX) is not None)
     assert it.data(ROLE_PIX) is not None and it.data(ROLE_LOAD) is None
+
+
+def test_strip_keeps_options_when_more_arrive(qapp, window):
+    """Steam's piece and SteamGridDB's arrive separately: options already showing aren't made (and loaded) again."""
+    from steam_artwork_finder.sgdb import Asset
+
+    win = window
+    png = _png()
+    asked = []
+    win.sgdb.download = lambda url: asked.append(url) or png
+    win.open_game(0)
+    _pump(qapp)
+    row = win.page.rows["grid"]
+    a = [Asset(20 + i, f"https://x/c{i}.png", f"https://x/keep{i}.png", 600, 900, "image/png", 0, "", "s") for i in range(3)]
+    row.set_assets(a[:2], False)
+    _pump(qapp, 1500, until=lambda: all(not v.pixmap.isNull() for v in row.thumbs))
+    views = list(row.thumbs)
+    assert len(views) == 2 and all(not v.pixmap.isNull() for v in views)
+    n = len(asked)
+    row.set_assets(a, False)
+    assert row.thumbs[:2] == views  # the same views, pictures and all
+    _pump(qapp, 1500, until=lambda: not row.thumbs[2].pixmap.isNull())
+    assert len(asked) == n + 1  # only the new one was fetched
