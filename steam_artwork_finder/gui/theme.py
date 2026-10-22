@@ -44,6 +44,7 @@ C = {
     "disabled_bg": "#242c37",
     "disabled_text": "#5d6875",  # a disabled menu row
     "disabled_icon": "#4d5764",
+    "disabled_line": "rgba(255,255,255,0.08)",  # the faint outline round a disabled button (not a QColor)
     "menu": "#1d232b",  # popup menus
     "foot": "#1a1e25",  # the button strip at the bottom of a dialog
     "track_off": "#4a5462",  # a switch that's off; a place Steam wasn't found
@@ -179,12 +180,15 @@ def stylesheet() -> str:
         min-height: 40px; padding: 0 14px; font-weight: 600;
     }}
     QPushButton:hover {{ background: {c['select']}; }}
-    QPushButton:disabled {{ color: {c['text3']}; background: {c['disabled_bg']}; }}
+    QPushButton:disabled {{
+        color: {c['text3']}; background: {c['disabled_bg']};
+        border: 1px solid {c['disabled_line']}; min-height: 38px; padding: 0 13px;  /* the 1px outline takes the place of 1px of padding, so nothing moves */
+    }}
     QPushButton:focus {{ outline: none; }}
     QPushButton[kbd="true"]:focus {{ border: 2px solid {c['blue']}; }}
     QPushButton[kind="go"] {{ background: {c['go']}; color: white; padding: 0 18px; font-size: {pt('go')}pt; }}
     QPushButton[kind="go"]:hover {{ background: {c['go_hover']}; }}
-    QPushButton[kind="go"]:disabled {{ background: {c['disabled_bg']}; color: {c['text3']}; }}
+    QPushButton[kind="go"]:disabled {{ background: {c['disabled_bg']}; color: {c['text3']}; padding: 0 17px; }}
     QPushButton[kind="confirm"] {{ background: {c['action']}; color: white; }}
     QPushButton[kind="confirm"]:hover {{ background: {c['action_hover']}; }}
     QPushButton[kind="confirm"]:disabled {{ background: {c['disabled_bg']}; color: {c['text3']}; }}
