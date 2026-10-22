@@ -446,9 +446,9 @@ class MatchDialog(QDialog):
         self.setStyleSheet(
             f"#matchchip {{ background: {C['panel']}; border: 1px solid {C['line']}; border-radius: 15px;"
             f" min-height: 30px; max-height: 30px; padding: 0 12px; color: {C['text']}; font-weight: 600; }}"
-            f"#matchchip:hover {{ border-color: {C['text3']}; }}"
-            f"#matchchip[kbd=\"true\"]:focus {{ border: 2px solid {C['blue']}; padding: 0 11px; }}"
-            f"#matchchip:checked {{ background: rgba(26,159,255,.12); border: 2px solid {C['blue']}; padding: 0 11px; }}"
+            f"#matchchip:hover {{ border-color: {C['fade_ink']}; }}"
+            f"#matchchip[kbd=\"true\"]:focus {{ border: 2px solid white; padding: 0 11px; }}"
+            f"#matchchip:checked {{ background: {C['fade']}; border: 2px solid {C['fade_ink']}; padding: 0 11px; }}"
             f"#matchtip {{ background: rgba(26,159,255,.08); border-left: 3px solid {C['blue']}; }}"
             f"#matchprev {{ background: {C['panel']}; border-radius: 4px; }}"
             f"#matchstat {{ background: {C['ground']}; border-radius: 3px; }}"
@@ -945,7 +945,7 @@ class QuitDialog(QDialog):
         discard = QPushButton("Discard")
         discard.setIcon(icons.icon("trash", 15, C["bad"]))
         discard.setStyleSheet(f"QPushButton {{ background: transparent; color: {C['bad']}; padding: 0 8px; }}"
-                              f"QPushButton:hover {{ background: rgba(239,123,108,.12); }}")
+                              f"QPushButton:hover {{ background: rgba(239,123,108,.25); color: white; }}")
         discard.setAccessibleDescription("Quit and throw away the artwork that hasn't been applied")
         discard.clicked.connect(lambda: self._done("discard"))
         fl.addWidget(discard)
