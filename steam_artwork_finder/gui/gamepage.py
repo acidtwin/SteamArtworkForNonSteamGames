@@ -12,7 +12,8 @@ from pathlib import Path
 
 from PySide6.QtCore import QEvent, QObject, QPoint, QPointF, QRect, QRectF, QSize, QStandardPaths, Qt, QTimer, Signal
 from PySide6.QtGui import (
-    QAction, QColor, QFont, QFontMetricsF, QKeySequence, QLinearGradient, QPainter, QPainterPath, QPen, QPixmap,
+    QAction, QColor, QFont, QFontMetrics, QFontMetricsF, QKeySequence, QLinearGradient, QPainter, QPainterPath, QPalette,
+    QPen, QPixmap,
 )
 from PySide6.QtWidgets import (
     QApplication,
@@ -26,6 +27,9 @@ from PySide6.QtWidgets import (
     QPushButton,
     QScrollArea,
     QSizePolicy,
+    QStyle,
+    QStyleOptionButton,
+    QStylePainter,
     QVBoxLayout,
     QWidget,
 )
@@ -900,6 +904,56 @@ BLANK_BANNERS = (
 )
 
 
+class GetAllButton(QPushButton):
+    """Get All Artwork, with a small ANIMATED tag on its right while Get All prefers animated artwork."""
+
+    def __init__(self, parent=None):
+        super().__init__("Get All Artwork", parent)
+        self.animated = False
+
+    def set_animated(self, on: bool):
+        if on == self.animated:
+            return
+        self.animated = on
+        self.setAccessibleName("Get All Artwork, animated" if on else "Get All Artwork")
+        self.updateGeometry()
+        self.update()
+
+    def _tag(self) -> tuple[QFont, int]:
+        f = QFont(self.font())
+        f.setPointSizeF(theme.pt("tag"))
+        f.setWeight(QFont.Weight.Bold)
+        f.setLetterSpacing(QFont.SpacingType.AbsoluteSpacing, 0.6)
+        return f, QFontMetrics(f).horizontalAdvance("ANIMATED") + 12
+
+    def sizeHint(self):
+        size = super().sizeHint()
+        return size + QSize(self._tag()[1] + 8, 0) if self.animated else size
+
+    def minimumSizeHint(self):
+        return self.sizeHint()
+
+    def paintEvent(self, e):
+        if not self.animated:
+            return super().paintEvent(e)
+        f, w = self._tag()
+        opt = QStyleOptionButton()
+        self.initStyleOption(opt)
+        p = QStylePainter(self)
+        p.drawControl(QStyle.ControlElement.CE_PushButtonBevel, opt)
+        opt.rect = self.rect().adjusted(0, 0, -(w + 8), 0)
+        p.drawControl(QStyle.ControlElement.CE_PushButtonLabel, opt)
+        ink = self.palette().color(QPalette.ColorRole.ButtonText)
+        tag = QRectF(self.width() - w - 12, (self.height() - 18) / 2, w, 18)
+        p.setRenderHint(QPainter.RenderHint.Antialiasing)
+        p.setPen(Qt.PenStyle.NoPen)
+        p.setBrush(QColor(0, 0, 0, 72))
+        p.drawRoundedRect(tag, 2, 2)
+        p.setPen(ink)
+        p.setFont(f)
+        p.drawText(tag, Qt.AlignmentFlag.AlignCenter, "ANIMATED")
+
+
 class MatchCard(QWidget):
     """The top of a game page, like a Steam game page: the game's banner fading into the page,
     with its cover, its name in Steam, which SteamGridDB game the artwork comes from, and the
@@ -910,6 +964,7 @@ class MatchCard(QWidget):
     add_key = Signal()
     home = Signal()
     get_all = Signal()
+    get_menu = Signal(object)  # the arrow beside Get All Artwork, to open its still/animated menu under
     apply = Signal()
     rename = Signal()
     unrename = Signal()
@@ -993,11 +1048,27 @@ class MatchCard(QWidget):
         self.unrename_btn.clicked.connect(self.unrename.emit)
         self.unrename_btn.hide()
         acts.addWidget(self.unrename_btn)
-        self.get_btn = QPushButton("Get All Artwork")
+        # Get All Artwork is a split button: its arrow chooses still or animated artwork.
+        get_box = QWidget()
+        gl = QHBoxLayout(get_box)
+        gl.setContentsMargins(0, 0, 0, 0)
+        gl.setSpacing(1)
+        self.get_btn = GetAllButton()
         self.get_btn.setObjectName("bannerget")  # or "bannerghost" while something else comes first (_style_get)
+        self.get_btn.setProperty("split", "main")
         self.get_btn.setIcon(icons.icon("download", 15, "white"))
         self.get_btn.clicked.connect(self.get_all.emit)
-        acts.addWidget(self.get_btn)
+        gl.addWidget(self.get_btn)
+        self.get_arrow = QPushButton()
+        self.get_arrow.setObjectName("bannerget")
+        self.get_arrow.setProperty("split", "arrow")
+        self.get_arrow.setIcon(icons.icon("chevron-down", 12, "white"))
+        self.get_arrow.setToolTip("Choose still or animated artwork for Get All")
+        self.get_arrow.setAccessibleName("Get All Artwork options")
+        self.get_arrow.setAccessibleDescription("Choose whether Get All Artwork takes still or animated artwork")
+        self.get_arrow.clicked.connect(lambda: self.get_menu.emit(self.get_arrow))
+        gl.addWidget(self.get_arrow)
+        acts.addWidget(get_box)
         self.apply_btn = QPushButton("Apply")
         self.apply_btn.setProperty("kind", "go")
         self.apply_btn.clicked.connect(self.apply.emit)
@@ -1009,14 +1080,20 @@ class MatchCard(QWidget):
         self.setStyleSheet(f"""
             #bannerback {{ background: transparent; color: white; font-weight: 600; padding: 0 6px;
                            min-height: 28px; text-align: left; }}
-            #bannerback:hover {{ background: rgba(0,0,0,.25); }}
-            #bannerghost {{ background: rgba(23,26,33,.72); color: {C['text']}; }}
-            #bannerghost:hover {{ background: rgba(61,76,94,.9); }}
-            #bannerghost:disabled {{ background: rgba(23,26,33,.5); color: {C['text3']}; }}
-            #bannerget {{ background: {C['get']}; color: white; }}
-            #bannerget:hover {{ background: {C['get_hover']}; }}
-            #bannerget:disabled {{ background: rgba(23,26,33,.5); color: {C['text3']}; }}
-            QPushButton[kind="go"]:disabled {{ background: rgba(23,26,33,.5); color: {C['text3']}; }}
+            #bannerback:hover {{ background: transparent; color: {C['fade_ink']}; }}
+            #bannerghost {{ background: rgba(0,0,0,.5); color: white; }}
+            #bannerghost:hover {{ background: {theme.grad('fade_a', 'fade_b')}; }}
+            #bannerghost:pressed {{ background: {theme.grad('fade_down_a', 'fade_down_b')}; }}
+            #bannerget {{ background: {theme.grad('get_a', 'get_b')}; color: {C['get_ink']}; font-weight: 700; }}
+            #bannerget:hover {{ background: {theme.grad('get_hot_a', 'get_hot_b')}; color: white; }}
+            #bannerget:pressed {{ background: {theme.grad('get_down_a', 'get_down_b')}; color: white; }}
+            #bannerghost:disabled, #bannerget:disabled, QPushButton[kind="go"]:disabled {{
+                background: rgba(23,26,33,.5); color: {C['text3']}; }}
+            #bannerghost[open="true"] {{ background: {theme.grad('fade_down_a', 'fade_down_b')}; }}
+            #bannerget[open="true"] {{ background: {theme.grad('get_down_a', 'get_down_b')}; }}
+            QPushButton[split="main"] {{ border-top-right-radius: 0; border-bottom-right-radius: 0; }}
+            QPushButton[split="arrow"] {{ border-top-left-radius: 0; border-bottom-left-radius: 0;
+                                          min-width: 32px; max-width: 32px; padding: 0; }}
         """)
 
     def set_game(self, name: str):
@@ -1039,8 +1116,14 @@ class MatchCard(QWidget):
             self.rename_btn.setAccessibleDescription(f"Rename {old} to {suggest} in Steam when you apply")
         self._fit()
 
+    def set_get_animated(self, on: bool):
+        """Show on Get All Artwork whether it takes animated artwork."""
+        self.get_btn.set_animated(on)
+        self._fit()
+
     def set_actions(self, can_get: bool, changes: int, busy: bool):
         self.get_btn.setEnabled(can_get and not busy)
+        self.get_arrow.setEnabled(can_get and not busy)
         self.apply_btn.setText(f"Apply ({changes} Change{'' if changes == 1 else 's'})" if changes else "Apply")
         self.apply_btn.setEnabled(bool(changes) and not busy)
         self._style_get()
@@ -1051,9 +1134,10 @@ class MatchCard(QWidget):
         and a quiet ghost while there are changes to apply or a match to check."""
         name = "bannerghost" if self.apply_btn.isEnabled() or self.state in ("check", "key") else "bannerget"
         if self.get_btn.objectName() != name:
-            self.get_btn.setObjectName(name)
-            self.get_btn.style().unpolish(self.get_btn)
-            self.get_btn.style().polish(self.get_btn)
+            for b in (self.get_btn, self.get_arrow):
+                b.setObjectName(name)
+                b.style().unpolish(b)
+                b.style().polish(b)
 
     def _fit(self):
         """Put the buttons on a row of their own, under the cover and name, when they don't fit beside them."""
@@ -1283,6 +1367,8 @@ class GamePage(QWidget):
         self.card.add_key.connect(win.ask_api_key)
         self.card.home.connect(win.go_home)
         self.card.get_all.connect(win.fill_current)
+        self.card.get_menu.connect(win.show_get_menu)
+        self.card.set_get_animated(win.get_all_animated)
         self.card.apply.connect(lambda: win.apply_games([win.current_shortcut().appid]))
         self.card.rename.connect(win.stage_rename)
         self.card.unrename.connect(win.unstage_rename)

@@ -458,6 +458,22 @@ class MainWindow(QMainWindow):
         b = self.header.more
         menu.popup(b.mapToGlobal(QPoint(b.width() - menu.width() + SHADOW, b.height() + 4)))
 
+    def show_get_menu(self, button):
+        """The still/animated menu under the arrow beside Get All Artwork."""
+        from .gamemenu import SHADOW, GameMenu, Item
+
+        on = self.get_all_animated
+        menu = GameMenu(None, "", None, [
+            "Get All Takes",
+            Item("Still Artwork", "images", lambda: self._set_get_all_animated(False), checked=not on),
+            Item("Animated Artwork", "play", lambda: self._set_get_all_animated(True), checked=on),
+        ], self, width=240)
+        menu.setAccessibleName("Get All Artwork options")
+        self._get_menu = menu  # kept alive while it shows
+        menu.adjustSize()
+        menu.popup(button.mapToGlobal(QPoint(button.width() - menu.width() + SHADOW, button.height() + 4)))
+        theme.hold_open(button)
+
     def _menu_auto_restart(self, on: bool):
         self._set_auto_restart(on)
         self.popover.set_auto_restart(on)
@@ -728,6 +744,16 @@ class MainWindow(QMainWindow):
     @property
     def show_animated(self) -> bool:
         return self.config.data.get("show_animated", True)
+
+    @property
+    def get_all_animated(self) -> bool:
+        """Does Get All Artwork take animated artwork where there is some?"""
+        return self.config.data.get("get_all_animated", False)
+
+    def _set_get_all_animated(self, on: bool):
+        self.config.data["get_all_animated"] = on
+        self.config.save()
+        self.page.card.set_get_animated(on)
 
     def _set_show_animated(self, on: bool):
         """Animated options in the strips and the tray, and animated artwork playing on the game page

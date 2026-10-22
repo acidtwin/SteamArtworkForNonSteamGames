@@ -907,6 +907,7 @@ def test_banner_header_has_one_filled_button(qapp, window):
 
     def filled():
         return [b.text() for b in card.acts.findChildren(type(card.apply_btn)) if b.isVisibleTo(card) and b.isEnabled()
+                and b.property("split") != "arrow"  # Get All Artwork's arrow is part of the same button
                 and (b.objectName() == "bannerget" or b.property("kind") in ("go", "confirm"))]
 
     for state, changes, want in (("exact", 0, ["Get All Artwork"]), ("exact", 2, ["Apply (2 Changes)"]),
@@ -919,6 +920,31 @@ def test_banner_header_has_one_filled_button(qapp, window):
     card.confirm.connect(lambda: confirmed.append(True))
     card.meta.linkActivated.emit("confirm")
     assert confirmed
+
+
+def test_get_all_arrow_chooses_still_or_animated(qapp, window):
+    win = window
+    win.config.data["api_key"] = "x"
+    win.sgdb.match = lambda name: (None, 0)
+    win.sgdb.assets = lambda *a, **k: []
+    win.open_game(0)
+    _pump(qapp)
+    card = win.page.card
+    assert not win.get_all_animated and not card.get_btn.animated
+    still = card.get_btn.sizeHint().width()
+    card.get_arrow.click()
+    _pump(qapp)
+    menu = win._get_menu
+    assert [r.text() for r in menu.rows] == ["Still Artwork", "Animated Artwork"]
+    assert menu.rows[0].item.checked and not menu.rows[1].item.checked
+    assert card.get_arrow.property("open")  # drawn held down while its menu shows
+    menu.rows[1].click()
+    _pump(qapp)
+    assert win.get_all_animated and win.config.data["get_all_animated"]
+    assert card.get_btn.animated and card.get_btn.sizeHint().width() > still  # room for the ANIMATED tag
+    assert card.get_arrow.objectName() == card.get_btn.objectName()  # both halves styled alike
+    win._set_get_all_animated(False)
+    assert not card.get_btn.animated
 
 
 def test_option_strips_line_up_and_banners_keep_their_top(qapp, window):
