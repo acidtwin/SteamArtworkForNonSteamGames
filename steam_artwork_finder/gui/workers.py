@@ -5,12 +5,14 @@ from __future__ import annotations
 import hashlib
 import os
 import tempfile
+import time
 import traceback
 
 from PySide6.QtCore import QObject, QRunnable, QThreadPool, Signal
 from PySide6.QtGui import QImage
 
 from ..config import cache_dir
+from ..sgdb import GoneError
 
 
 class _Signals(QObject):
@@ -114,7 +116,38 @@ def _whole(data: bytes) -> bool:
     return not QImage.fromData(data).isNull()
 
 
-def cached_file(url: str, fetch) -> str:
+RETRIES = 3  # tries after the first before a picture is given up on (each shown as "Retrying (n of 3)")
+RETRY_PAUSE = (1.0, 2.0, 4.0)  # seconds before each retry
+_sleep = time.sleep  # swapped out by tests
+
+
+class CutOff(Exception):
+    """A download that arrived incomplete or isn't a picture."""
+
+
+def fetch_whole(url: str, fetch, progress=None) -> bytes:
+    """fetch(url), tried again up to RETRIES times with a growing pause when it fails or arrives
+    cut off: a dropped download usually works the second time. `progress(n)` is told before
+    retry n. A file that isn't there (GoneError) is given up on at once."""
+    for n in range(RETRIES + 1):
+        try:
+            data = fetch(url)
+            if _whole(data):
+                return data
+            err: Exception = CutOff("The download was cut off")
+        except GoneError:
+            raise
+        except Exception as e:  # network trouble, a server error: worth another go
+            err = e
+        if n == RETRIES:
+            raise err
+        if progress is not None:
+            progress(n + 1)
+        _sleep(RETRY_PAUSE[min(n, len(RETRY_PAUSE) - 1)])
+    raise AssertionError("unreachable")
+
+
+def cached_file(url: str, fetch, progress=None) -> str:
     """Fetch url via fetch(url) into the cache folder (once) and return the file's path."""
     d = cache_dir() / "thumbs"
     d.mkdir(parents=True, exist_ok=True)
@@ -125,7 +158,7 @@ def cached_file(url: str, fetch) -> str:
         p.unlink(missing_ok=True)  # cut off or broken: fetch it again
     except OSError:
         pass
-    data = fetch(url)
+    data = fetch_whole(url, fetch, progress)
     # Written aside then renamed, so another thread never reads half a file.
     fd, tmp = tempfile.mkstemp(prefix=p.name + ".", suffix=".part", dir=d)
     try:
@@ -141,7 +174,7 @@ def cached_file(url: str, fetch) -> str:
     return str(p)
 
 
-def cached_download(url: str, fetch) -> bytes:
+def cached_download(url: str, fetch, progress=None) -> bytes:
     """Fetch url via fetch(url), keeping a copy in the cache folder."""
     d = cache_dir() / "thumbs"
     d.mkdir(parents=True, exist_ok=True)
@@ -153,7 +186,7 @@ def cached_download(url: str, fetch) -> bytes:
         p.unlink(missing_ok=True)  # cut off or broken: fetch it again
     except OSError:
         pass
-    data = fetch(url)
+    data = fetch_whole(url, fetch, progress)
     # Written aside then renamed, so another thread never reads half a file.
     fd, tmp = tempfile.mkstemp(prefix=p.name + ".", suffix=".part", dir=d)
     try:

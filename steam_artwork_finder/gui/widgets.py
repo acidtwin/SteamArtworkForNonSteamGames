@@ -2,11 +2,14 @@
 
 from __future__ import annotations
 
+import time
 from collections import OrderedDict
 from pathlib import Path
 
-from PySide6.QtCore import QBuffer, QByteArray, QIODevice, QPoint, QPointF, QRect, QRectF, QSize, Qt, QTimer, Signal
-from PySide6.QtGui import QColor, QFont, QImage, QImageReader, QPainter, QPainterPath, QPen, QPixmap
+from PySide6.QtCore import (QBuffer, QByteArray, QIODevice, QObject, QPoint, QPointF, QRect, QRectF, QSize, Qt,
+                            QTimer, Signal)
+from PySide6.QtGui import (QColor, QFont, QFontMetrics, QImage, QImageReader, QLinearGradient, QPainter, QPainterPath,
+                           QPen, QPixmap)
 from PySide6.QtWidgets import QFrame, QHBoxLayout, QLabel, QLayout, QPushButton, QSizePolicy, QWidget
 
 from . import icons, motion, theme, workers
@@ -44,6 +47,20 @@ def _read_image(path: Path | None, data: bytes | None) -> QImage:
     return reader.read()
 
 
+def remember(key, pm: QPixmap):
+    """Keep `pm` in the full-size cache under `key` (as load_pixmap does)."""
+    if key is None or pm.isNull():
+        return
+    while len(_cache) >= FULL_CACHE:
+        _cache.pop(next(iter(_cache)))
+    _cache[key] = pm
+
+
+def read_image(data: bytes) -> QImage:
+    """Worker: decode picture bytes (off the GUI thread, so a page of thumbnails arriving doesn't stutter)."""
+    return _read_image(None, data)
+
+
 def load_pixmap(path: Path | None = None, data: bytes | None = None, key=None) -> QPixmap:
     """A full-size pixmap from a file or bytes, cached."""
     if path is not None:
@@ -54,10 +71,7 @@ def load_pixmap(path: Path | None = None, data: bytes | None = None, key=None) -
     if key is not None and key in _cache:
         return _cache[key]
     pm = QPixmap.fromImage(_read_image(path, data)) if path is not None or data else QPixmap()
-    if key is not None and not pm.isNull():
-        while len(_cache) >= FULL_CACHE:
-            _cache.pop(next(iter(_cache)))
-        _cache[key] = pm
+    remember(key, pm)
     return pm
 
 
@@ -300,6 +314,129 @@ def draw_dots(p: QPainter, x: float, y: float, states: list, d: float = 7, gap: 
     return x + len(states) * (d + gap)
 
 
+# ---- loading and "couldn't load" ---------------------------------------------------
+
+FADE_IN = 0.16  # seconds a picture takes to fade in over its loading shimmer
+
+
+class _Pulse(QObject):
+    """Drives the loading shimmer and fade-ins: about 30 times a second it repaints just what
+    asked (each paint of a loading tile asks again), and stops once nothing is loading."""
+
+    PERIOD = 1.6  # seconds for the light band to cross a tile
+
+    def __init__(self):
+        super().__init__()
+        self._want: dict[int, tuple] = {}
+        self.timer = QTimer(self, interval=33)
+        self.timer.timeout.connect(self._tick)
+
+    def phase(self) -> float:
+        """0..1 across the band's sweep; shared, so every tile on screen sweeps together, as Steam's do."""
+        return (time.monotonic() % self.PERIOD) / self.PERIOD
+
+    def want(self, widget: QWidget, rect: QRect | None = None):
+        """Repaint `widget` (or just `rect` of it) on the next tick."""
+        entry = self._want.setdefault(id(widget), (widget, []))
+        entry[1].append(rect)
+        if not self.timer.isActive():
+            self.timer.start()
+
+    def _tick(self):
+        want, self._want = self._want, {}
+        if not want:
+            self.timer.stop()
+            return
+        for w, rects in want.values():
+            try:
+                if None in rects:
+                    w.update()
+                else:
+                    for r in rects:
+                        w.update(r)
+            except RuntimeError:  # gone meanwhile
+                pass
+
+
+_pulse: _Pulse | None = None
+
+
+def pulse() -> _Pulse:
+    global _pulse
+    if _pulse is None:
+        _pulse = _Pulse()
+    return _pulse
+
+
+def fade(since: float | None) -> float:
+    """How far a picture that arrived at `since` has faded in (1.0: fully)."""
+    if since is None:
+        return 1.0
+    return min(1.0, (time.monotonic() - since) / FADE_IN)
+
+
+def draw_loading(p: QPainter, rect: QRectF, phase: float, ground: QColor | None = None):
+    """A tile still loading: the plain dark tile with a faint light band drifting across it."""
+    p.save()
+    p.fillRect(rect, ground if ground is not None else q("raised"))
+    w = rect.width()
+    band = max(40.0, w * 0.6)
+    x = rect.left() - band + phase * (w + 2 * band)
+    g = QLinearGradient(QPointF(x - band / 2, rect.top()), QPointF(x + band / 2, rect.top() + band * 0.35))
+    g.setColorAt(0.0, QColor(255, 255, 255, 0))
+    g.setColorAt(0.5, QColor(255, 255, 255, 15))
+    g.setColorAt(1.0, QColor(255, 255, 255, 0))
+    p.fillRect(rect, g)
+    p.restore()
+
+
+def retry_text(n: int, width: float, fm: QFontMetrics) -> str:
+    """"Retrying (2 of 3)…", shortened to fit `width`."""
+    for text in (f"Retrying ({n} of {workers.RETRIES})…", f"Retry {n} of {workers.RETRIES}", f"{n}/{workers.RETRIES}"):
+        if fm.horizontalAdvance(text) <= width:
+            return text
+    return ""
+
+
+def draw_retrying(p: QPainter, rect: QRectF, n: int):
+    """The retry count, in amber, along the bottom of a loading tile (strip options have no caption)."""
+    p.save()
+    f = QFont(p.font())
+    f.setPointSizeF(theme.pt("label"))
+    f.setWeight(QFont.Weight.DemiBold)
+    p.setFont(f)
+    fm = QFontMetrics(f)
+    text = retry_text(n, rect.width() - 12, fm)
+    if text:
+        p.setPen(q("warn"))
+        p.drawText(rect.adjusted(6, 0, -6, -5), Qt.AlignmentFlag.AlignBottom | Qt.AlignmentFlag.AlignHCenter, text)
+    p.restore()
+
+
+def draw_failed(p: QPainter, rect: QRectF, words: bool = True, hot: bool = False):
+    """A tile that couldn't load: a warning mark, and "Couldn't load" over a blue "Retry" where there's room."""
+    p.save()
+    p.fillRect(rect, QColor("#283240") if hot else QColor("#222a35"))
+    f = QFont(p.font())
+    f.setPointSizeF(theme.pt("label"))
+    f.setWeight(QFont.Weight.DemiBold)
+    p.setFont(f)
+    fm = QFontMetrics(f)
+    d = 20 if rect.height() >= 60 else 16
+    lines = [("Couldn't load", q("text2")), ("Retry", q("blue_ink"))]
+    if not words or rect.height() < d + 2 * fm.height() + 10 or fm.horizontalAdvance(lines[0][0]) > rect.width() - 8:
+        lines = [("Retry", q("blue_ink"))] if words and rect.height() >= d + fm.height() + 8 else []
+    h = d + len(lines) * (fm.height() + 2) + (2 if lines else 0)
+    y = rect.top() + (rect.height() - h) / 2
+    icons.draw(p, "warning", QRectF(rect.center().x() - d / 2, y, d, d), q("text3"))
+    y += d + 4
+    for text, color in lines:
+        p.setPen(color)
+        p.drawText(QRectF(rect.left(), y, rect.width(), fm.height()), Qt.AlignmentFlag.AlignCenter, text)
+        y += fm.height() + 2
+    p.restore()
+
+
 FRAME_CACHE = 64 * 1024 * 1024  # bytes of scaled animation frames one ArtView keeps
 HIDDEN_DROP_MS = 5000  # an animation hidden this long lets go of its frames (made again when shown)
 
@@ -340,6 +477,9 @@ class ArtView(QWidget):
         self._parked: tuple | None = None  # (key, Motion) replaced by a preview, kept paused to go back to
         self._drop_timer: QTimer | None = None
         self.motion_spec: tuple = (None, None)  # (key, factory) of what's playing, for previews
+        self.load_state: tuple | None = None  # ("loading", retry n) or ("failed", retry fn) until a picture comes
+        self._fade_since: float | None = None  # when the picture arrived over the shimmer, for its fade-in
+        self._shimmered = False  # painted as loading since the last picture
         self.setCursor(Qt.CursorShape.PointingHandCursor)
         self.setFocusPolicy(Qt.FocusPolicy.StrongFocus)
         self.setAttribute(Qt.WidgetAttribute.WA_Hover)
@@ -350,8 +490,30 @@ class ArtView(QWidget):
         """What a screen reader says for this piece."""
         self.setAccessibleName(text)
 
+    def set_loading(self, retry: int = 0):
+        """A picture is on its way (`retry`: which retry this is, 0 for the first try)."""
+        self.load_state = ("loading", retry)
+        self.setToolTip("")
+        self.update()
+
+    def set_failed(self, retry_fn):
+        """It couldn't load even after retrying; a click (or Enter) calls `retry_fn`."""
+        self.load_state = ("failed", retry_fn)
+        self.setToolTip("Couldn't load this picture. Click to try again.")
+        self.update()
+
+    def _arrived(self):
+        if self.load_state is not None:
+            self.load_state = None
+            self.setToolTip("")
+        if self._shimmered:  # it was seen loading: fade the picture in
+            self._shimmered = False
+            self._fade_since = time.monotonic()
+
     def set_pixmap(self, pm: QPixmap | None, backdrop: QPixmap | None = None):
         pm, backdrop = pm or QPixmap(), backdrop or QPixmap()
+        if not pm.isNull():
+            self._arrived()
         if pm.cacheKey() == self.pixmap.cacheKey() and backdrop.cacheKey() == self.backdrop.cacheKey():
             return  # the same pictures (a refresh): keep what's already scaled
         self.pixmap = pm
@@ -418,6 +580,8 @@ class ArtView(QWidget):
 
     def _frame(self, pm: QPixmap):
         first = self.pixmap.isNull()
+        if first:
+            self._arrived()
         self.pixmap = pm
         self.update()
         if first:
@@ -495,6 +659,22 @@ class ArtView(QWidget):
         clip = QPainterPath()
         clip.addRoundedRect(r, self.round, self.round)
         focus = theme.kbd_focus(self)
+        if self.pixmap.isNull() and self.load_state is not None:
+            p.setClipPath(clip)
+            if self.load_state[0] == "failed":
+                draw_failed(p, r, hot=self.underMouse())
+            else:
+                self._shimmered = True
+                draw_loading(p, r, pulse().phase(), QColor("#1f2a38") if self.checker else None)
+                if self.load_state[1]:
+                    draw_retrying(p, r, self.load_state[1])
+                pulse().want(self)
+            p.setClipping(False)
+            if focus:
+                p.setPen(QPen(q("text"), 2))
+                p.setBrush(Qt.BrushStyle.NoBrush)
+                p.drawRoundedRect(r.adjusted(1, 1, -1, -1), self.round, self.round)
+            return
         if self.pixmap.isNull():
             if not self.backdrop.isNull():
                 # An empty logo over its banner: the slot stays plainly empty, the banner faint behind it.
@@ -510,6 +690,13 @@ class ArtView(QWidget):
             return
         p.setClipPath(clip)
         bd, art = self._render()
+        shown = fade(self._fade_since)
+        if shown < 1.0:  # fading in over the shimmer it replaces
+            draw_loading(p, r, pulse().phase(), QColor("#1f2a38") if self.checker else None)
+            p.setOpacity(shown)
+            pulse().want(self)
+        else:
+            self._fade_since = None
         if bd is not None:
             p.drawPixmap(self.rect(), bd)
         elif self.checker:
@@ -521,6 +708,7 @@ class ArtView(QWidget):
                 p.drawPixmap(QPointF((self.width() - w) / 2, (self.height() - h) / 2), art)
             else:
                 p.drawPixmap(self.rect(), art)
+        p.setOpacity(1.0)
         p.setClipping(False)
         if self.badge:
             draw_badge(p, r)
@@ -557,13 +745,21 @@ class ArtView(QWidget):
 
     def mouseReleaseEvent(self, e):
         if e.button() == Qt.MouseButton.LeftButton and self.rect().contains(e.position().toPoint()):
-            self.clicked.emit()
+            self._activate()
 
     def keyPressEvent(self, e):
         if e.key() in (Qt.Key.Key_Return, Qt.Key.Key_Enter, Qt.Key.Key_Space):
-            self.clicked.emit()
+            self._activate()
         else:
             super().keyPressEvent(e)
+
+
+    def _activate(self):
+        """A click or Enter: on a picture that couldn't load, try it again rather than picking it."""
+        if self.pixmap.isNull() and self.load_state is not None and self.load_state[0] == "failed":
+            self.load_state[1]()
+            return
+        self.clicked.emit()
 
 
 class IconLabel(QWidget):

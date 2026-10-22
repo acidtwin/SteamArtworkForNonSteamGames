@@ -7,6 +7,8 @@ artwork (shrunk as it decodes) and animated ones play their whole animation, loo
 
 from __future__ import annotations
 
+import time
+
 from PySide6.QtCore import (
     QEasingCurve, QEvent, QObject, QPoint, QPointF, QRect, QRectF, QSize, Qt, QTimer, QVariantAnimation, Signal,
 )
@@ -36,7 +38,8 @@ from .theme import q
 from ..steamstore import SteamAsset
 from .gamepage import describe, draw_new_tag, draw_steam_tag
 from .widgets import _cache as pixmap_cache
-from .widgets import FlowLayout, _largest_frame, draw_animated_tag, draw_badge, draw_checker, fill_rect, label
+from .widgets import (FlowLayout, _largest_frame, draw_animated_tag, draw_badge, draw_checker, draw_failed, draw_loading,
+                      fade, fill_rect, label, pulse, retry_text)
 from . import workers
 
 ROLE_ASSET = Qt.ItemDataRole.UserRole
@@ -45,6 +48,7 @@ ROLE_INUSE = Qt.ItemDataRole.UserRole + 2
 ROLE_PICK = Qt.ItemDataRole.UserRole + 3  # the waiting (not applied) pick
 ROLE_NAME = Qt.ItemDataRole.UserRole + 4  # what a screen reader says, before "picked" / "in use"
 ROLE_FULL = Qt.ItemDataRole.UserRole + 5  # the option drawn from its full-size artwork, once loaded
+ROLE_LOAD = Qt.ItemDataRole.UserRole + 6  # ("loading", retry n) or ("failed", retry fn) while it has no picture
 
 # The grid is as wide as four covers; each piece fills a row with this many options.
 COLUMNS = {"grid": 4, "wide": 3, "hero": 2, "logo": 3, "icon": 6}
@@ -101,6 +105,8 @@ class OptionDelegate(QStyledItemDelegate):
         super().__init__()
         self.tray = tray
         self._scaled: dict[tuple, QPixmap] = {}  # thumbnails scaled for the tray, so a repaint only draws
+        self._shimmered: set[int] = set()  # options painted as loading, whose picture then fades in
+        self._since: dict[int, float] = {}  # option -> when its picture arrived, while it fades in
 
     def scaled(self, pm: QPixmap, s: QSize, logo: bool, dpr: float) -> QPixmap:
         key = (pm.cacheKey(), s.width(), s.height(), logo, dpr)
@@ -137,13 +143,35 @@ class OptionDelegate(QStyledItemDelegate):
         a = index.data(ROLE_ASSET)
         live = self.tray.playing.frame(a)  # an animated option playing: its frame now
         logo = self.tray.slot.key == "logo"
-        if logo:
+        if live is not None:
+            pm = live
+        has = pm is not None and not pm.isNull()
+        load = None if has else index.data(ROLE_LOAD)
+        aid = a.id if a is not None else None
+        shown = 1.0
+        if has and aid in self._shimmered:  # seen loading: its picture fades in
+            self._shimmered.discard(aid)
+            self._since[aid] = time.monotonic()
+        if has and aid in self._since:
+            shown = fade(self._since[aid])
+            if shown >= 1.0:
+                del self._since[aid]
+        if load is not None and load[0] == "failed":
+            draw_failed(p, r, hot=bool(option.state & QStyle.StateFlag.State_MouseOver))
+        elif not has or shown < 1.0:
+            # Still on its way (or just arrived and fading in): the tile shimmers.
+            if not has:
+                self._shimmered.add(aid)
+            draw_loading(p, r, pulse().phase(), QColor("#1f2a38") if logo else None)
+            pulse().want(self.tray.list.viewport(), option.rect)
+            if has and logo:
+                draw_checker(p, r)
+        elif logo:
             draw_checker(p, r)
         else:
             p.fillRect(r, q("raised"))
-        if live is not None:
-            pm = live
-        if pm is not None and not pm.isNull():
+        if has:
+            p.setOpacity(shown)
             dpr = p.device().devicePixelRatioF()
             # A live frame comes ready to draw (see _Playing._frame); the rest are scaled once and kept.
             sp = live if live is not None else self.scaled(pm, s, logo, dpr)
@@ -152,6 +180,7 @@ class OptionDelegate(QStyledItemDelegate):
                 p.drawPixmap(QPointF(r.x() + (s.width() - w) / 2, r.y() + (s.height() - h) / 2), sp)
             else:
                 p.drawPixmap(r.topLeft(), sp)
+            p.setOpacity(1.0)
         p.setClipRect(option.rect)
         picked = bool(index.data(ROLE_PICK))
         if picked:
@@ -178,6 +207,12 @@ class OptionDelegate(QStyledItemDelegate):
         cap = "Official, from Steam" if official else f"by {a.author or 'unknown'}"
         if not official and a.style and fm.horizontalAdvance(f"{cap} · {style_name(a.style)}") <= s.width():
             cap += f" · {style_name(a.style)}"  # the style only when it fits whole: the author comes first
+        if load is not None and load[0] == "failed":
+            cap = "Couldn't load · Retry"
+            p.setPen(q("blue_ink"))
+        elif load is not None and load[1]:
+            cap = retry_text(load[1], s.width(), fm) or cap
+            p.setPen(q("warn"))
         cap = fm.elidedText(cap, Qt.TextElideMode.ElideRight, s.width())
         p.drawText(QRectF(r.left(), r.bottom() + 4, s.width(), QFontMetrics(f).height() + 2),
                    Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignVCenter, cap)
@@ -792,7 +827,13 @@ class OptionTray(QWidget):
     def _use(self, it: QListWidgetItem | None = None):
         """Pick the option clicked (or chosen with Enter). Choosing the one in use again drops the waiting pick."""
         it = it or self.list.currentItem()
-        if it is None or it.data(ROLE_INUSE) or it.data(ROLE_PICK):
+        if it is None:
+            return
+        load = it.data(ROLE_LOAD)
+        if load is not None and load[0] == "failed" and it.data(ROLE_PIX) is None:
+            load[1]()  # couldn't load: a click tries again rather than picking it
+            return
+        if it.data(ROLE_INUSE) or it.data(ROLE_PICK):
             return
         in_use, _picked = self._ids()
         if it.data(ROLE_ASSET).id == in_use and not self._clearing():

@@ -54,9 +54,10 @@ from .dialogs import (
 )
 from .gamepage import GamePage
 from .library import SORTS, GameList, StartPage, art_text, sorted_indices
-from .tray import ROLE_PIX, OptionTray
+from .tray import ROLE_LOAD, ROLE_PIX, OptionTray
 from .tray import _full_for as tray_full_pixmap
-from .widgets import ArtView, Notice, Toast, _largest_frame, decode_scaled, label, load_pixmap
+from .widgets import _cache as pixmap_cache
+from .widgets import ArtView, Notice, Toast, _largest_frame, decode_scaled, label, load_pixmap, read_image, remember
 
 ORDER = ("grid", "wide", "hero", "logo", "icon")
 EXE_STYLE = "exe"  # the style of an icon taken from the game's .exe
@@ -215,6 +216,26 @@ def _exe_icon_png(appid: int, exe_field: str) -> Path | None:
         return dest
     return None
 
+
+
+def _thumb_image(url: str, fetch, progress=None) -> QImage:
+    """Worker: a thumbnail downloaded (or from the cache) and decoded, so the GUI thread only shows it."""
+    return read_image(workers.cached_download(url, fetch, progress))
+
+
+def _load_state(target, state: tuple):
+    """Tell a thumbnail's target it's ("loading", retry n) or ("failed", retry fn)."""
+    try:
+        if isinstance(target, ArtView):
+            if state[0] == "failed":
+                target.set_failed(state[1])
+            else:
+                target.set_loading(state[1])
+        elif isinstance(target, QListWidgetItem):
+            if target.data(ROLE_PIX) is None:
+                target.setData(ROLE_LOAD, state)
+    except RuntimeError:  # gone meanwhile
+        pass
 
 class MainWindow(QMainWindow):
     def __init__(self):
@@ -604,23 +625,45 @@ class MainWindow(QMainWindow):
             self.config.set_match(sc.appid, g.id, g.name, g.year)
 
     def load_thumb(self, asset: Asset, target):
+        """Show `asset`'s thumbnail in `target` (an ArtView, a See all option, or a callback taking
+        the pixmap). Until it comes the target shows it's loading, and counts any retries; if it
+        still can't be had, the target says so and a click tries again."""
         if asset.animated:
             self._load_animated(asset, target)
             return
+        key = ("thumb", asset.thumb)
+        pm = pixmap_cache.get(key)
+        if pm is not None:
+            self._deliver_thumb(target, pm)
+            return
 
-        def done(data):
-            pm = load_pixmap(data=data, key=("thumb", asset.thumb))
-            try:
-                if isinstance(target, ArtView):
-                    target.set_pixmap(pm)
-                elif isinstance(target, QListWidgetItem):
-                    target.setData(ROLE_PIX, pm)
-                elif callable(target):
-                    target(pm)
-            except RuntimeError:  # the widget was replaced meanwhile
-                pass
+        def done(img):
+            if img.isNull():
+                failed("Not a picture")
+                return
+            pm = QPixmap.fromImage(img)
+            remember(key, pm)
+            self._deliver_thumb(target, pm)
 
-        workers.run(workers.cached_download, asset.thumb, self.sgdb.download, on_done=done)
+        def failed(_msg):
+            _load_state(target, ("failed", lambda: self.load_thumb(asset, target)))
+
+        _load_state(target, ("loading", 0))
+        workers.run(_thumb_image, asset.thumb, self.sgdb.download, on_done=done, on_error=failed,
+                    on_progress=lambda n: _load_state(target, ("loading", n)))
+
+    @staticmethod
+    def _deliver_thumb(target, pm: QPixmap):
+        try:
+            if isinstance(target, ArtView):
+                target.set_pixmap(pm)
+            elif isinstance(target, QListWidgetItem):
+                target.setData(ROLE_LOAD, None)
+                target.setData(ROLE_PIX, pm)
+            elif callable(target):
+                target(pm)
+        except RuntimeError:  # the widget was replaced meanwhile
+            pass
 
     # ---- animated artwork -----------------------------------------------------
 
@@ -647,6 +690,7 @@ class MainWindow(QMainWindow):
         def deliver(pm):
             try:
                 if isinstance(target, QListWidgetItem):
+                    target.setData(ROLE_LOAD, None)
                     target.setData(ROLE_PIX, pm)
                 elif callable(target):
                     target(pm)
@@ -655,6 +699,8 @@ class MainWindow(QMainWindow):
 
         def done(path):
             self.motion_files[asset.id] = (kind, path)
+            if isinstance(target, QListWidgetItem):
+                _load_state(target, ("loading", 0))  # downloaded: decoding its first picture
             try:
                 if isinstance(target, ArtView):
                     target.size()  # raises if the widget was replaced meanwhile
@@ -668,7 +714,12 @@ class MainWindow(QMainWindow):
             except RuntimeError:
                 pass
 
-        workers.run(workers.cached_file, url, self.sgdb.download, on_done=done, on_error=lambda _m: None)
+        def failed(_msg):
+            _load_state(target, ("failed", lambda: self._load_animated(asset, target)))
+
+        _load_state(target, ("loading", 0))
+        workers.run(workers.cached_file, url, self.sgdb.download, on_done=done, on_error=failed,
+                    on_progress=lambda n: _load_state(target, ("loading", n)))
 
     def motion_spec(self, asset: Asset | None, size, crop: bool = False) -> tuple:
         """(key, factory) for ArtView.set_motion to play an animated option, once it's downloaded.

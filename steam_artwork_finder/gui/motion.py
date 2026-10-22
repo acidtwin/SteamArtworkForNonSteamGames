@@ -498,7 +498,7 @@ class FrameMotion(Motion):
                  crop: bool | str = False, stream: bool = False):
         super().__init__()
         self.path, self.bound, self.crop = path, bound, crop
-        self.frames: list[tuple[QPixmap, int]] = []
+        self.frames: list[tuple[QPixmap | QImage, int]] = []  # images until first shown
         self.stream: _Stream | None = None
         self.i = 0
         self.due = 0.0
@@ -524,17 +524,22 @@ class FrameMotion(Motion):
             if self.playing:
                 self.timer.start(0)
             return
-        # One at a time, so each image goes as its pixmap comes rather than holding both lists.
-        frames.reverse()
-        while frames:
-            img, ms = frames.pop()
-            self.frames.append((QPixmap.fromImage(img), ms))
-            del img
+        # Each frame becomes a pixmap the first time it's shown, not all at once here: turning a
+        # long animation's frames over in one go held up the GUI thread (a stutter as it started).
+        self.frames = frames
         if self.frames:
-            self.frame.emit(self.frames[0][0])
+            self.frame.emit(self._pixmap(0))
             self.due = time.monotonic() + self.frames[0][1] / 1000
             if self.playing:
                 self._schedule()
+
+    def _pixmap(self, i: int) -> QPixmap:
+        """Frame i as a pixmap, made from its decoded image (then let go of) the first time."""
+        f, ms = self.frames[i]
+        if isinstance(f, QImage):
+            f = QPixmap.fromImage(f)
+            self.frames[i] = (f, ms)
+        return f
 
     def _schedule(self):
         if self.stream is not None or len(self.frames) > 1:
@@ -553,7 +558,7 @@ class FrameMotion(Motion):
             self.frame.emit(QPixmap.fromImage(img))
         elif self.frames:
             self.i = (self.i + 1) % len(self.frames)
-            self.frame.emit(self.frames[self.i][0])
+            self.frame.emit(self._pixmap(self.i))
             ms = self.frames[self.i][1]
         else:
             return

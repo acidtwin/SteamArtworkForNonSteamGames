@@ -24,6 +24,10 @@ class AuthError(SGDBError):
     pass
 
 
+class GoneError(SGDBError):
+    """The file isn't there (or isn't ours to have): asking again won't help."""
+
+
 @dataclass
 class Game:
     id: int
@@ -319,6 +323,8 @@ class SteamGridDB:
     def download(self, url: str) -> bytes:
         try:
             r = self.http.get(url, timeout=60)
+            if r.status_code in (400, 401, 403, 404, 410):
+                raise GoneError(f"Download failed: HTTP {r.status_code}")
             r.raise_for_status()
         except requests.RequestException as e:
             raise SGDBError(f"Download failed: {e}") from e
