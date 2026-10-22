@@ -747,16 +747,6 @@ class MainWindow(QMainWindow):
     def show_animated(self) -> bool:
         return self.config.data.get("show_animated", True)
 
-    @property
-    def get_all_animated(self) -> bool:
-        """Does Get All Artwork take animated artwork where there is some?"""
-        return self.config.data.get("get_all_animated", False)
-
-    def _set_get_all_animated(self, on: bool):
-        self.config.data["get_all_animated"] = on
-        self.config.save()
-        self.page.card.set_get_animated(on)
-
     def _set_show_animated(self, on: bool):
         """Animated options in the strips and the tray, and animated artwork playing on the game page
         and in the library, or none of it; reloads the open game's options."""
@@ -777,9 +767,7 @@ class MainWindow(QMainWindow):
     def _set_get_all_animated(self, on: bool):
         self.config.data["get_all_animated"] = on
         self.config.save()
-        card = self.page.card
-        if hasattr(card, "set_get_animated"):  # the Get All button's tag says so
-            card.set_get_animated(on)
+        self.page.card.set_get_animated(on)  # the Get All button's tag follows
 
     def _load_animated(self, asset: Asset, target):
         """An animated option plays its video thumbnail; where Qt can't play video, the file itself."""
