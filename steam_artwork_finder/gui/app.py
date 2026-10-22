@@ -109,7 +109,8 @@ def decode_pick(src, slot_key: str) -> QImage:
     else:
         reader = QImageReader(str(src))
     reader.setAutoTransform(True)
-    _largest_frame(reader)
+    if slot_key == "icon":  # an .ico's biggest size; never for the others, where a file's "images"
+        _largest_frame(reader)  # are an animation's frames, and stepping through them decodes each one
     w, h = PICK_BOUND.get(slot_key, (1920, 1920))
     size = reader.size()
     if size.isValid() and (size.width() > w or size.height() > h):
@@ -446,6 +447,7 @@ class MainWindow(QMainWindow):
             Item("Restart Steam When I Apply", "power", self._menu_auto_restart, toggle=self.auto_restart),
             Item("Apply When I Quit", "exit", self._menu_apply_on_quit, toggle=self.apply_on_quit),
             Item("Show Animated Artwork", "play", self._set_show_animated, toggle=self.show_animated),
+            Item("Get All Prefers Animated Artwork", "download", self._set_get_all_animated, toggle=self.get_all_animated),
             Item("Use Steam's Official Artwork", "images", self._set_steam_art, toggle=self.steam_art),
             "Help",
             Item("Report a Problem", "bug", lambda: QDesktopServices.openUrl(QUrl(ISSUES_URL)), external=True),
@@ -766,6 +768,18 @@ class MainWindow(QMainWindow):
             self._load_rows(sc, game)
             if self.tray.is_open():
                 self.tray.open_slot(self.tray.slot)
+
+    @property
+    def get_all_animated(self) -> bool:
+        """Get All Artwork takes the top animated cover, wide cover, banner and logo where there is one."""
+        return self.config.data.get("get_all_animated", False)
+
+    def _set_get_all_animated(self, on: bool):
+        self.config.data["get_all_animated"] = on
+        self.config.save()
+        card = self.page.card
+        if hasattr(card, "set_get_animated"):  # the Get All button's tag says so
+            card.set_get_animated(on)
 
     def _load_animated(self, asset: Asset, target):
         """An animated option plays its video thumbnail; where Qt can't play video, the file itself."""
@@ -2253,9 +2267,12 @@ class MainWindow(QMainWindow):
 
     # ---- getting artwork in bulk ---------------------------------------------
 
-    def _fetch_missing(self, jobs, progress, use_sgdb: bool = True, notfound: frozenset = frozenset()):
+    def _fetch_missing(self, jobs, progress, use_sgdb: bool = True, notfound: frozenset = frozenset(),
+                       animated: bool = False):
         """Worker: for each (shortcut, slots, saved match, single, Steam lookup), match and download
-        the top pick: Steam's official piece where there is one, else SteamGridDB's top option."""
+        the top pick: Steam's official piece where there is one, else SteamGridDB's top option.
+        With `animated`, SteamGridDB's top animated option comes first for the pieces Steam plays,
+        then the still ones as before."""
         report = {"found": 0, "notfound": [], "gaps": 0, "errors": [], "unsure": 0, "stopped": False}
         for i, (sc, slots, saved, single, steam) in enumerate(jobs):
             if self._stop_fill:  # Stop in the status bar: finish the game in hand, then stop
@@ -2294,6 +2311,22 @@ class MainWindow(QMainWindow):
                         game = None
             got = False
             for slot in slots:
+                assets = None  # SteamGridDB's options for the piece, once asked
+                if animated and slot.animates and game is not None:
+                    # An animated piece beats Steam's official one, which never moves.
+                    try:
+                        assets = self.sgdb.assets(slot.key, game.id, animated=True)
+                        top = next((x for x in assets if x.animated), None)
+                        if top is not None:
+                            data = self.sgdb.download(top.url)
+                            progress(("asset", sc, slot, *_spool_pick(data, sc.appid, slot.key), top, game.id))
+                            got = True
+                            continue
+                        assets = [x for x in assets if not x.animated]  # none animated: the top still one
+                    except AuthError:
+                        raise
+                    except Exception:
+                        assets = None  # a still piece instead
                 a = official.get(slot.key)
                 if a is not None:
                     try:
@@ -2305,7 +2338,8 @@ class MainWindow(QMainWindow):
                 if game is None:
                     continue
                 try:
-                    assets = self.sgdb.assets(slot.key, game.id)
+                    if assets is None:
+                        assets = self.sgdb.assets(slot.key, game.id)
                     if not assets:
                         report["gaps"] += 1
                         progress(("empty", sc, slot))
@@ -2320,7 +2354,8 @@ class MainWindow(QMainWindow):
             report["found"] += got
         return report
 
-    def _run_fill(self, shortcuts: list[Shortcut], single: bool = False):
+    def _run_fill(self, shortcuts: list[Shortcut], single: bool = False, animated: bool | None = None):
+        """Get Artwork for `shortcuts`; `animated` overrides the Get All Prefers Animated setting."""
         # Without a SteamGridDB key, Steam's official artwork can still fill the gaps.
         use_sgdb = bool(self.config.api_key)
         if self.busy or (not use_sgdb and not self.steam_art and not self.ensure_key()):
@@ -2454,19 +2489,20 @@ class MainWindow(QMainWindow):
             tell(self, APP_NAME, msg)
 
         workers.run(self._fetch_missing, jobs, kind="long", use_sgdb=use_sgdb, notfound=frozenset(notfound),
+                    animated=self.get_all_animated if animated is None else animated,
                     on_progress=on_progress, on_done=done,
                     on_error=failed)
 
-    def fill_current(self):
+    def fill_current(self, animated: bool | None = None):
         sc = self.current_shortcut()
         if sc:
             if self.status.get(sc.appid) == "notfound":
                 self.status.pop(sc.appid, None)
-            self._run_fill([sc], single=True)
+            self._run_fill([sc], single=True, animated=animated)
 
-    def fill_everything(self):
+    def fill_everything(self, animated: bool | None = None):
         if self.sfile:
-            self._run_fill(list(self.sfile.shortcuts))
+            self._run_fill(list(self.sfile.shortcuts), animated=animated)
 
     def _progress(self, text: str):
         self.progress_text = text
