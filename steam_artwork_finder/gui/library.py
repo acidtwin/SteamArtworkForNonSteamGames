@@ -529,6 +529,13 @@ class GameListView(QListWidget):
 
     menu_requested = Signal(int, QPoint)
 
+    def mousePressEvent(self, e):
+        # A right-click only opens that game's menu: picking the row would open its page.
+        if e.button() == Qt.MouseButton.RightButton:
+            e.accept()
+            return
+        super().mousePressEvent(e)
+
     def contextMenuEvent(self, e):
         if e.reason() == e.Reason.Keyboard:
             it = self.currentItem()

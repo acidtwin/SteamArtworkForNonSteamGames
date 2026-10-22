@@ -212,6 +212,29 @@ def test_game_menu_opens_the_game(qapp, window):
     assert win.stage.currentWidget() is win.page and win.current == 2
 
 
+def test_right_click_in_the_list_keeps_the_open_page(qapp, window):
+    from PySide6.QtCore import QPoint, Qt
+    from PySide6.QtGui import QContextMenuEvent
+    from PySide6.QtTest import QTest
+
+    win = window
+    win.open_game(0)
+    _pump(qapp, 200)
+    lst = win.game_list.list
+    target = next(lst.item(r) for r in range(lst.count()) if lst.item(r) is not lst.currentItem())
+    pos = lst.visualItemRect(target).center()
+    asked = []
+    lst.menu_requested.connect(lambda i, p: asked.append(i))
+    QTest.mousePress(lst.viewport(), Qt.MouseButton.RightButton, pos=pos)
+    qapp.sendEvent(lst.viewport(), QContextMenuEvent(QContextMenuEvent.Reason.Mouse, pos, lst.viewport().mapToGlobal(pos)))
+    QTest.mouseRelease(lst.viewport(), Qt.MouseButton.RightButton, pos=pos)
+    _pump(qapp, 400)
+    assert win.current == 0 and win.stage.currentWidget() is win.page
+    assert lst.currentItem() is not target
+    assert len(asked) == 1 and asked[0] != 0
+    win._game_menu.close()
+
+
 def test_steam_folder_popover_searches_and_switches(qapp, window, tmp_path, steam_root):
     import shutil
 
