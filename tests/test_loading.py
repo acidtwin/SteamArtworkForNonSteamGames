@@ -161,3 +161,48 @@ def test_strip_keeps_options_when_more_arrive(qapp, window):
     assert row.thumbs[:2] == views  # the same views, pictures and all
     _pump(qapp, 1500, until=lambda: not row.thumbs[2].pixmap.isNull())
     assert len(asked) == n + 1  # only the new one was fetched
+
+
+def test_given_up_pictures_come_back_with_the_connection(qapp, window):
+    from PySide6.QtCore import QSize
+    from steam_artwork_finder.gui.widgets import ArtView
+    from steam_artwork_finder.sgdb import Asset, GoneError
+
+    win = window
+    png = _png()
+    online = {"now": False}
+
+    def download(url):
+        if "missing" in url:
+            raise GoneError("HTTP 404")
+        if not online["now"]:
+            raise OSError("no network")
+        return png
+
+    win.sgdb.download = download
+    a, b, c = (Asset(30 + i, "https://x/c.png", f"https://x/back{i}.png", 600, 900, "image/png", 0, "", "s")
+               for i in range(3))
+    gone = Asset(40, "https://x/c.png", "https://x/missing.png", 600, 900, "image/png", 0, "", "s")
+    views = [ArtView(QSize(80, 120)) for _ in range(3)]
+    for v, asset in zip(views, (a, b, gone)):
+        win.load_thumb(asset, v)
+    _pump(qapp, 2000, until=lambda: all(v.load_state and v.load_state[0] == "failed" for v in views))
+    assert all(v.load_state[0] == "failed" for v in views)
+    assert set(win._failed) == {id(views[0]), id(views[1])}  # not the one that isn't there
+
+    online["now"] = True
+    win.load_thumb(c, ArtView(QSize(80, 120)))  # anything downloading brings the rest back
+    _pump(qapp, 2000, until=lambda: not views[0].pixmap.isNull() and not views[1].pixmap.isNull())
+    assert not views[0].pixmap.isNull() and not views[1].pixmap.isNull() and not win._failed
+    assert views[2].load_state[0] == "failed"
+
+    # With nothing else downloading, one is tried now and then.
+    online["now"] = False
+    d = ArtView(QSize(80, 120))
+    win._probe_wait = 50
+    win.load_thumb(Asset(50, "https://x/c.png", "https://x/probe.png", 600, 900, "image/png", 0, "", "s"), d)
+    _pump(qapp, 2000, until=lambda: d.load_state and d.load_state[0] == "failed")
+    assert win._probe.isActive()
+    online["now"] = True
+    _pump(qapp, 3000, until=lambda: not d.pixmap.isNull())
+    assert not d.pixmap.isNull()

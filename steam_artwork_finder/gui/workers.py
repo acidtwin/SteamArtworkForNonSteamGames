@@ -126,16 +126,21 @@ class CutOff(Exception):
     """A download that arrived incomplete."""
 
 
-def run_retrying(fn, *args, on_done=None, on_error=None, on_retry=None, kind: str = "net", **kwargs) -> None:
+def run_retrying(fn, *args, on_done=None, on_error=None, on_retry=None, on_gone=None, kind: str = "net",
+                 **kwargs) -> None:
     """Like run(), but when fn fails it's tried again up to RETRIES times, after a growing pause,
     before on_error hears of it: a dropped or cut-off download usually works the second time.
     The pause is a timer on the GUI thread, so no worker sits idle through it. `on_retry(n)` is
-    told as retry n is scheduled. A file that isn't there (GoneError) is given up on at once."""
+    told as retry n is scheduled. A file that isn't there (GoneError) is given up on at once,
+    and told to `on_gone` instead, if given."""
     from PySide6.QtCore import QTimer
 
     def attempt(n: int):
         def failed(msg):
             err = task.error
+            if isinstance(err, GoneError) and on_gone is not None:
+                on_gone(msg)
+                return
             if n >= RETRIES or isinstance(err, GoneError):
                 if on_error is not None:
                     on_error(msg)
@@ -154,33 +159,30 @@ class Shared:
     See all both wanting a thumbnail, say), rather than one each."""
 
     def __init__(self):
-        self._waiting: dict = {}  # key -> [callbacks (done, error, retry)], and the retry it's on
+        self._waiting: dict = {}  # key -> [callbacks (done, error, retry, gone)], and the retry it's on
 
-    def get(self, key, fn, *args, on_done=None, on_error=None, on_retry=None, **kwargs) -> int:
+    def get(self, key, fn, *args, on_done=None, on_error=None, on_retry=None, on_gone=None, **kwargs) -> int:
         """Start fn (retrying) unless it's already running for `key`; returns the retry it's on (0: first try)."""
         entry = self._waiting.get(key)
         if entry is not None:
-            entry[0].append((on_done, on_error, on_retry))
+            entry[0].append((on_done, on_error, on_retry, on_gone))
             return entry[1]
-        entry = self._waiting[key] = [[(on_done, on_error, on_retry)], 0]
+        entry = self._waiting[key] = [[(on_done, on_error, on_retry, on_gone)], 0]
 
-        def done(result):
-            for cb, _e, _r in self._waiting.pop(key, [[]])[0]:
+        def tell(which, value):
+            for cbs in self._waiting.pop(key, [[]])[0]:
+                cb = cbs[which] if which != 3 or cbs[3] is not None else cbs[1]  # gone, else failed
                 if cb is not None:
-                    cb(result)
-
-        def failed(msg):
-            for _d, cb, _r in self._waiting.pop(key, [[]])[0]:
-                if cb is not None:
-                    cb(msg)
+                    cb(value)
 
         def retry(n):
             entry[1] = n
-            for _d, _e, cb in entry[0]:
-                if cb is not None:
-                    cb(n)
+            for cbs in entry[0]:
+                if cbs[2] is not None:
+                    cbs[2](n)
 
-        run_retrying(fn, *args, on_done=done, on_error=failed, on_retry=retry, **kwargs)
+        run_retrying(fn, *args, on_done=lambda r: tell(0, r), on_error=lambda m: tell(1, m), on_retry=retry,
+                     on_gone=lambda m: tell(3, m), **kwargs)
         return 0
 
 

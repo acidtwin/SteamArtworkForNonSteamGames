@@ -9,6 +9,7 @@ from collections import OrderedDict
 import sys
 from pathlib import Path
 
+from shiboken6 import isValid
 from PySide6.QtCore import QObject, QPoint, QSize, QTimer, QUrl, Qt, Signal
 from PySide6.QtGui import QAction, QDesktopServices, QImage, QKeySequence, QPixmap
 from PySide6.QtWidgets import (
@@ -32,7 +33,7 @@ from ..artwork import IMAGE_EXTS, SLOTS, Slot, current_icon, existing, prune_rep
 from ..config import Config, cache_dir
 from ..exeicon import exe_icon, exe_path
 from ..pending import LocalFile, Pending, Pick
-from ..sgdb import Asset, AuthError, Game, SGDBError, SteamGridDB, clean_name, generic_name, name_variants, search_name
+from ..sgdb import Asset, AuthError, Game, GoneError, SGDBError, SteamGridDB, clean_name, generic_name, name_variants, search_name
 from ..shortcuts import Shortcut
 from ..steamstore import SteamAsset, SteamStore, StoreGame
 from ..steam import (
@@ -221,8 +222,24 @@ def _thumb_image(url: str, fetch) -> QImage:
     """Worker: a thumbnail downloaded (or from the cache) and decoded, so the GUI thread only shows it."""
     img = read_image(workers.cached_download(url, fetch))
     if img.isNull():
-        raise workers.CutOff("Not a picture")
+        raise GoneError("Not a picture")  # trying again won't change that
     return img
+
+
+PROBE_FIRST = 15_000  # ms before a given-up picture is first tried again by itself
+PROBE_MAX = 120_000  # and at most this long between tries after that
+
+
+def _alive(target) -> bool:
+    """Whether a thumbnail's target is still around (strips are rebuilt, See all is emptied)."""
+    try:
+        if isinstance(target, ArtView):
+            return isValid(target)
+        if isinstance(target, QListWidgetItem):
+            return isValid(target) and target.listWidget() is not None
+    except RuntimeError:
+        return False
+    return False
 
 
 def _load_state(target, state: tuple):
@@ -278,6 +295,12 @@ class MainWindow(QMainWindow):
         self.full_files: dict[int, str] = {}  # animated asset id -> its full file, for big places
         self._full_loading: set[int] = set()
         self._fetches = workers.Shared()  # thumbnails and preview files on their way, one download each
+        # Pictures given up on: id(target) -> (target, retry). All are tried again once anything
+        # downloads (or the connection is found again); until then one is tried now and then.
+        self._failed: dict[int, tuple] = {}
+        self._probe_wait = PROBE_FIRST
+        self._probe = QTimer(self, singleShot=True)
+        self._probe.timeout.connect(self._probe_failed)
         self._anim_files: dict[tuple, bool] = {}  # (artwork file, mtime) -> animated?
         # Each game's artwork files in ORDER (None where it has none), so painting and
         # counting never touch the disk. Forgotten whenever the app writes a game's files.
@@ -632,6 +655,7 @@ class MainWindow(QMainWindow):
         """Show `asset`'s thumbnail in `target` (an ArtView, a See all option, or a callback taking
         the pixmap). Until it comes the target shows it's loading, and counts any retries; if it
         still can't be had, the target says so and a click tries again."""
+        self._failed.pop(id(target), None)  # trying again now
         if asset.animated:
             self._load_animated(asset, target)
             return
@@ -642,6 +666,7 @@ class MainWindow(QMainWindow):
             return
 
         def done(img):
+            self._connection_back()
             pm = pixmap_cache.get(key)  # made once for everyone who asked
             if pm is None:
                 pm = QPixmap.fromImage(img)
@@ -649,7 +674,8 @@ class MainWindow(QMainWindow):
             self._deliver_thumb(target, pm)
 
         n = self._fetches.get(key, _thumb_image, asset.thumb, self.sgdb.download, on_done=done,
-                              on_error=lambda _m: _load_state(target, ("failed", lambda: self.load_thumb(asset, target))),
+                              on_error=lambda _m: self._gave_up(target, lambda: self.load_thumb(asset, target)),
+                              on_gone=lambda _m: _load_state(target, ("failed", lambda: self.load_thumb(asset, target))),
                               on_retry=lambda n: _load_state(target, ("loading", n)))
         _load_state(target, ("loading", n))
 
@@ -665,6 +691,37 @@ class MainWindow(QMainWindow):
                 target(pm)
         except RuntimeError:  # the widget was replaced meanwhile
             pass
+
+    def _gave_up(self, target, retry):
+        """`target` couldn't load even after retrying: it says so (a click tries again), and it's
+        tried again by itself once the connection is back."""
+        _load_state(target, ("failed", retry))
+        self._failed[id(target)] = (target, retry)
+        if not self._probe.isActive():
+            self._probe.start(self._probe_wait)
+
+    def _connection_back(self):
+        """Something downloaded: try every picture that was given up on again."""
+        self._probe_wait = PROBE_FIRST
+        if not self._failed:
+            return
+        self._probe.stop()
+        waiting, self._failed = list(self._failed.values()), {}
+        for target, retry in waiting:
+            if _alive(target):
+                retry()
+
+    def _probe_failed(self):
+        """Now and then, while pictures are given up on, try one again to see if the connection's back
+        (waiting longer each time it isn't); if it is, it brings the rest back with it."""
+        for k, (target, _r) in list(self._failed.items()):
+            if not _alive(target):
+                del self._failed[k]
+        if not self._failed:
+            return
+        self._probe_wait = min(self._probe_wait * 2, PROBE_MAX)
+        _target, retry = self._failed.pop(next(iter(self._failed)))
+        retry()
 
     # ---- animated artwork -----------------------------------------------------
 
@@ -698,7 +755,10 @@ class MainWindow(QMainWindow):
             except RuntimeError:  # the item was replaced meanwhile
                 pass
 
+        self._failed.pop(id(target), None)
+
         def done(path):
+            self._connection_back()
             self.motion_files[asset.id] = (kind, path)
             if isinstance(target, QListWidgetItem):
                 _load_state(target, ("loading", 0))  # downloaded: decoding its first picture
@@ -716,7 +776,8 @@ class MainWindow(QMainWindow):
                 pass
 
         n = self._fetches.get(("file", url), workers.cached_file, url, self.sgdb.download, on_done=done,
-                              on_error=lambda _m: _load_state(target, ("failed", lambda: self._load_animated(asset, target))),
+                              on_error=lambda _m: self._gave_up(target, lambda: self._load_animated(asset, target)),
+                              on_gone=lambda _m: _load_state(target, ("failed", lambda: self._load_animated(asset, target))),
                               on_retry=lambda n: _load_state(target, ("loading", n)))
         _load_state(target, ("loading", n))
 
@@ -1481,6 +1542,7 @@ class MainWindow(QMainWindow):
         self.conn = state
         self.statusbar.set_connection("nokey" if not self.config.api_key else state)
         if state == "connected":
+            self._connection_back()
             QTimer.singleShot(0, self.match_all)
 
     def match_all(self):
