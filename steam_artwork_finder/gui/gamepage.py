@@ -113,6 +113,9 @@ def _drop_view(v):
     v.deleteLater()
 
 
+STEAM_WAIT_MS = 4000  # longest the strip waits for Steam's piece before showing SteamGridDB's options
+
+
 class OptionView(ArtView):
     """One option in a row's strip; says when its thumbnail arrives."""
 
@@ -464,6 +467,11 @@ class ArtworkRow(QWidget):
 
         self.assets: list[Asset] = []
         self.steam_assets: list[Asset] = []
+        # Steam's piece goes first, so the strip waits for Steam's answer (up to STEAM_WAIT_MS)
+        # before showing: options showing and then shuffling along when it came looked unsettled.
+        self.steam_waiting = False
+        self._steam_cap = QTimer(self, singleShot=True, interval=STEAM_WAIT_MS)
+        self._steam_cap.timeout.connect(self._steam_late)
         self._sgdb: tuple = ("loading",)
         self.thumbs: list[ArtView] = []
         self.total = 0
@@ -673,13 +681,29 @@ class ArtworkRow(QWidget):
         self._sgdb = ("assets", assets, more)
         self._render()
 
+    def wait_for_steam(self):
+        """Steam's piece is being looked up: hold the options back until it's known, so they show once, in order."""
+        self.steam_assets = []
+        self.steam_waiting = True
+        self._steam_cap.start()
+        self._render()
+
+    def _steam_late(self):
+        self.steam_waiting = False  # Steam's slow to answer: don't keep SteamGridDB's options waiting
+        self._render()
+
     def set_steam(self, assets: list[Asset]):
         """Steam's official artwork for this piece (none, or one), shown first."""
+        self.steam_waiting = False
+        self._steam_cap.stop()
         self.steam_assets = list(assets)
         self._render()
 
     def _render(self):
         kind = self._sgdb[0]
+        if self.steam_waiting and kind in ("assets", "loading"):
+            self._show_message("Loading options…", "")
+            return
         sgdb = self._sgdb[1] if kind == "assets" else []
         if self.steam_assets or sgdb:
             self._show_assets(sgdb, kind == "assets" and self._sgdb[2])

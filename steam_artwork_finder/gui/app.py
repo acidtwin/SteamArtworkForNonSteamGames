@@ -898,7 +898,7 @@ class MainWindow(QMainWindow):
 
         def failed(_msg):
             if here() is not None:
-                self.page.card.set_steam("error")
+                self._show_steam(here(), (None, {}), "error")
 
         workers.run(self._steam_lookup, sc.name, saved, on_done=done, on_error=failed)
 
@@ -906,7 +906,10 @@ class MainWindow(QMainWindow):
         game, assets = found
         for key, row in self.page.rows.items():
             a = assets.get(key)
-            row.set_steam([a] if a else [])
+            if state == "finding":
+                row.wait_for_steam()
+            else:
+                row.set_steam([a] if a else [])
         self.page.card.set_steam(state or ("found" if game else "none"), game.name if game else "")
         self.page._card_cover()
         if self.tray.is_open():

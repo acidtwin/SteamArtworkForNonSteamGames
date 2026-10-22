@@ -206,3 +206,28 @@ def test_given_up_pictures_come_back_with_the_connection(qapp, window):
     online["now"] = True
     _pump(qapp, 3000, until=lambda: not d.pixmap.isNull())
     assert not d.pixmap.isNull()
+
+
+def test_strip_waits_for_steams_piece_so_it_shows_once_in_order(qapp, window):
+    from steam_artwork_finder.sgdb import Asset
+    from steam_artwork_finder.steamstore import SteamAsset
+
+    win = window
+    png = _png()
+    win.sgdb.download = lambda url: png
+    win.open_game(0)
+    _pump(qapp)
+    row = win.page.rows["grid"]
+    a = [Asset(60 + i, f"https://x/c{i}.png", f"https://x/order{i}.png", 600, 900, "image/png", 0, "", "s") for i in range(2)]
+    row.wait_for_steam()
+    row.set_assets(a, False)
+    assert not row.thumbs  # SteamGridDB's options wait for Steam's answer
+    steam = SteamAsset(1, "https://x/steam.png", "https://x/steam-t.png", 600, 900, "image/png", 0, "official", "Steam")
+    row.set_steam([steam])
+    assert [type(x).__name__ for x in row.assets] == ["SteamAsset", "Asset", "Asset"]
+
+    row.wait_for_steam()  # Steam never answers: they show anyway after a while
+    row._steam_cap.setInterval(10)
+    row._steam_cap.start()
+    _pump(qapp, 500, until=lambda: not row.steam_waiting)
+    assert not row.steam_waiting and len(row.thumbs) == 2
