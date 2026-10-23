@@ -36,8 +36,11 @@ def _pump(app, ms=300, until=None):
 @pytest.fixture
 def window(qapp, steam_root, tmp_path, monkeypatch):
     monkeypatch.setenv("HOME", str(tmp_path))
+    monkeypatch.setenv("USERPROFILE", str(tmp_path))  # Path.home() on Windows
     monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path / "cfg"))
+    monkeypatch.setenv("APPDATA", str(tmp_path / "cfg"))  # Windows
     monkeypatch.setenv("XDG_CACHE_HOME", str(tmp_path / "cache"))
+    monkeypatch.setenv("LOCALAPPDATA", str(tmp_path / "cache"))  # Windows
     from steam_artwork_finder.gui import app as appmod
 
     monkeypatch.setattr(appmod, "steam_running", lambda root=None: False)
@@ -362,6 +365,8 @@ def test_steam_folder_popover_path_fits_on_first_open(qapp, tmp_path, monkeypatc
     from steam_artwork_finder.gui import steamfolder
 
     monkeypatch.setenv("HOME", str(tmp_path))
+
+    monkeypatch.setenv("USERPROFILE", str(tmp_path))  # Path.home() on Windows
     host = QWidget()
     host.resize(1000, 800)
     host.show()
@@ -875,6 +880,8 @@ def test_thumbnail_cache_replaces_a_cut_off_file(qapp, tmp_path, monkeypatch):
     from PySide6.QtGui import QImage
 
     monkeypatch.setenv("XDG_CACHE_HOME", str(tmp_path / "cache"))
+
+    monkeypatch.setenv("LOCALAPPDATA", str(tmp_path / "cache"))  # Windows
     buf = QBuffer()
     buf.open(QBuffer.OpenModeFlag.WriteOnly)
     img = QImage(4, 4, QImage.Format.Format_RGB32)
@@ -1538,6 +1545,8 @@ def test_exe_icon_is_the_fallback_for_steam_and_the_list(qapp, window, tmp_path,
     from steam_artwork_finder.exeicon import exe_icon, exe_path
 
     monkeypatch.setenv("XDG_CACHE_HOME", str(tmp_path / "cache"))
+
+    monkeypatch.setenv("LOCALAPPDATA", str(tmp_path / "cache"))  # Windows
     img = QImage(64, 64, QImage.Format.Format_ARGB32)
     img.fill(0xFFCC3333)
     img.save(str(tmp_path / "i.png"))
