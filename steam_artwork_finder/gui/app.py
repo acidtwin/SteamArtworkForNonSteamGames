@@ -161,10 +161,15 @@ def clear_picks():
 
 
 def _pid_alive(pid: int) -> bool:
-    """Is that process still running? On Windows os.kill(pid, 0) would end it, so there the
-    answer is "maybe" (True) and only age clears a past run's folder."""
+    """Is that process still running? On Windows os.kill(pid, 0) would end it, so Windows is
+    asked directly, and "maybe" (True) if it can't be."""
     if sys.platform == "win32":
-        return True
+        from ..steam import _win_process_name
+
+        try:
+            return _win_process_name(pid) is not None
+        except OSError:
+            return True
     try:
         os.kill(pid, 0)
     except ProcessLookupError:
@@ -1844,8 +1849,7 @@ class MainWindow(QMainWindow):
 
     def update_chrome(self):
         """The content bar's title and buttons, and the status bar's messages."""
-        self.statusbar.set_steam(bool(self.users), str(self.steam_root).replace(str(self.home), "~")
-                                 if self.steam_root else "")
+        self.statusbar.set_steam(bool(self.users), tilde(self.steam_root) if self.steam_root else "")
         games = self.sfile.shortcuts if self.sfile else []
         sc = self.current_shortcut()
         on_page = sc is not None and self.stage.currentWidget() is self.page
@@ -2975,6 +2979,15 @@ def focus_start(win: MainWindow):
 
 
 def main() -> int:
+    if sys.platform == "win32":
+        # Its own taskbar button and icon, not Python's (and pinning it pins this app).
+        try:
+            import ctypes
+
+            ctypes.windll.shell32.SetCurrentProcessExplicitAppUserModelID(
+                "AcidDesign.SteamArtworkForNonSteamGames")
+        except (OSError, AttributeError):
+            pass
     app = QApplication(sys.argv)
     app.setApplicationName(APP_NAME)
     app.setApplicationVersion(__version__)

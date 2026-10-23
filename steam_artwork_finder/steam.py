@@ -243,9 +243,12 @@ def steam_running(root: Path | None = None) -> bool:
             with winreg.OpenKey(
                 winreg.HKEY_CURRENT_USER, r"Software\Valve\Steam\ActiveProcess"
             ) as k:
-                return int(winreg.QueryValueEx(k, "pid")[0]) != 0
-        except OSError:
+                pid = int(winreg.QueryValueEx(k, "pid")[0])
+        except (OSError, ValueError):
             return False
+        # Steam clears the pid when it quits, but not when it crashes or the PC loses
+        # power: check the process is still there and is Steam.
+        return pid != 0 and _win_pid_is_steam(pid)
     home = Path.home()
     pid_files = [home / ".steam/steam.pid",
                  home / "snap/steam/common/.steam/steam.pid"]  # Snap: Steam's $HOME is ~/snap/steam/common
@@ -293,6 +296,45 @@ def _flatpak_steam_running() -> bool | None:
 def _is_steam_comm(comm: str) -> bool:
     # An exact name: "steam" in comm would also match this app ("steam-artwork-f").
     return comm.strip().lower() in STEAM_COMMS
+
+
+def _win_process_name(pid: int) -> str | None:
+    """The .exe file name of a running Windows process; None if it isn't running or can't be asked."""
+    import ctypes
+    from ctypes import wintypes
+
+    kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
+    kernel32.OpenProcess.restype = wintypes.HANDLE
+    kernel32.OpenProcess.argtypes = (wintypes.DWORD, wintypes.BOOL, wintypes.DWORD)
+    kernel32.QueryFullProcessImageNameW.argtypes = (
+        wintypes.HANDLE, wintypes.DWORD, wintypes.LPWSTR, ctypes.POINTER(wintypes.DWORD))
+    kernel32.GetExitCodeProcess.argtypes = (wintypes.HANDLE, ctypes.POINTER(wintypes.DWORD))
+    kernel32.CloseHandle.argtypes = (wintypes.HANDLE,)
+    PROCESS_QUERY_LIMITED_INFORMATION, STILL_ACTIVE = 0x1000, 259
+    handle = kernel32.OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, False, pid)
+    if not handle:
+        return None
+    try:
+        code = wintypes.DWORD()
+        if not kernel32.GetExitCodeProcess(handle, ctypes.byref(code)) or code.value != STILL_ACTIVE:
+            return None
+        buf = ctypes.create_unicode_buffer(32768)
+        size = wintypes.DWORD(len(buf))
+        if not kernel32.QueryFullProcessImageNameW(handle, 0, buf, ctypes.byref(size)):
+            return ""  # running, name unknown
+        return Path(buf.value).name
+    finally:
+        kernel32.CloseHandle(handle)
+
+
+def _win_pid_is_steam(pid: int) -> bool:
+    try:
+        name = _win_process_name(pid)
+    except (OSError, AttributeError):
+        return True  # can't ask: trust Steam's own record
+    if name is None:
+        return False
+    return name == "" or _is_steam_comm(name)
 
 
 def _pid_is_steam(pid: int) -> bool:
@@ -352,9 +394,14 @@ def _steam_command(root: Path | None, *args: str) -> list[str]:
 
 
 def _spawn(cmd: list[str]) -> bool:
+    if sys.platform == "win32":
+        # Its own process group and no console, so Steam outlives this app and no window flashes.
+        detach = dict(creationflags=subprocess.DETACHED_PROCESS | subprocess.CREATE_NEW_PROCESS_GROUP)
+    else:
+        detach = dict(start_new_session=True)
     try:
-        subprocess.Popen(cmd, start_new_session=True, stdin=subprocess.DEVNULL,
-                         stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+        subprocess.Popen(cmd, stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL,
+                         stderr=subprocess.DEVNULL, **detach)
         return True
     except OSError:
         return False
