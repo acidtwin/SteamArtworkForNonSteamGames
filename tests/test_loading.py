@@ -231,3 +231,39 @@ def test_strip_waits_for_steams_piece_so_it_shows_once_in_order(qapp, window):
     row._steam_cap.start()
     _pump(qapp, 500, until=lambda: not row.steam_waiting)
     assert not row.steam_waiting and len(row.thumbs) == 2
+
+
+def test_complete_files_with_bytes_after_their_end_are_whole(tmp_path):
+    from PySide6.QtCore import QBuffer
+    from PySide6.QtGui import QImage
+
+    from steam_artwork_finder.gui import workers
+
+    png = _png()
+    assert workers._whole(png) and workers._whole(png + b"trailing editor data")
+    assert not workers._whole(png[:-20])
+    buf = QBuffer()
+    buf.open(QBuffer.OpenModeFlag.WriteOnly)
+    img = QImage(64, 64, QImage.Format.Format_RGB32)
+    img.fill(0x336699)
+    img.save(buf, "JPEG")
+    jpg = bytes(buf.data())
+    assert workers._whole(jpg) and workers._whole(jpg + b"\0" * 500)
+    assert not workers._whole(jpg[:len(jpg) // 2])
+    # A big file in the cache is judged by its two ends only.
+    big = tmp_path / "big"
+    big.write_bytes(png[:-12] + b"\0" * (400 * 1024) + png[-12:])
+    assert workers._whole_file(big)
+    big.write_bytes(png[:-12] + b"\0" * (400 * 1024))
+    assert not workers._whole_file(big)
+
+
+def test_generic_titles_are_not_matched_on_the_steam_store(qapp, window):
+    from steam_artwork_finder.steamstore import StoreGame
+
+    win = window
+    asked = []
+    win.steam.match = lambda name: asked.append(name) or StoreGame(1, name)
+    win.steam.assets = lambda appid: {}
+    assert win._steam_lookup("Launcher", None) == (None, {}) and not asked
+    assert win._steam_lookup("Celeste", None)[0].name == "Celeste" and asked == ["Celeste"]

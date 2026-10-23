@@ -121,12 +121,15 @@ class SteamStore:
         except ValueError:
             raise SteamStoreError("The Steam store sent something unexpected")
 
-    def _exists(self, url: str) -> bool:
+    def _exists(self, url: str) -> bool | None:
+        """True if the file is there, False if the CDN says it isn't, None if we couldn't tell."""
         try:
             r = self.http.head(url, timeout=20, allow_redirects=True)
         except requests.RequestException:
-            return False
-        return r.status_code == 200
+            return None
+        if r.status_code == 200:
+            return True
+        return False if r.status_code in (403, 404, 410) else None
 
     # -- finding the game ------------------------------------------------------
 
@@ -178,6 +181,7 @@ class SteamStore:
             return CDN + fmt.replace("${FILENAME}", name)
 
         out: dict[str, SteamAsset] = {}
+        unsure = False
         for i, key in enumerate(ORDER):
             if key == "icon":
                 continue
@@ -187,7 +191,10 @@ class SteamStore:
             else:
                 # Not listed (or the details didn't load): the plain name older games use, if it's there.
                 url = url_for(plain)
-                if not self._exists(url):
+                there = self._exists(url)
+                if there is None:
+                    unsure = True  # a network blip isn't "no such piece": ask again next time
+                if not there:
                     continue
             thumb = url
             if small:
@@ -197,6 +204,6 @@ class SteamStore:
         if not ok and not out:
             # Couldn't ask the store (offline, busy): don't remember "no official art".
             raise SteamStoreError("Couldn't load the game's Steam store details")
-        if ok:
+        if ok and not unsure:
             self._assets[appid] = out
         return dict(out)

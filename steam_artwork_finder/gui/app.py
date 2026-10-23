@@ -5,6 +5,7 @@ from __future__ import annotations
 import itertools
 import os
 import tempfile
+import time
 from collections import OrderedDict
 import sys
 from pathlib import Path
@@ -148,14 +149,29 @@ def clear_picks():
     for d in runs:
         try:
             pid = int(d.name)
-            if pid != os.getpid():
-                os.kill(pid, 0)  # still running: leave it alone
-                continue
-        except ProcessLookupError:
-            pass
+            age = time.time() - d.stat().st_mtime
         except (ValueError, OSError):
             continue
+        if pid == os.getpid():
+            continue
+        # A run older than a day is over whatever its PID now belongs to (PIDs get reused).
+        if age < 86400 and _pid_alive(pid):
+            continue
         shutil.rmtree(d, ignore_errors=True)
+
+
+def _pid_alive(pid: int) -> bool:
+    """Is that process still running? On Windows os.kill(pid, 0) would end it, so there the
+    answer is "maybe" (True) and only age clears a past run's folder."""
+    if sys.platform == "win32":
+        return True
+    try:
+        os.kill(pid, 0)
+    except ProcessLookupError:
+        return False
+    except OSError:
+        return True  # someone else's process: alive
+    return True
 
 
 class PixmapLRU(OrderedDict):
@@ -665,8 +681,10 @@ class MainWindow(QMainWindow):
 
     def stage_exe_icon(self, sc: Shortcut) -> bool:
         """When SteamGridDB has no icon, stage the one in the game's .exe for Steam (written on
-        Apply like any pick). True if one was staged."""
-        if self.pending.get(sc.appid, "icon") is not None or self.slot_path(sc, SLOTS["icon"]):
+        Apply like any pick). True if one was staged. Callers look the .exe up in a worker first
+        (exe_icon_file's cache), so this rarely touches the disk on the window's thread."""
+        if self.busy == "apply" or self.pending.get(sc.appid, "icon") is not None \
+                or self.slot_path(sc, SLOTS["icon"]):
             return False
         path = self.exe_icon_file(sc, wait=True)
         if path is None:
@@ -676,8 +694,10 @@ class MainWindow(QMainWindow):
         except OSError:
             return False
         img = QImage.fromData(data)
+        # No new title along with it: this can happen unasked (see check_gaps), and a rename the
+        # user didn't ask for shouldn't ride on it.
         self._stage(sc, "icon", Pick(Asset(next(_exe_ids), "", "", img.width(), img.height(), "image/png", 0,
-                                           EXE_STYLE, ""), data))
+                                           EXE_STYLE, ""), data), rename=False)
         return True
 
     def icon_pixmap(self, sc: Shortcut) -> QPixmap | None:
@@ -941,6 +961,8 @@ class MainWindow(QMainWindow):
         and its official pieces."""
         if saved is not None:
             game = StoreGame(saved["id"], saved.get("name", "")) if saved.get("id") else None
+        elif generic_name(name):
+            game = None  # "Launcher", "Play": an exact store match would be some other game
         else:
             game = self.steam.match(name)
         return game, (self.steam.assets(game.appid) if game else {})
@@ -978,7 +1000,7 @@ class MainWindow(QMainWindow):
             if here() is not None:
                 self._show_steam(here(), (None, {}), "error")
 
-        workers.run(self._steam_lookup, sc.name, saved, on_done=done, on_error=failed)
+        workers.run(self._steam_lookup, search_name(sc.name, sc.exe), saved, on_done=done, on_error=failed)
 
     def _show_steam(self, sc: Shortcut, found, state: str = ""):
         game, assets = found
@@ -1042,9 +1064,10 @@ class MainWindow(QMainWindow):
             self._load_pick_pix(key, pick)  # let go to save memory: back shortly
         return pm
 
-    def _stage(self, sc: Shortcut, slot_key: str, pick: Pick, pm: QPixmap | None = None):
+    def _stage(self, sc: Shortcut, slot_key: str, pick: Pick, pm: QPixmap | None = None, rename: bool = True):
         self.pending.set(sc.appid, slot_key, pick)
-        self._auto_rename(sc)
+        if rename:
+            self._auto_rename(sc)
         key = (sc.appid, slot_key)
         self.pick_pix.pop(key, None)
         if pick.clears:
@@ -1715,25 +1738,29 @@ class MainWindow(QMainWindow):
             if not m or sc.appid in self._gaps_checked:
                 continue
             self._gaps_checked.add(sc.appid)
-            todo += [(sc.appid, m["id"], s.key) for s in self._unstaged_missing(sc)]
+            todo += [(sc.appid, sc.exe, m["id"], s.key) for s in self._unstaged_missing(sc)]
         if not todo:
             return
 
         def work(progress):
-            for appid, game_id, key in todo:
+            for appid, exe, game_id, key in todo:
                 try:
-                    progress((appid, key, not self.sgdb.assets(key, game_id)))
+                    none = not self.sgdb.assets(key, game_id)
                 except AuthError:
                     raise
                 except Exception:
                     continue  # asked again next start
+                # No icon on SteamGridDB: read the game's own here, off the window's thread.
+                exe_icon = _exe_icon_png(appid, exe) if none and key == "icon" else None
+                progress((appid, exe, key, none, exe_icon))
 
         def got(result):
-            appid, key, none = result
+            appid, exe, key, none, exe_icon = result
             self.config.set_no_art(appid, key, none)
             sc = next((g for g in self.sfile.shortcuts if g.appid == appid), None) if self.sfile else None
-            if none and key == "icon" and sc is not None:
-                self.stage_exe_icon(sc)  # no icon on SteamGridDB: the game's own, ready for Apply
+            if none and key == "icon" and sc is not None and sc.exe == exe:
+                self._exe_icons[(appid, exe)] = exe_icon
+                self.stage_exe_icon(sc)  # the game's own icon, ready for Apply
             self.refresh_soon()
 
         workers.run(work, on_progress=got, on_done=lambda *_: None,
@@ -2506,7 +2533,7 @@ class MainWindow(QMainWindow):
                 found, saved_steam = steam
                 try:
                     if found is None:
-                        found = self._steam_lookup(sc.name, saved_steam)
+                        found = self._steam_lookup(search_name(sc.name, sc.exe), saved_steam)
                         progress(("steam", sc, found))
                     official = found[1]
                 except Exception:
@@ -2574,6 +2601,11 @@ class MainWindow(QMainWindow):
                 except Exception as e:
                     report["errors"].append(f"{sc.name} {slot.label.lower()}: {e}")
             report["found"] += got
+            # The .exe icon may stand in for a missing one when this is done: read it here, not
+            # on the window's thread (the drive may be asleep, or a network share).
+            if (sc.appid, sc.exe) not in self._exe_icons and (
+                    SLOTS["icon"] in slots or "icon" in self.config.no_art(sc.appid)):
+                self._exe_icons[(sc.appid, sc.exe)] = _exe_icon_png(sc.appid, sc.exe)
         return report
 
     def _run_fill(self, shortcuts: list[Shortcut], single: bool = False, animated: bool | None = None):
@@ -2650,7 +2682,7 @@ class MainWindow(QMainWindow):
             # SteamGridDB has no icon for these: the game's .exe may have one for Steam.
             exe_icons = [sc for sc, *_ in jobs if "icon" in self.config.no_art(sc.appid) and self.stage_exe_icon(sc)]
             report["gaps"] -= sum(1 for sc, slots, *_ in jobs if sc in exe_icons and SLOTS["icon"] in slots)
-            report["found"] += sum(1 for sc in exe_icons if self.pending.count(sc.appid) == 1)
+            report["found"] += sum(1 for sc in exe_icons if len(self.pending.for_game(sc.appid)) == 1)
             if exe_icons:
                 self.refresh_all()
             if self.current >= 0:

@@ -108,14 +108,57 @@ def _whole(data: bytes) -> bool:
     if _is_video(data):
         return True
     if data.startswith(b"\x89PNG\r\n\x1a\n"):
-        return data[-12:-4] == b"\x00\x00\x00\x00IEND"
+        return _PNG_END in data[-4096:]  # some editors add bytes after the end chunk
     if data[:3] == b"\xff\xd8\xff":
-        return b"\xff\xd9" in data[-64:]
+        # The end marker after the main image's scan (an EXIF thumbnail before it has its own).
+        # Scan data never holds FF D9: every FF byte in it is followed by 00.
+        return data.rfind(b"\xff\xd9") > _jpeg_scan(data)
     if data[:4] == b"RIFF" and data[8:12] == b"WEBP":
         return int.from_bytes(data[4:8], "little") + 8 <= len(data)
     if data[:4] in (b"GIF8",):
         return data.rstrip(b"\x00")[-1:] == b"\x3b"
     return not QImage.fromData(data).isNull()
+
+
+_PNG_END = b"\x00\x00\x00\x00IEND\xaeB`\x82"  # the end chunk, with its fixed checksum
+
+
+def _jpeg_scan(data: bytes) -> int:
+    """Where a JPEG's main image data starts (its first start-of-scan), skipping the header
+    segments by their lengths; the file's length if it never gets there."""
+    i = 2
+    while i + 4 <= len(data) and data[i] == 0xFF:
+        marker = data[i + 1]
+        if marker == 0xDA:
+            return i
+        if marker == 0xFF:  # padding
+            i += 1
+            continue
+        i += 2 + int.from_bytes(data[i + 2:i + 4], "big")
+    return len(data)
+
+
+def _whole_file(p) -> bool:
+    """_whole for a file in the cache, reading only its two ends when it's big (animated
+    pieces run to tens of MB, and are asked for again and again)."""
+    size = p.stat().st_size
+    if size <= 256 * 1024:
+        return _whole(p.read_bytes())
+    with open(p, "rb") as f:
+        head = f.read(64 * 1024)
+        f.seek(-64 * 1024, os.SEEK_END)
+        tail = f.read()
+    if _is_video(head):
+        return True
+    if head.startswith(b"\x89PNG\r\n\x1a\n"):
+        return _PNG_END in tail
+    if head[:3] == b"\xff\xd8\xff":
+        return b"\xff\xd9" in tail  # far past the headers, so only the image's own end marker
+    if head[:4] == b"RIFF" and head[8:12] == b"WEBP":
+        return int.from_bytes(head[4:8], "little") + 8 <= size
+    if head[:4] == b"GIF8":
+        return tail.rstrip(b"\x00")[-1:] == b"\x3b"
+    return _whole(p.read_bytes())
 
 
 RETRIES = 3  # tries after the first before a download is given up on (each shown as "Retrying (n of 3)")
@@ -199,7 +242,7 @@ def cached_file(url: str, fetch) -> str:
     d.mkdir(parents=True, exist_ok=True)
     p = d / hashlib.sha1(url.encode()).hexdigest()
     try:
-        if _whole(p.read_bytes()):
+        if _whole_file(p):
             return str(p)
         p.unlink(missing_ok=True)  # cut off or broken: fetch it again
     except OSError:

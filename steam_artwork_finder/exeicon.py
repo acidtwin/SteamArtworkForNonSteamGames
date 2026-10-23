@@ -7,6 +7,7 @@ launcher command) gives None, and the caller moves on to its next fallback.
 
 from __future__ import annotations
 
+import os
 import shlex
 import struct
 from pathlib import Path
@@ -17,13 +18,14 @@ RT_ICON, RT_GROUP_ICON = 3, 14
 def exe_path(exe_field: str) -> Path | None:
     """The .exe a shortcut's Exe field points at, if it is one and it exists."""
     text = exe_field.strip()
+    posix = os.name != "nt"  # POSIX rules would eat the backslashes in Windows paths
     try:
-        parts = shlex.split(text) if text else []
+        parts = shlex.split(text, posix=posix) if text else []
     except ValueError:
-        parts = [text.strip('"')]
+        parts = [text]
     if not parts:
         return None
-    path = Path(parts[0])
+    path = Path(parts[0].strip('"'))
     if path.suffix.lower() != ".exe" or not path.is_file():
         return None
     return path

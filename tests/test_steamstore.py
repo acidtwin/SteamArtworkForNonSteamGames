@@ -103,3 +103,21 @@ def test_store_failure_is_not_remembered():
     with pytest.raises(SteamStoreError):
         store.assets(620)
     assert 620 not in store._assets
+
+
+def test_a_network_blip_on_a_plain_name_is_not_remembered():
+    import requests
+
+    plain = CDN + "steam/apps/8/"
+
+    class Blip(Session):
+        def head(self, url, timeout=None, allow_redirects=True):
+            if url.endswith("logo.png") and not self.heads.count(url):
+                self.heads.append(url)
+                raise requests.ConnectionError("blip")
+            return super().head(url, timeout, allow_redirects)
+
+    sess = Blip(items={"assets": {}}, exists={plain + "logo.png"})
+    s = store(sess)
+    assert "logo" not in s.assets(8)  # couldn't tell this time
+    assert "logo" in s.assets(8)  # so it's asked again, and found
