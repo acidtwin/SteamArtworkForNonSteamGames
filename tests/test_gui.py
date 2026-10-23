@@ -1662,3 +1662,64 @@ def test_get_all_can_prefer_animated_artwork(qapp, window):
     _pump(qapp, 3000, until=lambda: not win.busy)
     assert not win.pending.get(sc.appid, "hero").asset.animated
     win._set_get_all_animated(False)
+
+
+def test_about_credits_acid_design_and_fits_its_text(qapp, monkeypatch):
+    from PySide6.QtWidgets import QLabel
+
+    from steam_artwork_finder.gui import dialogs
+
+    monkeypatch.setattr(dialogs.MakerLockup, "LOGO_FILES", ())  # without the logo, the words alone
+    d = dialogs.AboutDialog(None, "Steam Artwork for Non-Steam Games", "1.2.3")
+    text = " ".join(lab.text() for lab in d.findChildren(QLabel))
+    assert "Version 1.2.3" in text and "MIT licence" in text
+    assert "https://aciddesign.uk" in text and "Claude Code" in text and "SteamGridDB" in text
+    lock = d.maker_mark
+    assert lock.logo is None and lock.accessibleName() == "Acid Design"
+    assert lock.word_font.family() == "Space Grotesk" and lock.cap_font.family().startswith("IBM Plex Mono")
+    lock._tick(0.1)
+    assert lock.phase == 0.0  # held before the sweep
+    lock._tick(0.35)
+    assert 0.0 < lock.phase < 1.0
+    lock._tick(0.9)
+    assert lock.phase == 1.0
+    assert d.height() >= d.layout().totalHeightForWidth(d.width())  # no wrapped line cut off
+    d.deleteLater()
+
+
+def test_account_chip_opens_the_switcher(qapp, window):
+    from shiboken6 import isValid
+
+    from steam_artwork_finder.gui.accounts import AccountMenu, AccountRow
+
+    win = window
+    assert [u.label for u in win.users] == ["Deck User", "Other"]
+    win.header.account.clicked.emit()
+    _pump(qapp, 200)
+    menu = win._account_menu
+    assert isinstance(menu, AccountMenu) and menu.isVisible()
+    rows = [r for r in menu.rows if isinstance(r, AccountRow)]
+    assert [(r.acct.name, r.acct.games, r.current) for r in rows] == [
+        ("Deck User", len(win.sfile.shortcuts), True), ("Other", 0, False)]
+    assert win.scrim.is_covering()  # the window behind dims
+    rows[1].click()
+    _pump(qapp, 200)
+    assert win.user is win.users[1]
+    assert not isValid(menu) or not menu.isVisible()
+
+
+def test_account_switcher_with_one_account_still_opens(qapp, window, steam_root):
+    import shutil
+
+    from steam_artwork_finder.gui.accounts import AccountRow
+
+    shutil.rmtree(steam_root / "userdata" / "87654321")
+    win = window
+    win.detect_steam([steam_root])
+    _pump(qapp)
+    assert len(win.users) == 1 and win.header.account.isVisible()
+    win.header.account.clicked.emit()
+    _pump(qapp, 200)
+    rows = [r for r in win._account_menu.rows if isinstance(r, AccountRow)]
+    assert len(rows) == 1 and rows[0].current
+    win._account_menu.close()
