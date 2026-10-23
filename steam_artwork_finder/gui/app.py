@@ -333,6 +333,11 @@ class MainWindow(QMainWindow):
         self.progress_text = ""
         self.restart_needed = False
         self.conn = "disconnected"
+        self.store_conn = "unknown"  # Steam's store: "connected" or "disconnected" once it's been asked
+        # While a source can't be reached it's asked again now and then, waiting longer each time.
+        self._recheck_wait = PROBE_FIRST
+        self._recheck = QTimer(self, singleShot=True)
+        self._recheck.timeout.connect(self._recheck_sources)
         self._close_after_apply = False
         self._steam_poll = False  # a background Steam check is running
         # The rate-limit callback runs on whichever worker thread made the request.
@@ -945,6 +950,7 @@ class MainWindow(QMainWindow):
         """Offer Steam's official artwork (and prefer it in Get Artwork), or leave Steam's store alone."""
         self.config.data["steam_art"] = on
         self.config.save()
+        self._show_sources()
         if self.current_shortcut() is not None and self.stage.currentWidget() is self.page:
             self.load_steam()
 
@@ -993,10 +999,12 @@ class MainWindow(QMainWindow):
             if self.config.get_steam_match(appid) != saved:
                 return  # the Steam game was changed meanwhile: this answer is for the old one
             self.steam_found[appid] = result
+            self.set_store(True)
             if here() is not None:
                 self._show_steam(here(), result)
 
         def failed(_msg):
+            self.set_store(False)
             if here() is not None:
                 self._show_steam(here(), (None, {}), "error")
 
@@ -1662,13 +1670,46 @@ class MainWindow(QMainWindow):
     # ---- SteamGridDB connection ---------------------------------------------
 
     def set_connection(self, state: str):
+        """SteamGridDB's state: "connected", "connecting", "disconnected" or "rejected" (the key was refused)."""
         if not self.config.api_key:
             state = "disconnected"
         self.conn = state
-        self.statusbar.set_connection("nokey" if not self.config.api_key else state)
+        self._show_sources()
         if state == "connected":
             self._connection_back()
             QTimer.singleShot(0, self.match_all)
+
+    def set_store(self, reached: bool):
+        """Steam's store answered (or couldn't be reached)."""
+        self.store_conn = "connected" if reached else "disconnected"
+        self._show_sources()
+
+    def _show_sources(self):
+        """The status bar's Artwork Sources item, and asking again later while a source is down."""
+        sgdb = "nokey" if not self.config.api_key else self.conn
+        store = self.store_conn if self.steam_art else "off"
+        self.statusbar.set_sources(sgdb, store)
+        down = sgdb == "disconnected" or store == "disconnected"
+        if not down:
+            self._recheck.stop()
+            self._recheck_wait = PROBE_FIRST
+        elif not self._recheck.isActive():
+            self._recheck.start(self._recheck_wait)
+
+    def _recheck_sources(self):
+        """A source couldn't be reached: see whether it's back (the tooltip says it's retrying)."""
+        self._recheck_wait = min(self._recheck_wait * 2, PROBE_MAX)
+        if self.config.api_key and self.conn == "disconnected":
+            workers.run(self.sgdb.check_key,
+                        on_done=lambda ok: self.set_connection("connected" if ok else "rejected"),
+                        on_error=lambda _m: self.set_connection("disconnected"))
+        if self.steam_art and self.store_conn == "disconnected":
+            def back(_):
+                self.set_store(True)
+                sc = self.current_shortcut()
+                if sc is not None and sc.appid not in self.steam_found and self.stage.currentWidget() is self.page:
+                    self.load_steam()  # the open game's official artwork, now it can be had
+            workers.run(self.steam.reachable, on_done=back, on_error=lambda _m: self.set_store(False))
 
     def match_all(self):
         """Look every unmatched game up on SteamGridDB in the background, so best
@@ -1771,7 +1812,7 @@ class MainWindow(QMainWindow):
             return self.set_connection("disconnected")
         self.set_connection("connecting")
         workers.run(self.sgdb.check_key,
-                    on_done=lambda ok: self.set_connection("connected" if ok else "disconnected"),
+                    on_done=lambda ok: self.set_connection("connected" if ok else "rejected"),
                     on_error=lambda _m: self.set_connection("disconnected"))
 
     def _network_problem(self, msg: str):
@@ -2469,7 +2510,7 @@ class MainWindow(QMainWindow):
         self.toast.show_message("Connected to SteamGridDB.")
 
     def _key_problem(self, msg: str):
-        self.set_connection("disconnected")
+        self.set_connection("rejected" if "API key" in msg else "disconnected")
         if "API key" in msg:
             self.toast.show_message(msg)
 
@@ -2537,7 +2578,7 @@ class MainWindow(QMainWindow):
                         progress(("steam", sc, found))
                     official = found[1]
                 except Exception:
-                    pass  # the store couldn't be reached: SteamGridDB alone, as before
+                    progress(("store_down",))  # SteamGridDB alone, as before
             game = None
             if use_sgdb and sc.appid not in notfound:
                 try:
@@ -2656,6 +2697,9 @@ class MainWindow(QMainWindow):
             elif kind == "steam":
                 _, sc, found = ev
                 self.steam_found[sc.appid] = found
+                self.set_store(True)
+            elif kind == "store_down":
+                self.set_store(False)
                 if self.current_shortcut() is sc and self.stage.currentWidget() is self.page:
                     self._show_steam(sc, found)
             elif kind == "asset":
