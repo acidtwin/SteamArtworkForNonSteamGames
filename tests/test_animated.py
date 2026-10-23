@@ -430,6 +430,9 @@ def test_see_all_click_picks_an_option(qapp, window, monkeypatch):
     pick = win.pending.get(sc.appid, "hero")
     assert pick is not None and pick.asset.id == 2  # one click, picked
     assert t.list.item(1).text().endswith(", picked")
+    t.ok_btn.click()  # OK closes the panel and keeps the pick
+    _pump(qapp, 50)
+    assert not t.is_open() and win.pending.get(sc.appid, "hero").asset.id == 2
 
 
 def test_see_all_loads_full_quality_stills(qapp, window, monkeypatch):

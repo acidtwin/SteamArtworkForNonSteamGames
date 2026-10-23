@@ -592,6 +592,11 @@ class OptionTray(QWidget):
         self.remove_btn.setAccessibleDescription("Removes this piece when you apply")
         self.remove_btn.clicked.connect(self._clear)
         foot.addWidget(self.remove_btn)
+        self.ok_btn = QPushButton("OK")
+        self.ok_btn.setProperty("kind", "confirm")
+        self.ok_btn.setAccessibleDescription("Closes this panel; your pick stays waiting to apply")
+        self.ok_btn.clicked.connect(self.close_tray)
+        foot.addWidget(self.ok_btn)
         lay.addLayout(foot)
         self.assets = []
         self.page = 0
