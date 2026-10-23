@@ -1043,7 +1043,7 @@ class _Layer(QObject):
             self.m.stop()
 
 
-BANNER_H = 210
+BANNER_H = 280  # tall enough for a game's logo to show its detail, as on Steam's game page
 # Frames kept for the page's own banner: it's shown big, so its frames are big, and a
 # smaller budget would drop so many that it stutters. Still one decode at a time.
 CARD_BUDGET = 96 * 1024 * 1024
@@ -1357,8 +1357,9 @@ class MatchCard(QWidget):
         super().hideEvent(e)
 
     def _logo_box(self) -> QRectF:
-        """Where the logo goes: the right of the banner, between the back button and the buttons."""
-        top = self.back.geometry().bottom() + 10
+        """Where the logo goes: the right of the banner, from level with the back button (which is
+        on the left) down to the buttons."""
+        top = self.back.geometry().top()
         bottom = self.acts.mapTo(self, QPoint(0, 0)).y() - 12 if self.acts.isVisible() else self.height() - 70
         bottom = min(bottom, self.cover.mapTo(self, QPoint(0, 0)).y() + self.cover.height())
         w = self.width() * 0.4
@@ -1371,8 +1372,10 @@ class MatchCard(QWidget):
         dpr = self.devicePixelRatioF()
         key = (self.logo.cacheKey(), box.size().toSize(), dpr)
         if self._logo_scaled is None or self._logo_scaled[0] != key:
-            pm = self.logo.scaled(box.size().toSize() * dpr, Qt.AspectRatioMode.KeepAspectRatio,
-                                  Qt.TransformationMode.SmoothTransformation)
+            fit = self.logo.size().scaled(box.size().toSize() * dpr, Qt.AspectRatioMode.KeepAspectRatio)
+            if fit.width() > self.logo.width():  # a small logo stays its own size: stretched, it blurs
+                fit = self.logo.size()
+            pm = self.logo.scaled(fit, Qt.AspectRatioMode.IgnoreAspectRatio, Qt.TransformationMode.SmoothTransformation)
             pm.setDevicePixelRatio(dpr)
             self._logo_scaled = (key, pm)
         pm = self._logo_scaled[1]
@@ -1618,7 +1621,7 @@ class GamePage(QWidget):
         # Its logo over it, as Steam's game page has it (unless the Logo row says not to).
         if self.win.config.data.get("logo_on_banner", True):
             logo = self._current_art(sc, "logo")
-            self.card.set_logo(logo, self._motion(sc, "logo", QSize(self.card.width() * 2 // 5, 140)) if logo else (None, None))
+            self.card.set_logo(logo, self._motion(sc, "logo", self.card._logo_box().size().toSize()) if logo else (None, None))
         else:
             self.card.set_logo(None)
 

@@ -841,7 +841,9 @@ def test_banner_header_fits_the_page(qapp, window):
         assert right <= card.width() and card.title.width() <= card.width()
 
     fits()
-    assert not card.compact and card.height() == 210  # buttons beside the name, as always
+    from steam_artwork_finder.gui.gamepage import BANNER_H
+
+    assert not card.compact and card.height() == BANNER_H  # buttons beside the name, as always
     shown = QLabel.text(card.title)
     assert card.title.text().startswith("A Very Long") and shown.endswith("…") and card.title.toolTip()
     win.split.setSizes([670, 610])  # a narrow page (the tray no longer narrows it: it lies over it)
@@ -850,6 +852,31 @@ def test_banner_header_fits_the_page(qapp, window):
     win.split.setSizes([300, 980])
     _pump(qapp, 150)
     assert not card.compact
+
+
+def test_the_banner_logo_fills_its_room_but_a_small_one_is_not_stretched(qapp):
+    from PySide6.QtGui import QPixmap
+
+    from steam_artwork_finder.gui.gamepage import MatchCard
+
+    card = MatchCard()
+    card.resize(1280, card.height())
+    card.show()
+    _pump(qapp, 50)
+    banner = QPixmap(1920, 620)
+    banner.fill()
+    card.set_banner(banner)
+    big = QPixmap(1355, 592)
+    card.set_logo(big)
+    box = card._logo_box()
+    rect, _ = card._logo_art()
+    assert abs(rect.height() - box.height()) < 1 and rect.height() > 180  # as tall as it can be
+    small = QPixmap(200, 90)
+    card.set_logo(small)
+    rect, pm = card._logo_art()
+    assert pm.size() == small.size() * card.devicePixelRatioF()  # its own size, not blown up
+    assert rect.right() == box.right()
+    card.close()
 
 
 def test_artwork_files_are_looked_up_once_and_again_after_a_write(qapp, window):
