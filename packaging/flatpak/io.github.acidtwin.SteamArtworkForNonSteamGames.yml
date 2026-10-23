@@ -42,6 +42,22 @@ build-options:
 
 cleanup-commands:
   - /app/cleanup-BaseApp.sh
+  # The BaseApp ships shiboken6's code generator, which pulls in about 150 MB of LLVM and
+  # clang; the app only needs the shiboken6 runtime. PyOpenGL is unused too.
+  - rm -rf /app/cleanup-BaseApp.sh /app/lib/libLLVM* /app/lib/libclang* /app/bin/shiboken6
+    /app/bin/shiboken6-genpyi /app/lib/python3*/site-packages/shiboken6_generator*
+    /app/lib/python3*/site-packages/OpenGL /app/lib/python3*/site-packages/pyopengl-*
+    /app/lib/python3*/site-packages/pyproject_hooks* /app/lib/python3*/site-packages/patchelf-*
+  # PySide's developer tools, type stubs and build-time files.
+  - cd /app/lib/python3*/site-packages/PySide6 && rm -rf assistant balsam balsamui designer
+    lrelease lupdate qmlformat qmllint qmlls qsb glue include typesystems *.pyi
+  # Qt modules the app doesn't use (it needs QtCore, QtGui, QtWidgets, QtSvg and QtMultimedia).
+  - cd /app/lib/python3*/site-packages/PySide6 && rm -f Qt3D*.so QtBluetooth.* QtCharts.*
+    QtDesigner.* QtGraphs.* QtGraphsWidgets.* QtHelp.* QtHttpServer.* QtLocation.* QtNetworkAuth.*
+    QtNfc.* QtOpenGL.* QtOpenGLWidgets.* QtPdf.* QtPdfWidgets.* QtPositioning.* QtQuick3D.*
+    QtQuickControls2.* QtQuickTest.* QtRemoteObjects.* QtScxml.* QtSensors.* QtSerialPort.*
+    QtSpatialAudio.* QtSql.* QtStateMachine.* QtTest.* QtTextToSpeech.* QtUiTools.* QtWebChannel.*
+    QtWebSockets.*
 
 modules:
   - name: python-deps
