@@ -24,7 +24,7 @@ SEARCH = "https://store.steampowered.com/api/storesearch/"
 ITEMS = "https://api.steampowered.com/IStoreBrowseService/GetItems/v1/"
 CDN = "https://shared.akamai.steamstatic.com/store_item_assets/"
 AGENT = (f"steam-artwork-finder/{__version__} "
-         "(+https://github.com/acidtwin/steam-artwork-for-non-steam-games)")
+         "(+https://github.com/acidtwin/SteamArtworkForNonSteamGames)")
 GAP = 1.0  # seconds between calls to the store, so a long Get Artwork stays gentle
 
 # Each piece: (the store's name for it, the plain file name older games use, its size, a smaller one to preview)

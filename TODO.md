@@ -15,7 +15,7 @@ Ideas and jobs saved for later, once the app is more final.
 
 ## Release
 
-- Submit the Flatpak to Flathub (manifest: packaging/flatpak/, swap its source for the release tag).
+- Submit to Flathub: done by hand by the developer (Flathub bans AI-written submissions and needs AI-written code disclosed); expect them to want more history first. A ready-built .flatpak is attached to each GitHub release meanwhile.
 
 ### Where to publish at 1.0
 

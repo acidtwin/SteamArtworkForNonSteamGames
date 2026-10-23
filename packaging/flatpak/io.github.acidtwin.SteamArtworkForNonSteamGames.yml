@@ -7,7 +7,7 @@
 #   flatpak run io.github.acidtwin.SteamArtworkForNonSteamGames
 #
 # The app's own source is this checkout (type: dir). For a Flathub submission, swap it for
-# the release tag:  type: git, url: https://github.com/acidtwin/steam-artwork-for-non-steam-games,
+# the release tag:  type: git, url: https://github.com/acidtwin/SteamArtworkForNonSteamGames,
 # tag: v1.0.0, commit: <the tag's commit>.
 
 id: io.github.acidtwin.SteamArtworkForNonSteamGames

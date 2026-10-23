@@ -7,15 +7,15 @@
 <p align="center"><b>Proper Steam library artwork for every game you added yourself. Still or animated, in one click.</b></p>
 
 <p align="center">
-  <a href="https://github.com/acidtwin/steam-artwork-for-non-steam-games/releases"><img src="https://img.shields.io/badge/version-1.0.0-1a9fff?style=flat-square" alt="Version 1.0.0"></a>
-  <a href="https://github.com/acidtwin/steam-artwork-for-non-steam-games/actions/workflows/tests.yml"><img src="https://github.com/acidtwin/steam-artwork-for-non-steam-games/actions/workflows/tests.yml/badge.svg" alt="Tests"></a>
+  <a href="https://github.com/acidtwin/SteamArtworkForNonSteamGames/releases"><img src="https://img.shields.io/badge/version-1.0.0-1a9fff?style=flat-square" alt="Version 1.0.0"></a>
+  <a href="https://github.com/acidtwin/SteamArtworkForNonSteamGames/actions/workflows/tests.yml"><img src="https://github.com/acidtwin/SteamArtworkForNonSteamGames/actions/workflows/tests.yml/badge.svg" alt="Tests"></a>
   <a href="LICENSE"><img src="https://img.shields.io/badge/licence-MIT-5c7e10?style=flat-square" alt="MIT licence"></a>
   <br>
   <img src="https://img.shields.io/badge/Python-3.10%2B-3776AB?style=flat-square&logo=python&logoColor=white" alt="Python 3.10+">
   <img src="https://img.shields.io/badge/PySide6-Qt%206-41CD52?style=flat-square&logo=qt&logoColor=white" alt="PySide6 (Qt 6)">
   <img src="https://img.shields.io/badge/Linux-first-FCC624?style=flat-square&logo=linux&logoColor=black" alt="Linux first">
   <img src="https://img.shields.io/badge/Steam%20Deck-desktop%20mode-1a9fff?style=flat-square&logo=steamdeck&logoColor=white" alt="Steam Deck desktop mode">
-  <img src="https://img.shields.io/badge/Flatpak-manifest-4A90D9?style=flat-square&logo=flatpak&logoColor=white" alt="Flatpak manifest">
+  <a href="https://github.com/acidtwin/SteamArtworkForNonSteamGames/releases/latest/download/SteamArtworkForNonSteamGames.flatpak"><img src="https://img.shields.io/badge/Flatpak-download-4A90D9?style=flat-square&logo=flatpak&logoColor=white" alt="Download the Flatpak"></a>
   <img src="https://img.shields.io/badge/SteamGridDB-API%20v2-3a4a5c?style=flat-square" alt="SteamGridDB API v2">
 </p>
 
@@ -98,13 +98,28 @@ Native, Flatpak and Snap installs on Linux (`~/.local/share/Steam`, `~/.steam/st
 
 ## Install
 
-Version 1.0.0. It isn't on Flathub, PyPI or the AUR yet, so for now run it from source, or build the Flatpak yourself from the manifest in [`packaging/flatpak/`](packaging/flatpak/).
+Version 1.0.0.
+
+### Flatpak (recommended)
+
+Download [**SteamArtworkForNonSteamGames.flatpak**](https://github.com/acidtwin/SteamArtworkForNonSteamGames/releases/latest/download/SteamArtworkForNonSteamGames.flatpak) from the latest release, then install it:
+
+```bash
+flatpak install --user ./SteamArtworkForNonSteamGames.flatpak
+flatpak run io.github.acidtwin.SteamArtworkForNonSteamGames
+```
+
+Many software centres (KDE Discover, GNOME Software) also install it if you open the file. The KDE runtime it needs comes from Flathub, so the Flathub remote should be set up ([setup guide](https://flathub.org/setup)). On a Steam Deck, do this in desktop mode.
+
+To build the Flatpak yourself, use the manifest in [`packaging/flatpak/`](packaging/flatpak/).
+
+### From source
 
 You need Python 3.10 or newer.
 
 ```bash
-git clone https://github.com/acidtwin/steam-artwork-for-non-steam-games.git
-cd steam-artwork-for-non-steam-games
+git clone https://github.com/acidtwin/SteamArtworkForNonSteamGames.git
+cd SteamArtworkForNonSteamGames
 python3 -m venv .venv
 source .venv/bin/activate        # Windows: .venv\Scripts\activate
 pip install .
@@ -190,7 +205,7 @@ The tests build synthetic `shortcuts.vdf` files, so they don't need Steam instal
 
 ## Roadmap
 
-- Publish on Flathub, PyPI and the AUR (the Flatpak needs read/write access to `~/.local/share/Steam`, `~/.steam` and `~/.var/app/com.valvesoftware.Steam`, and `--talk-name=org.freedesktop.Flatpak` to tell whether Steam is running from inside the sandbox)
+- Publish on Flathub (once the app has more history), PyPI and the AUR (the Flatpak needs read/write access to `~/.local/share/Steam`, `~/.steam` and `~/.var/app/com.valvesoftware.Steam`, and `--talk-name=org.freedesktop.Flatpak` to tell whether Steam is running from inside the sandbox)
 - Touch-friendly menus and previews for Steam Deck
 - Windows build with PyInstaller, tested on a real install
 
