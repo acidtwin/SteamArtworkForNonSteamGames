@@ -10,7 +10,7 @@ import sys
 from pathlib import Path
 
 from shiboken6 import isValid
-from PySide6.QtCore import QObject, QPoint, QPointF, QRect, QRectF, QSize, QSizeF, QTimer, QUrl, Qt, Signal
+from PySide6.QtCore import QEvent, QObject, QPoint, QPointF, QRect, QRectF, QSize, QSizeF, QTimer, QUrl, Qt, Signal
 from PySide6.QtGui import QAction, QDesktopServices, QImage, QKeySequence, QPixmap
 from PySide6.QtWidgets import (
     QApplication,
@@ -1957,8 +1957,18 @@ class MainWindow(QMainWindow):
         if idx == self.current or not self._moving():
             return self.show_index(idx)
         old = self.transition.snapshot()
+        game_to_game = self.stage.currentWidget() is self.page and idx >= 0
         self.show_index(idx)
-        self.transition.run(old)
+        rise = None
+        if game_to_game:
+            self.stage.layout().activate()
+            QApplication.sendPostedEvents(None, QEvent.Type.LayoutRequest)
+            card = self.page.card
+            top = card.mapTo(self.stage, QPoint(0, card.height())).y()
+            if 0 < top < self.stage.height():
+                rise = (self.transition.snapshot(),
+                        QRectF(0, top, self.stage.width(), self.stage.height() - top))
+        self.transition.run(old, rise=rise)
 
     def _page_cover_rect(self) -> QRectF | None:
         """Where the game page's small cover is, in the stage's coordinates."""
