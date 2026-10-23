@@ -1,5 +1,7 @@
 """Offscreen tests: the window builds against a synthetic Steam install, and artwork is staged then applied."""
 import os
+import sys
+from pathlib import Path
 
 import pytest
 
@@ -239,6 +241,7 @@ def test_right_click_in_the_list_keeps_the_open_page(qapp, window):
     win._game_menu.close()
 
 
+@pytest.mark.skipif(sys.platform == "win32", reason="Flatpak Steam is a Linux install place")
 def test_steam_folder_popover_searches_and_switches(qapp, window, tmp_path, steam_root):
     import shutil
 
@@ -284,6 +287,7 @@ def test_steam_folder_popover_searches_and_switches(qapp, window, tmp_path, stea
     assert steamfolder.tilde(tmp_path / "x") == "~/x"
 
 
+@pytest.mark.skipif(sys.platform == "win32", reason="Flatpak Steam is a Linux install place")
 def test_steam_folder_popover_searches_only_when_no_folder_in_use(qapp, window, tmp_path, steam_root):
     import shutil
 
@@ -313,6 +317,7 @@ def test_steam_folder_popover_searches_only_when_no_folder_in_use(qapp, window, 
     _pump(qapp, 400)
 
 
+@pytest.mark.skipif(sys.platform == "win32", reason="Flatpak Steam is a Linux install place")
 def test_steam_folder_popover_keeps_disk_checks_off_the_ui_thread(qapp, window, tmp_path, steam_root, monkeypatch):
     import shutil
     import threading
@@ -372,6 +377,8 @@ def test_steam_folder_popover_path_fits_on_first_open(qapp, tmp_path, monkeypatc
     host.show()
     pop = steamfolder.SteamFolderPopover(host)
     root = tmp_path / "Games" / "SteamLibraryOnTheBigDrive" / "Steam"
+    if sys.platform == "win32":  # shown in full there (no "~"), and the test's temp folder is long
+        root = Path(tmp_path.anchor) / "Games" / "SteamLibraryOnTheBigDrive" / "Steam"
     pop._located[root] = None  # not in any of the usual places, so no lookup
     pop.set_current(root, ["Deck User"], 0, None)  # before it has ever been shown or laid out
     assert "…" not in pop.sub.text()  # the full path fits; it used to be cut to 80 px
