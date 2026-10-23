@@ -15,7 +15,7 @@ Ideas and jobs saved for later, once the app is more final.
 
 ## Release
 
-- Write the Flatpak manifest for Flathub.
+- Submit the Flatpak to Flathub (manifest: packaging/flatpak/, swap its source for the release tag).
 
 ### Where to publish at 1.0
 
