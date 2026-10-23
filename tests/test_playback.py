@@ -409,7 +409,8 @@ def test_late_options_for_another_game_are_ignored(qapp, window, monkeypatch):
     win = window
     win.config.api_key = "k"
     win.open_game(0)
-    _pump(qapp, 100)
+    # Rows hold their options until the (stubbed) Steam store lookup answers from its worker.
+    _pump(qapp, 4000, until=lambda: not win.page.rows["grid"].steam_waiting)
     sc = win.current_shortcut()
     calls = []
     monkeypatch.setattr(win, "fetch_assets", lambda gid, key, page, cb: calls.append((gid, key, cb)))
