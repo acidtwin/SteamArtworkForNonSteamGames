@@ -35,9 +35,17 @@ jobs:
       - name: Install the app
         run: pip install -e ".[dev]" pytest-timeout
 
-      # A test stuck on Windows fails on its own, with a stack trace, instead of stalling the job.
+      # One run per file, so a test stuck on Windows (stopped by the timeout, with a stack
+      # trace) doesn't hide the failures in the other files.
       - name: Run tests
-        run: pytest -q --timeout=120
+        shell: pwsh
+        run: |
+          $failed = @()
+          foreach ($f in Get-ChildItem tests\test_*.py) {
+            pytest -q -rfE --tb=short --timeout=60 $f.FullName
+            if ($LASTEXITCODE -ne 0) { $failed += $f.Name }
+          }
+          if ($failed) { throw "Failed: $($failed -join ', ')" }
 
   build:
     runs-on: windows-latest
