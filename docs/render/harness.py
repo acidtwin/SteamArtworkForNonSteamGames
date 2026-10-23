@@ -1,8 +1,16 @@
-"""Run the app offscreen (no window ever reaches a screen) against a fake Steam install and a fake
-SteamGridDB serving the made-up games in artgen.py, and capture stills and animations at 2x.
+"""Run the app offscreen (no window ever reaches a screen) and capture stills and animations at 2x.
 
-    python3 harness.py stills        # the README screenshots, into ./out
+Made-up games: a fake Steam install and a fake SteamGridDB serving the games in artgen.py.
+
+    python3 harness.py stills        # into ./out
     python3 harness.py anim_get      # Get Artwork then Apply (also anim_pick, anim_wall)
+
+Your own library (REAL=1): a copy of your Steam game list, artwork and the app's settings in a
+throwaway home folder, with the real SteamGridDB and Steam store. Steam itself is never touched:
+Apply writes into the copy, and restarting Steam is faked. The Steam login name is replaced in the
+copy and blurred on every picture.
+
+    REAL=1 python3 harness.py real_stills    # also real_pick, real_get, real_page
 
 Needs PySide6 and Pillow. Copy what you want from ./out into docs/.
 """
@@ -20,7 +28,9 @@ SRC = Path(os.environ.get("APP_SRC", Path(__file__).resolve().parents[2]))
 W, HT, DPR = int(os.environ.get("SHOT_W", 1280)), int(os.environ.get("SHOT_H", 800)), float(os.environ.get("DPR", 2))
 OUT = Path(os.environ.get("OUT", HERE / "out"))
 OUT.mkdir(exist_ok=True)
-HOME = HERE / f"fakehome-{sys.argv[1]}"
+REAL = os.environ.get("REAL") == "1"
+REAL_HOME = Path(os.environ.get("REAL_HOME", Path.home()))  # where the real Steam and settings are
+HOME = Path(os.environ.get("WORK", HERE)) / f"fakehome-{sys.argv[1]}"
 if HOME.exists():
     shutil.rmtree(HOME)
 HOME.mkdir()
@@ -37,7 +47,7 @@ sys.path.insert(0, str(SRC / "tests"))
 sys.path.insert(0, str(HERE))
 from conftest import make_entry, make_shortcuts  # noqa: E402
 
-from PySide6.QtCore import QBuffer, QCoreApplication, QEvent, QIODevice, QPoint, QPointF, Qt  # noqa: E402
+from PySide6.QtCore import QBuffer, QCoreApplication, QEvent, QIODevice, QPoint, QPointF, QRect, Qt  # noqa: E402
 from PySide6.QtGui import QColor, QFont, QImage, QPainter, QPainterPath, QPen  # noqa: E402
 from PySide6.QtWidgets import QApplication  # noqa: E402
 
@@ -49,7 +59,8 @@ from steam_artwork_finder import APP_NAME  # noqa: E402
 
 app.setApplicationName(APP_NAME)
 app.setStyle("Fusion")
-app.setFont(QFont(os.environ.get("FONT", "Inter"), 10))
+if os.environ.get("FONT") or not REAL:  # your own library: the desktop's font, as the app shows it
+    app.setFont(QFont(os.environ.get("FONT", "Inter"), 10))
 
 # appid, name in Steam, folder, the SteamGridDB game it is
 GAMES = [
@@ -112,6 +123,8 @@ _dl_cache: dict = {}
 
 def setup_steam(have: str = "full"):
     """have: "full" (every game has its artwork), "none" (nothing yet), "some"."""
+    if REAL:
+        return setup_real(have)
     cfg.mkdir(parents=True)
     (root / "config").mkdir()
     (root / "config/loginusers.vdf").write_text(
@@ -152,6 +165,65 @@ def setup_steam(have: str = "full"):
         "api_key": "fake", "matches": matches, "auto_restart_steam": True,
         "applied": {}}))
     return sf
+
+
+def real_steam_root() -> Path:
+    if os.environ.get("REAL_STEAM"):
+        return Path(os.environ["REAL_STEAM"])
+    for rel in (".local/share/Steam", ".steam/steam", ".steam/root", ".var/app/com.valvesoftware.Steam/.local/share/Steam",
+                "snap/steam/common/.local/share/Steam"):
+        if (REAL_HOME / rel / "userdata").is_dir():
+            return (REAL_HOME / rel).resolve()
+    raise SystemExit("No Steam folder found; set REAL_STEAM")
+
+
+PERSONA = "Player"
+
+
+def setup_real(have: str = "full"):
+    """Copy the real Steam user's game list and artwork, and the app's settings, into the throwaway
+    home. have="none" leaves the artwork behind, for Get All Artwork to fill."""
+    import re
+
+    from steam_artwork_finder.shortcuts import ShortcutsFile
+    from steam_artwork_finder.steam import list_users
+
+    src = real_steam_root()
+    user = list_users(src)[0]
+    print("copying Steam user", user.account_id, "from", src, flush=True)
+    (root / "config").mkdir(parents=True)
+    login = (src / "config/loginusers.vdf").read_text(encoding="utf-8", errors="replace")
+    login = re.sub(r'("PersonaName"\s+)"[^"]*"', rf'\1"{PERSONA}"', login, flags=re.I)  # never the real name
+    login = re.sub(r'("AccountName"\s+)"[^"]*"', r'\1"player"', login, flags=re.I)
+    (root / "config/loginusers.vdf").write_text(login, encoding="utf-8")
+    ucfg = src / "userdata" / user.account_id / "config"
+    cfg_dst = root / "userdata" / user.account_id / "config"
+    cfg_dst.mkdir(parents=True)
+    shutil.copy2(ucfg / "shortcuts.vdf", cfg_dst / "shortcuts.vdf")
+    if have != "none" and (ucfg / "grid").is_dir():
+        shutil.copytree(ucfg / "grid", cfg_dst / "grid", ignore=shutil.ignore_patterns(".replaced"))
+    else:
+        (cfg_dst / "grid").mkdir()
+    sf = ShortcutsFile(cfg_dst / "shortcuts.vdf")
+    for sc in sf.shortcuts:  # icons linked to the real grid folder point at the copy instead
+        icon = getattr(sc, "icon", "") or ""
+        if "/grid/" in icon:
+            moved = cfg_dst / "grid" / Path(icon).name
+            sc.set_icon(str(moved) if moved.exists() else "")
+    sf.save()
+    conf = json.loads((REAL_HOME / ".config/steam-artwork-finder/config.json").read_text())
+    for k in ("steam_dir", "steam_root", "last_image_folder", "pending_icons"):
+        conf.pop(k, None)
+    if have == "none":
+        conf["applied"], conf["no_art"] = {}, {}
+    conf.update(json.loads(os.environ.get("CONF", "{}")))  # e.g. CONF='{"get_all_animated": true}'
+    conf_dir = HOME / ".config/steam-artwork-finder"
+    conf_dir.mkdir(parents=True)
+    (conf_dir / "config.json").write_text(json.dumps(conf))
+    cache = REAL_HOME / ".cache/steam-artwork-finder"
+    if cache.is_dir() and os.environ.get("COPY_CACHE", "1") == "1":  # thumbnails already fetched: faster
+        shutil.copytree(cache, HOME / ".cache/steam-artwork-finder", ignore=shutil.ignore_patterns("picks"))
+    return ShortcutsFile(cfg_dst / "shortcuts.vdf")
 
 
 # ---- fake SteamGridDB -----------------------------------------------------------------------------
@@ -227,12 +299,17 @@ class FakeSGDB(sgdb.SteamGridDB):
         return _dl_cache[key]
 
 
-sgdb.SteamGridDB = FakeSGDB
 import steam_artwork_finder.gui.app as appmod  # noqa: E402
 from steam_artwork_finder.gui import motion, smooth, theme  # noqa: E402
 
-motion.video_supported = lambda: False
-appmod.SteamGridDB = FakeSGDB
+if not REAL or os.environ.get("FAKE_NET") == "1":
+    sgdb.SteamGridDB = FakeSGDB
+    appmod.SteamGridDB = FakeSGDB
+    motion.video_supported = lambda: False
+    appmod.SteamStore.match = lambda self, name: None  # no Steam store either
+elif os.environ.get("VIDEO") != "1":
+    # Offscreen, video frames may not reach a grab: animated options play from their own files instead.
+    motion.video_supported = lambda: False
 STEAM = {"running": True}
 appmod.steam_running = lambda root=None: STEAM["running"]
 
@@ -307,6 +384,9 @@ class H:
             p.drawPixmap(w.mapToGlobal(QPoint(0, 0)) - origin, w.grab())
         if self.cursor is not None:
             draw_cursor(p, self.cursor, self.pressed)
+        acc = self.win.header.account  # the Steam login name and avatar: blurred
+        if acc.isVisible():
+            blur(p, pm, QRect(acc.mapTo(self.win, QPoint(0, 0)), acc.size()).adjusted(-2, -2, 2, 2))
         p.end()
         return pm.toImage()
 
@@ -376,22 +456,23 @@ class H:
 
     def _maybe_frame(self):
         now = time.time()
-        if now - self._last >= self._gap:
+        if now - self._last >= self._gap * self._speed:  # sped up: fewer frames, same frame rate played back
             self._last = now
             img = self.capture()
             if self.rec_scale != 1.0:
                 img = img.scaledToWidth(round(img.width() * self.rec_scale), Qt.TransformationMode.SmoothTransformation)
-            self.frames.append((img.convertToFormat(QImage.Format.Format_RGB888), now, self._speed))
+            # kept as PNG: a long recording of raw frames can run to gigabytes
+            self.frames.append((qimage_png(img.convertToFormat(QImage.Format.Format_RGB888)), now, self._speed))
 
     def save_anim(self, name, crop=None, scale=1.0, quality=90, hold_last=1500):
         self.recording = False
         frames = self.frames
         ims, durs = [], []
         for i, (img, t, sp) in enumerate(frames):
+            pil = Image.open(io.BytesIO(img)).convert("RGB")
             if crop is not None:
                 k = DPR * self.rec_scale
-                img = img.copy(int(crop[0] * k), int(crop[1] * k), int(crop[2] * k), int(crop[3] * k))
-            pil = to_pil(img).convert("RGB")
+                pil = pil.crop((int(crop[0] * k), int(crop[1] * k), int((crop[0] + crop[2]) * k), int((crop[1] + crop[3]) * k)))
             if scale != 1.0:
                 pil = pil.resize((round(pil.width * scale), round(pil.height * scale)), Image.LANCZOS)
             nxt = frames[i + 1][1] if i + 1 < len(frames) else t + hold_last / 1000
@@ -405,6 +486,19 @@ class H:
         ims[0].save(path, "WEBP", save_all=True, append_images=ims[1:], duration=durs, loop=0, quality=quality,
                     method=6, minimize_size=True)
         print("saved", name, len(ims), "frames", sum(durs), "ms", path.stat().st_size // 1024, "KB", flush=True)
+
+
+def blur(p: QPainter, pm, r: QRect, k: int = 9):
+    """Paint `r` of `pm` back over itself heavily blurred (scaled right down, then up again twice)."""
+    dpr = pm.devicePixelRatio()
+    img = pm.copy(QRect(round(r.x() * dpr), round(r.y() * dpr), round(r.width() * dpr), round(r.height() * dpr))).toImage()
+    w, h = img.width(), img.height()
+    for _ in range(2):
+        img = img.scaled(max(1, w // (k * 2)), max(1, h // k), Qt.AspectRatioMode.IgnoreAspectRatio,
+                         Qt.TransformationMode.SmoothTransformation)
+        img = img.scaled(w, h, Qt.AspectRatioMode.IgnoreAspectRatio, Qt.TransformationMode.SmoothTransformation)
+    img.setDevicePixelRatio(dpr)
+    p.drawImage(r.topLeft(), img)
 
 
 def draw_cursor(p: QPainter, pt: QPointF, pressed=False):
