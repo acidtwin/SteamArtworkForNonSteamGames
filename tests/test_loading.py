@@ -267,3 +267,24 @@ def test_generic_titles_are_not_matched_on_the_steam_store(qapp, window):
     win.steam.assets = lambda appid: {}
     assert win._steam_lookup("Launcher", None) == (None, {}) and not asked
     assert win._steam_lookup("Celeste", None)[0].name == "Celeste" and asked == ["Celeste"]
+
+
+def test_library_covers_shimmer_while_get_artwork_fetches_them(qapp, window):
+    from steam_artwork_finder.gui import library
+
+    win = window
+    wall = win.start.wall
+    delegate = wall.itemDelegate()
+    sc = next(s for s in win.sfile.shortcuts if win.cover_path(s) is None)
+    win.fetching = sc.appid
+    win.retrying[sc.appid] = 2
+    drawn = []
+    real = library.draw_retrying
+    library.draw_retrying = lambda p, r, n: drawn.append(n) or real(p, r, n)
+    try:
+        wall.viewport().repaint()
+    finally:
+        library.draw_retrying = real
+    assert sc.appid in delegate._shimmered and drawn == [2]  # shimmering, and saying which retry
+    win.fetching = None
+    win.retrying.clear()
