@@ -1789,3 +1789,7 @@ def test_a_strip_pick_flies_into_the_piece(qapp, window):
     win.slot_path = lambda sc, slot, fresh=False: disk
     row._option_clicked(row.assets[1])
     assert row._flight is None and row.pick() is None
+    row._option_clicked(row.assets[2])  # another, then back to the one in use: that flies back
+    _pump(qapp, 600, until=lambda: row._flight._landed)
+    row._option_clicked(row.assets[1])
+    assert row._flight is not None and not row._flight._landed and row.pick() is None
