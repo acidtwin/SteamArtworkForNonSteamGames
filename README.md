@@ -7,7 +7,7 @@
 <p align="center"><b>Proper Steam library artwork for every game you added yourself. Still or animated, in one click.</b></p>
 
 <p align="center">
-  <a href="https://github.com/acidtwin/SteamArtworkForNonSteamGames/releases"><img src="https://img.shields.io/badge/version-1.0.0-1a9fff?style=flat-square" alt="Version 1.0.0"></a>
+  <a href="https://github.com/acidtwin/SteamArtworkForNonSteamGames/releases"><img src="https://img.shields.io/badge/version-1.0.1-1a9fff?style=flat-square" alt="Version 1.0.1"></a>
   <a href="https://github.com/acidtwin/SteamArtworkForNonSteamGames/actions/workflows/tests.yml"><img src="https://github.com/acidtwin/SteamArtworkForNonSteamGames/actions/workflows/tests.yml/badge.svg" alt="Tests"></a>
   <a href="LICENSE"><img src="https://img.shields.io/badge/licence-MIT-5c7e10?style=flat-square" alt="MIT licence"></a>
   <br>
@@ -98,11 +98,11 @@ Native, Flatpak and Snap installs on Linux (`~/.local/share/Steam`, `~/.steam/st
 
 ## Install
 
-Version 1.0.0.
+Version 1.0.1.
 
 ### Flatpak (recommended)
 
-Download [**SteamArtworkForNonSteamGames.flatpak**](https://github.com/acidtwin/SteamArtworkForNonSteamGames/releases/latest/download/SteamArtworkForNonSteamGames.flatpak) from the latest release, then install it:
+Download [**SteamArtworkForNonSteamGames.flatpak**](https://github.com/acidtwin/SteamArtworkForNonSteamGames/releases/latest/download/SteamArtworkForNonSteamGames.flatpak) (12 MB) from the latest release, then install it:
 
 ```bash
 flatpak install --user ./SteamArtworkForNonSteamGames.flatpak
