@@ -121,6 +121,13 @@ class SwitchGlide(QObject):
         self.at = float(v)
         self.button.update()
 
+    def snap(self):
+        """Jump to the button's state: after a setChecked with its signals blocked, which the
+        glide never hears."""
+        self._anim.stop()
+        self.at = 1.0 if self.button.isChecked() else 0.0
+        self.button.update()
+
 
 def base_pt() -> float:
     app = QGuiApplication.instance()

@@ -1005,11 +1005,13 @@ class SteamPopover(Overlay):
         self.on_quit.blockSignals(True)
         self.on_quit.setChecked(on)
         self.on_quit.blockSignals(False)
+        self.on_quit.glide.snap()
 
     def set_auto_restart(self, on: bool):
         self.auto.blockSignals(True)
         self.auto.setChecked(on)
         self.auto.blockSignals(False)
+        self.auto.glide.snap()
 
     def set_state(self, state: str, waiting_icons: int = 0):
         self.state = state

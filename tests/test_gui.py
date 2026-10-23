@@ -1930,3 +1930,15 @@ def test_account_switcher_with_one_account_still_opens(qapp, window, steam_root)
     rows = [r for r in win._account_menu.rows if isinstance(r, AccountRow)]
     assert len(rows) == 1 and rows[0].current
     win._account_menu.close()
+
+
+def test_steam_popover_switches_draw_where_they_are_set(qapp, window):
+    pop = window.steam_pop if hasattr(window, "steam_pop") else None
+    from steam_artwork_finder.gui.chrome import SteamPopover
+
+    pop = pop or SteamPopover(window)
+    pop.set_auto_restart(True)
+    pop.set_apply_on_quit(False)
+    assert pop.auto.glide.at == 1.0 and pop.on_quit.glide.at == 0.0
+    pop.set_auto_restart(False)
+    assert pop.auto.glide.at == 0.0
