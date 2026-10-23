@@ -10,11 +10,12 @@ import sys
 from pathlib import Path
 
 from shiboken6 import isValid
-from PySide6.QtCore import QObject, QPoint, QSize, QTimer, QUrl, Qt, Signal
+from PySide6.QtCore import QObject, QPoint, QPointF, QRect, QRectF, QSize, QSizeF, QTimer, QUrl, Qt, Signal
 from PySide6.QtGui import QAction, QDesktopServices, QImage, QKeySequence, QPixmap
 from PySide6.QtWidgets import (
     QApplication,
     QFileDialog,
+    QGraphicsOpacityEffect,
     QHBoxLayout,
     QListWidgetItem,
     QMainWindow,
@@ -53,7 +54,8 @@ from .dialogs import (
     AboutDialog, ConfirmDialog, KeyPopover, MatchDialog, QuitDialog, RestoreDialog, tell,
 )
 from .gamepage import GamePage
-from .library import SORTS, GameList, StartPage, art_text, sorted_indices
+from .library import ROLE_INDEX, SORTS, GameList, StartPage, art_text, sorted_indices
+from .transition import ApplyFill, PageTransition
 from .tray import ROLE_LOAD, ROLE_PIX, OptionTray
 from .tray import _full_for as tray_full_pixmap
 from .widgets import _cache as pixmap_cache
@@ -285,6 +287,7 @@ class MainWindow(QMainWindow):
         self._grid_names: set[str] | None = None  # file names in the grid folder, read once per refresh
         self._gaps_checked: set[int] = set()  # games whose missing pieces were asked about this session
         self._note: tuple[str, str] | None = None  # a short-lived status bar message
+        self._apply_fx: dict | None = None  # the Apply button filling while it writes
         self._note_timer = QTimer(self, singleShot=True, interval=5000, timeout=self._clear_note)
         self.candidates: dict[int, int] = {}  # appid -> how many similar names SteamGridDB returned
         self.asset_cache: dict[tuple, list[Asset]] = {}
@@ -339,7 +342,7 @@ class MainWindow(QMainWindow):
         self.split.setHandleWidth(1)
         self.game_list = GameList(self)
         self.game_list.setMinimumWidth(260)
-        self.game_list.picked.connect(self.show_index)
+        self.game_list.picked.connect(self._picked_in_sidebar)
         # The start page shows the games the sidebar's search and filter leave.
         for changed in (self.game_list.search.textChanged, self.game_list.filter_changed):
             changed.connect(self._library_narrowed)
@@ -364,7 +367,7 @@ class MainWindow(QMainWindow):
             "In Steam, open Games › Add a Non-Steam Game to My Library…, pick your game, "
             "then click Reload Game List below.", "Reload Game List", self.reload_shortcuts, "go")
         self.start = StartPage(self)
-        self.start.picked.connect(self.open_game)
+        self.start.picked.connect(self._picked_on_wall)
         bar = self.game_list.homebar
         bar.home.clicked.connect(self.go_home)
         bar.menu.chosen.connect(self.set_library_view)
@@ -379,6 +382,7 @@ class MainWindow(QMainWindow):
         for w in (self.nosteam, self.nogames, self.start, self.page):
             self.stage.addWidget(w)
         cl.addWidget(self.stage, 1)
+        self.transition = PageTransition(self.stage)
         self.statusbar = StatusBar()
         self.statusbar.steam_clicked.connect(self.show_folder_popover)
         self.statusbar.process_clicked.connect(self.show_steam_popover)
@@ -1699,6 +1703,7 @@ class MainWindow(QMainWindow):
         if on_page:
             self.page.card.set_game(self.shown_name(sc))
             self.page.card.set_actions(bool(self._unstaged_missing(sc)), self.pending.count(sc.appid), bool(self.busy))
+            self._show_fill(self.page.card.apply_btn, sc.appid)
         else:
             gl = self.game_list
             self.cbar.show_library(len(games) if self.users else None,
@@ -1708,6 +1713,7 @@ class MainWindow(QMainWindow):
             art = [g for g in games if self._unstaged_missing(g) and self.status.get(g.appid) != "notfound"]
             names = [g for g in games if g not in art and self.rename_due(g)]
             ready = len(self.pending.games())
+            fx = self._apply_fx
             specs = []
             if games and (art or names or not ready):
                 if art:
@@ -1716,14 +1722,30 @@ class MainWindow(QMainWindow):
                     text = f"Get Names ({plural(len(names), 'Game')})"
                 else:
                     text = "Get Artwork"
-                specs.append((text, "ghost" if ready else "go", bool(art or names) and not self.busy,
+                specs.append((text, "ghost" if ready or fx else "go", bool(art or names) and not self.busy,
                               self.fill_everything))
-            if ready:
+            if fx:
+                specs.append((fx["text"], "go", True, self.apply_all))  # looks live while it fills
+            elif ready:
                 specs.append((f"Apply ({plural(ready, 'Game')})", "go", not self.busy, self.apply_all))
             buttons = self.cbar.set_buttons(specs)
             if specs and specs[0][3] == self.fill_everything:
                 buttons[0].setToolTip(self._get_tip(art, names))
+            for b in buttons:
+                if getattr(b, "_cb", None) == self.apply_all:
+                    self._show_fill(b, None)
         self._show_status()
+
+    def _show_fill(self, button, appid: int | None):
+        """Fill an Apply button as the writes go, while `_apply_fx` covers it (on a game page, only
+        for a game being applied), and clear the fill otherwise."""
+        fx = self._apply_fx
+        if fx and (appid is None or appid in fx["games"]):
+            button.setText(fx["text"])
+            button.setEnabled(True)  # not dimmed mid-write; apply_games ignores clicks while busy
+            ApplyFill.fill(button, fx["step"] / fx["total"])
+        else:
+            ApplyFill.fill(button, None)
 
     def _get_tip(self, art: list[Shortcut], names: list[Shortcut]) -> str:
         """The library Get button's tooltip: who gets artwork, and who only gets a new title."""
@@ -1812,12 +1834,92 @@ class MainWindow(QMainWindow):
 
     def go_home(self):
         if self.sfile and self.sfile.shortcuts:
+            leaving = self.current if self.stage.currentWidget() is self.page else -1
+            moving = self._moving()
+            old = self.transition.snapshot() if moving else None
+            src = self._page_cover_rect() if moving and leaving >= 0 else None
+            cover = self.page.card.cover.grab() if src is not None else None
             self.game_list.select(-1)
             self.show_index(-1)
+            if old is not None:
+                # The cover shrinks back to its place on the wall, if it's on screen there.
+                tile = self._tile_rect(leaving)
+                self.transition.run(old, cover, src, tile, back=True,
+                                    hide=lambda on: self._wall_away(leaving if on else -1))
 
     def open_game(self, idx: int):
         self.game_list.select(idx)
         self.show_index(idx)
+
+    # ---- moving between pages -------------------------------------------
+
+    def _moving(self) -> bool:
+        """Whether a page change should be animated: only in a shown window, with nothing over it."""
+        return self.isVisible() and not self.scrim.is_covering() and self.stage.currentWidget() in (self.start, self.page)
+
+    def _picked_on_wall(self, idx: int):
+        """A game opened from the library: from the cover wall its cover grows into the page."""
+        if not self._moving():
+            return self.open_game(idx)
+        old = self.transition.snapshot()
+        src = self._tile_rect(idx)
+        cover = None
+        if src is not None:
+            dpr = old.devicePixelRatio()
+            cover = old.copy(int(src.x() * dpr), int(src.y() * dpr), int(src.width() * dpr), int(src.height() * dpr))
+            cover.setDevicePixelRatio(dpr)
+        self.open_game(idx)
+        self.transition.run(old, cover, src, self._page_cover_rect, hide=self._page_cover_away)
+
+    def _wall_away(self, idx: int):
+        """Leave a game's place on the wall empty while its cover flies back to it."""
+        self.start.wall.delegate.away = idx
+        self.start.wall.viewport().update()
+
+    def _page_cover_away(self, away: bool):
+        """Hide the game page's small cover while the wall's cover flies into its place."""
+        c = self.page.card.cover
+        if away:
+            fx = QGraphicsOpacityEffect(c)
+            fx.setOpacity(0.0)
+            c.setGraphicsEffect(fx)
+        else:
+            c.setGraphicsEffect(None)
+
+    def _picked_in_sidebar(self, idx: int):
+        """The sidebar's list: a quick cross-fade to the game (or home), with no cover in flight."""
+        if idx == self.current or not self._moving():
+            return self.show_index(idx)
+        old = self.transition.snapshot()
+        self.show_index(idx)
+        self.transition.run(old)
+
+    def _page_cover_rect(self) -> QRectF | None:
+        """Where the game page's small cover is, in the stage's coordinates."""
+        c = self.page.card.cover
+        if self.stage.currentWidget() is not self.page or not c.isVisible():
+            return None
+        return QRectF(QPointF(c.mapTo(self.stage, QPoint(0, 0))), QSizeF(c.size()))
+
+    def _tile_rect(self, idx: int) -> QRectF | None:
+        """Where a game's cover sits on the cover wall, in the stage's coordinates, if it shows."""
+        wall = self.start.wall
+        if idx < 0 or wall.view != "grid" or self.stage.currentWidget() is not self.start:
+            return None
+        for row in range(wall.count()):
+            item = wall.item(row)
+            if item.data(ROLE_INDEX) == idx:
+                break
+        else:
+            return None
+        if item.isHidden():
+            return None
+        d = wall.delegate
+        cell = wall.visualItemRect(item)
+        r = QRect(d.tile_x(cell), cell.y() + 2, d.COVER.width(), d.COVER.height())
+        if not wall.viewport().rect().contains(r.center()):
+            return None
+        return QRectF(QPointF(wall.viewport().mapTo(self.stage, r.topLeft())), QSizeF(r.size()))
 
     def show_index(self, idx: int):
         self.current = idx
@@ -2105,6 +2207,11 @@ class MainWindow(QMainWindow):
 
         self.toast.show_message(message, undo=revert)
 
+    def _end_fill(self, fx: dict):
+        if self._apply_fx is fx:  # not a later Apply's
+            self._apply_fx = None
+            self.update_chrome()
+
     def apply_all(self) -> bool:
         return self.apply_games(self.pending.games())
 
@@ -2126,6 +2233,9 @@ class MainWindow(QMainWindow):
         root, grid_dir, sfile = self.steam_root, self.user.grid_dir, self.sfile
         restart = self.steam_is_running() and self.auto_restart
         todo = [p for _, _, p in jobs if not p.clears and not p.fetched]
+        # The Apply button fills a step per download, one for closing Steam, one for the writes.
+        self._apply_fx = {"games": set(appids), "total": len(todo) + restart + 1, "step": 0,
+                          "text": "Applying…"}
         self._set_busy("apply", f"Downloading artwork  1 of {len(todo)}" if todo else
                        "Closing Steam…" if restart else
                        f"Applying changes to {plural(len({j[0].appid for j in jobs} | {r[0].appid for r in renames}), 'game')}…")
@@ -2164,6 +2274,10 @@ class MainWindow(QMainWindow):
             kind, i = ev
             self.progress_text = (f"Downloading artwork  {i + 1} of {len(todo)}" if kind == "download"
                                   else "Closing Steam…")
+            fx = self._apply_fx
+            if fx:
+                fx["step"] = i + 1 if kind == "download" else len(todo) + 1
+                fx["text"] = "Closing Steam…" if kind == "close" else "Applying…"
             self.update_chrome()
 
         def done(result):
@@ -2180,6 +2294,11 @@ class MainWindow(QMainWindow):
                     later.append((sc, self.pending.name(a)))
             renamed, rename_errors = self._rename(later, running, sfile)
             errors += write_errors + rename_errors
+            if self._apply_fx:  # full, then "Applied ✓" for a moment, then back to normal
+                self._apply_fx.update(step=self._apply_fx["total"],
+                                      text="Applied ✓" if not errors else "Applied, with problems")
+                fx = self._apply_fx
+                QTimer.singleShot(1200, lambda: self._end_fill(fx))
             self._set_busy("")
             if restart and closed:
                 self.apply_pending_icons()
@@ -2206,6 +2325,7 @@ class MainWindow(QMainWindow):
                     self.close()
 
         def failed(msg):
+            self._apply_fx = None
             self._set_busy("")
             self._close_after_apply = False
             if restart and not self.steam_is_running():

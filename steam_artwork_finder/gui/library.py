@@ -892,6 +892,7 @@ class WallDelegate(QStyledItemDelegate):
         self.lift: dict[int, float] = {}
         self._hot = -1
         self._lift_timer = QTimer(self, interval=16, timeout=self._step_lift)
+        self.away = -1  # a game whose cover is flying back from its page: its place waits empty
 
     LIFT_MS = 120
 
@@ -970,7 +971,9 @@ class WallDelegate(QStyledItemDelegate):
         pick = self.win.pending.get(sc.appid, "grid")
         new = pick is not None and not pick.clears
         self._hover(index.row(), hover)
-        if not new and (pick is not None or self.win.cover_path(sc) is None):
+        if idx == self.away:
+            pass
+        elif not new and (pick is not None or self.win.cover_path(sc) is None):
             draw_dashed_empty(p, r, sc.name, plus=False, focus=hover or focus)
         else:
             p.save()
