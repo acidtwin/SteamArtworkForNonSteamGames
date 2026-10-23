@@ -8,11 +8,11 @@ from typing import Callable
 
 from PySide6.QtCore import QEvent, QPoint, QPointF, QRect, QRectF, QSize, Qt, QTimer, QVariantAnimation, Signal
 from PySide6.QtGui import (
-    QAction, QActionGroup, QColor, QFont, QFontInfo, QFontMetrics, QGuiApplication, QLinearGradient,
+    QColor, QFont, QFontInfo, QFontMetrics, QGuiApplication, QLinearGradient,
     QPainter, QPainterPath, QPen, QPixmap,
 )
 from PySide6.QtWidgets import (
-    QAbstractButton, QApplication, QFrame, QGraphicsOpacityEffect, QHBoxLayout, QLabel, QMenu, QPushButton, QSizePolicy,
+    QAbstractButton, QApplication, QFrame, QGraphicsOpacityEffect, QHBoxLayout, QLabel, QPushButton, QSizePolicy,
     QToolButton, QVBoxLayout, QWidget,
 )
 
@@ -136,7 +136,7 @@ class _Avatar(QWidget):
 
 
 class _Account(_Click):
-    """Avatar + persona name; opens a menu of Steam users when there is more than one."""
+    """Avatar + persona name; opens the account switcher."""
 
     def __init__(self, parent=None):
         super().__init__(parent)
@@ -151,10 +151,10 @@ class _Account(_Click):
         self.chev = QLabel()
         self.chev.setPixmap(_chevron(C["text2"]))
         lay.addWidget(self.chev)
-        self.multi = False
+        self.open = False  # lit while its switcher shows
 
     def paintEvent(self, e):
-        if self.multi and self.hovered:
+        if (self.hovered or self.open) and self.isEnabled():
             p = QPainter(self)
             p.setRenderHint(QPainter.RenderHint.Antialiasing)
             p.setPen(Qt.PenStyle.NoPen)
@@ -181,7 +181,7 @@ class Header(QWidget):
     """The top bar: app mark (home), the Steam account and the ⋯ menu."""
 
     home_clicked = Signal()
-    user_chosen = Signal(int)
+    accounts_clicked = Signal()
     more_clicked = Signal()
 
     def __init__(self, parent=None):
@@ -215,11 +215,9 @@ class Header(QWidget):
 
         self.account = _Account()
         self.account.setAccessibleName("Steam account")
-        self.account.clicked.connect(self._open_users)
+        self.account.clicked.connect(self.accounts_clicked)
         self.account.hide()
         lay.addWidget(self.account)
-        self._users: list[str] = []
-        self._current = 0
 
         self.more = QToolButton()
         self.more.setIcon(icons.icon("more", 22, C["text"]))
@@ -232,9 +230,7 @@ class Header(QWidget):
         lay.addWidget(self.more)
 
     def set_users(self, labels: list[str], current: int, avatar: QPixmap | None = None):
-        """Show the signed-in user; several labels make the area a switcher. Empty hides it."""
-        self._users = list(labels)
-        self._current = current
+        """Show the signed-in user; clicking it opens the account switcher. Empty hides it."""
         if not labels or not 0 <= current < len(labels):
             self.account.hide()
             return
@@ -244,27 +240,9 @@ class Header(QWidget):
         a.avatar.pm = avatar
         a.avatar.letter = name.strip()[:1].upper()
         a.avatar.update()
-        a.multi = len(labels) > 1
-        a.chev.setVisible(a.multi)
-        a.setCursor(Qt.CursorShape.PointingHandCursor if a.multi else Qt.CursorShape.ArrowCursor)
-        a.setFocusPolicy(Qt.FocusPolicy.TabFocus if a.multi else Qt.FocusPolicy.NoFocus)
-        a.setToolTip(f"Signed in to Steam as {name}" + ("\nClick to switch Steam user" if a.multi else ""))
-        a.setAccessibleName(f"Steam user {name}" + (". Switch user" if a.multi else ""))
+        a.setToolTip(f"Signed in to Steam as {name}\nClick to see your Steam accounts")
+        a.setAccessibleName(f"Steam user {name}. Steam accounts")
         a.show()
-
-    def _open_users(self):
-        if len(self._users) < 2:
-            return
-        menu = QMenu(self)
-        group = QActionGroup(menu)
-        for i, name in enumerate(self._users):
-            act = QAction(name, menu, checkable=True, checked=i == self._current)
-            act.triggered.connect(lambda _=False, i=i: self.user_chosen.emit(i) if i != self._current else None)
-            group.addAction(act)
-            menu.addAction(act)
-        a = self.account
-        menu.exec(a.mapToGlobal(QPoint(0, a.height() + 2)))
-        menu.deleteLater()
 
     def paintEvent(self, e):
         p = QPainter(self)

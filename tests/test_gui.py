@@ -1793,3 +1793,41 @@ def test_a_strip_pick_flies_into_the_piece(qapp, window):
     _pump(qapp, 600, until=lambda: row._flight._landed)
     row._option_clicked(row.assets[1])
     assert row._flight is not None and not row._flight._landed and row.pick() is None
+
+
+def test_account_chip_opens_the_switcher(qapp, window):
+    from shiboken6 import isValid
+
+    from steam_artwork_finder.gui.accounts import AccountMenu, AccountRow
+
+    win = window
+    assert [u.label for u in win.users] == ["Deck User", "Other"]
+    win.header.account.clicked.emit()
+    _pump(qapp, 200)
+    menu = win._account_menu
+    assert isinstance(menu, AccountMenu) and menu.isVisible()
+    rows = [r for r in menu.rows if isinstance(r, AccountRow)]
+    assert [(r.acct.name, r.acct.games, r.current) for r in rows] == [
+        ("Deck User", len(win.sfile.shortcuts), True), ("Other", 0, False)]
+    assert win.scrim.is_covering()  # the window behind dims
+    rows[1].click()
+    _pump(qapp, 200)
+    assert win.user is win.users[1]
+    assert not isValid(menu) or not menu.isVisible()
+
+
+def test_account_switcher_with_one_account_still_opens(qapp, window, steam_root):
+    import shutil
+
+    from steam_artwork_finder.gui.accounts import AccountRow
+
+    shutil.rmtree(steam_root / "userdata" / "87654321")
+    win = window
+    win.detect_steam([steam_root])
+    _pump(qapp)
+    assert len(win.users) == 1 and win.header.account.isVisible()
+    win.header.account.clicked.emit()
+    _pump(qapp, 200)
+    rows = [r for r in win._account_menu.rows if isinstance(r, AccountRow)]
+    assert len(rows) == 1 and rows[0].current
+    win._account_menu.close()
