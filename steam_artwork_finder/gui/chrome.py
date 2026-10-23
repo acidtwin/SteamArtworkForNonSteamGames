@@ -533,7 +533,9 @@ class StatusItem(QAbstractButton):
 
 
 def _tip(title: str, hint: str) -> str:
-    return (f"<div style='white-space:pre'>{html.escape(title)}<br>"
+    """A status item's tooltip: `title` (a line for each line of it), and a smaller hint under it."""
+    lines = "<br>".join(html.escape(t) for t in title.split("\n"))
+    return (f"<div style='white-space:pre'>{lines}<br>"
             f"<span style='color:{C['text3']}; font-size:small'>{html.escape(hint)}</span></div>")
 
 
@@ -542,8 +544,21 @@ PROCESS = {
     "running": ("Steam Running", "play", "wait"),
     "restart": ("Restart Needed", "restart", "blue_ink"),
 }
-CONNECTION = {"connected": ("Connected", "ok"), "connecting": ("Connecting", "wait"),
-              "disconnected": ("Disconnected", "off"), "nokey": ("No API Key", "track_off")}
+# What each artwork source's line in the tooltip says, by state.
+SGDB_WORDS = {"connected": "Connected", "connecting": "Connecting…", "disconnected": "Can't reach, retrying",
+              "nokey": "No API key", "rejected": "Key rejected"}
+STORE_WORDS = {"connected": "Connected", "unknown": "Not used yet", "disconnected": "Can't reach, retrying",
+               "off": "Off"}
+
+
+def sources_dot(sgdb: str, store: str) -> str:
+    """The Artwork Sources dot's colour: green while every source in use works, red when none does,
+    amber in between. Steam's store counts as working until it fails, and isn't counted when its
+    artwork is switched off."""
+    used = [sgdb not in ("disconnected", "nokey", "rejected")]
+    if store != "off":
+        used.append(store != "disconnected")
+    return "ok" if all(used) else "off" if not any(used) else "warn"
 
 
 class StatusBar(QWidget):
@@ -608,7 +623,6 @@ class StatusBar(QWidget):
         lay.addWidget(self.div2)
         self.connection = StatusItem()
         self.connection.clicked.connect(self.connection_clicked)
-        self.connection.setToolTip(_tip("SteamGridDB", "Click to change your API key"))
         lay.addWidget(self.connection)
 
         self._pulse = QVariantAnimation(self, startValue=1.0, endValue=0.35, duration=600)
@@ -618,10 +632,11 @@ class StatusBar(QWidget):
         self.kind: str | None = None
         self.steam_found = False
         self.connection_state = "disconnected"
+        self.store_state = "unknown"
         self.set_message(None, "")
         self.set_steam(False, "")
         self.set_process("closed")
-        self.set_connection("disconnected")
+        self.set_sources("disconnected", "unknown")
 
     def fade_message(self):
         """Fade the message out, then leave the left side empty."""
@@ -694,14 +709,18 @@ class StatusBar(QWidget):
         """Global top-centre of the Steam process item, for the pop-over."""
         return self.process.mapToGlobal(QPoint(self.process.width() // 2, 0))
 
-    def set_connection(self, state: str):
-        """"connected", "connecting", "disconnected" or "nokey" (no API key added yet)."""
-        self.connection_state = state
-        word, col = CONNECTION[state]
-        self.connection.set_state(word, dot=C[col])
-        self.connection.setAccessibleName(f"SteamGridDB: {word}. Change API key")
+    def set_sources(self, sgdb: str, store: str):
+        """The Artwork Sources item: one dot for SteamGridDB and Steam's store together (see sources_dot),
+        pulsing while SteamGridDB connects, and each source's state on its own line in the tooltip.
+        `sgdb` is a key of SGDB_WORDS, `store` of STORE_WORDS."""
+        self.connection_state, self.store_state = sgdb, store
+        self.connection.set_state("Artwork Sources", dot=C[sources_dot(sgdb, store)])
+        lines = f"SteamGridDB: {SGDB_WORDS[sgdb]}\nSteam Store: {STORE_WORDS[store]}"
+        self.connection.setToolTip(_tip(lines, "Click to change your API key"))
+        self.connection.setAccessibleName(f"Artwork sources. SteamGridDB: {SGDB_WORDS[sgdb]}. "
+                                          f"Steam Store: {STORE_WORDS[store]}. Change API key")
         self.connection.dot_alpha = 1.0
-        if state == "connecting":
+        if sgdb == "connecting":
             if self._pulse.state() != QVariantAnimation.State.Running:
                 self._pulse.setDirection(QVariantAnimation.Direction.Forward)
                 self._pulse.start()

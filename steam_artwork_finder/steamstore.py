@@ -144,6 +144,11 @@ class SteamStore:
                                    for i in body.get("items") or [] if i.get("type", "app") == "app" and i.get("id")]
         return list(self._searches[key])
 
+    def reachable(self) -> bool:
+        """Ask the store something small, uncached; raises SteamStoreError if it can't be reached."""
+        self._call(SEARCH, {"term": "portal", "l": "english", "cc": "US"})
+        return True
+
     def match(self, name: str) -> StoreGame | None:
         """The store game with the same name, or None. A near name isn't taken: a wrong game's
         official art looks right and isn't, so anything less than a match waits for the user."""

@@ -44,6 +44,7 @@ def window(qapp, steam_root, tmp_path, monkeypatch):
     win = appmod.MainWindow()
     win.steam.search = lambda term: []  # no Steam store lookups from tests unless a test sets them up
     win.steam.assets = lambda appid: {}
+    win.steam.reachable = lambda: True
 
     def offline(url):
         raise OSError("no network in tests")
@@ -788,7 +789,51 @@ def test_background_matching_stops_on_a_bad_key(qapp, window):
     win.sgdb.match = match
     win.set_connection("connected")
     _pump(qapp, 3000, until=lambda: calls and not win._matching)
-    assert len(calls) == 1 and win.conn == "disconnected"
+    assert len(calls) == 1 and win.conn == "rejected"
+    assert "SteamGridDB: Key rejected" in win.statusbar.connection.toolTip()
+
+
+def test_artwork_sources_dot_covers_both_services():
+    from steam_artwork_finder.gui.chrome import sources_dot
+
+    assert sources_dot("connected", "connected") == "ok"
+    assert sources_dot("connected", "unknown") == "ok"  # the store isn't asked until it's needed
+    assert sources_dot("connected", "off") == "ok"  # switched off isn't counted
+    assert sources_dot("connecting", "connected") == "ok"
+    assert sources_dot("nokey", "connected") == "warn"
+    assert sources_dot("connected", "disconnected") == "warn"
+    assert sources_dot("rejected", "off") == "off"  # the only source in use doesn't work
+    assert sources_dot("disconnected", "disconnected") == "off"
+
+
+def test_artwork_sources_item_says_each_service(qapp, window):
+    import html
+
+    from steam_artwork_finder.gui.theme import C
+
+    win = window
+    item = win.statusbar.connection
+    item.toolTip = lambda: html.unescape(type(item).toolTip(item))
+    assert item.text() == "Artwork Sources"
+    win.config.data["steam_art"] = True
+    win.config.data["api_key"] = ""
+    win.set_store(True)
+    assert "SteamGridDB: No API key" in item.toolTip() and "Steam Store: Connected" in item.toolTip()
+    assert item.dot == C["warn"]
+    win.config.data["api_key"] = "x"
+    win.set_connection("connected")
+    assert "SteamGridDB: Connected" in item.toolTip() and item.dot == C["ok"]
+    assert not win._recheck.isActive()
+    win.set_store(False)
+    assert "Steam Store: Can't reach, retrying" in item.toolTip() and item.dot == C["warn"]
+    assert win._recheck.isActive()
+    win._set_steam_art(False)
+    assert "Steam Store: Off" in item.toolTip() and item.dot == C["ok"]
+    assert not win._recheck.isActive()
+    win._set_steam_art(True)
+    win._recheck_sources()  # the store answers again
+    _pump(qapp, 2000, until=lambda: win.store_conn == "connected")
+    assert "Steam Store: Connected" in item.toolTip()
 
 
 def test_thumbnail_cache_replaces_a_cut_off_file(qapp, tmp_path, monkeypatch):
