@@ -880,6 +880,10 @@ class WallDelegate(QStyledItemDelegate):
     COVER = QSize(141, 212)
     GAP = 18  # between rows, and the least space between tiles
     MIN_W = 141 + 14
+    # Room around each cover inside its cell for the hover lift (it rises 3 px and grows 3%) and
+    # its shadow, so a raised cover never pokes out of its cell and gets cut off by the wall's edge
+    # or by a neighbour repainting.
+    TOP, ROOM = 8, 4
 
     def __init__(self, win, view):
         super().__init__()
@@ -938,7 +942,7 @@ class WallDelegate(QStyledItemDelegate):
         f.setPointSizeF(theme.pt("control"))
         m = QFont(font)
         m.setPointSizeF(theme.pt("label"))
-        return self.COVER.height() + 8 + QFontMetrics(f).height() + 4 + QFontMetrics(m).height() + 4 + self.GAP
+        return self.TOP - 2 + self.COVER.height() + 8 + QFontMetrics(f).height() + 4 + QFontMetrics(m).height() + 4 + self.GAP
 
     def sizeHint(self, option, index):
         # As wide as the wall's cell; hit_rect() keeps clicks and hover to the tile itself.
@@ -946,18 +950,18 @@ class WallDelegate(QStyledItemDelegate):
 
     def hit_rect(self, cell: QRect) -> QRect:
         """The cover, its name and its artwork line: the gaps around them are empty wall."""
-        return QRect(self.tile_x(cell), cell.y() + 2, self.COVER.width(),
-                     self.tile_height(self.view.font()) - self.GAP - 2)
+        return QRect(self.tile_x(cell), cell.y() + self.TOP, self.COVER.width(),
+                     self.tile_height(self.view.font()) - self.GAP - self.TOP)
 
     def tile_x(self, cell: QRect) -> int:
         """Where the cover sits in its cell: the spare width goes between the columns, so the first
         column starts at the wall's left edge (in line with the chips) and the last ends at its right."""
-        spare = cell.width() - self.COVER.width()
+        spare = cell.width() - self.COVER.width() - 2 * self.ROOM
         cols = max(1, getattr(self.view, "cols", 1))
         if cols == 1:
-            return cell.x() + spare // 2
+            return cell.x() + self.ROOM + spare // 2
         col = min(cols - 1, max(0, round((cell.x() + self.view.horizontalOffset()) / max(1, cell.width()))))
-        return cell.x() + round(spare * col / (cols - 1))
+        return cell.x() + self.ROOM + round(spare * col / (cols - 1))
 
     def paint(self, p: QPainter, option, index):
         p.save()
@@ -965,7 +969,7 @@ class WallDelegate(QStyledItemDelegate):
         p.setRenderHint(QPainter.RenderHint.SmoothPixmapTransform)
         idx = index.data(ROLE_INDEX)
         sc = self.win.sfile.shortcuts[idx]
-        r = QRectF(self.tile_x(option.rect), option.rect.y() + 2, self.COVER.width(), self.COVER.height())
+        r = QRectF(self.tile_x(option.rect), option.rect.y() + self.TOP, self.COVER.width(), self.COVER.height())
         hover = bool(option.state & QStyle.StateFlag.State_MouseOver)
         focus = bool(option.state & QStyle.StateFlag.State_HasFocus) and theme.kbd_focus(self.view)
         pick = self.win.pending.get(sc.appid, "grid")

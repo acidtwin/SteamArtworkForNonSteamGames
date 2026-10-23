@@ -1916,7 +1916,7 @@ class MainWindow(QMainWindow):
             return None
         d = wall.delegate
         cell = wall.visualItemRect(item)
-        r = QRect(d.tile_x(cell), cell.y() + 2, d.COVER.width(), d.COVER.height())
+        r = QRect(d.tile_x(cell), cell.y() + d.TOP, d.COVER.width(), d.COVER.height())
         if not wall.viewport().rect().contains(r.center()):
             return None
         return QRectF(QPointF(wall.viewport().mapTo(self.stage, r.topLeft())), QSizeF(r.size()))
