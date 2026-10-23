@@ -21,7 +21,7 @@
 
 A small desktop app that gives your **non-Steam games** proper artwork in Steam. It finds Steam on its own, lists every non-Steam shortcut you've added, and pulls all five artwork types from [SteamGridDB](https://www.steamgriddb.com), or Steam's own store art when the game is sold there, in one click. Still or animated. You can then swap any piece you don't like from a visual picker.
 
-I made it because the two tools most people use for this on Linux felt clunky and hard to figure out. This one aims to be simpler and nicer to look at.
+I wanted an intuitive, easy-to-use and visually pleasing alternative for giving non-Steam games their artwork, so I built one.
 
 ![Getting animated artwork for every game in one click, then applying it](docs/get-artwork.webp)
 
