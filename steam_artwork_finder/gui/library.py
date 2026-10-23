@@ -887,6 +887,40 @@ class WallDelegate(QStyledItemDelegate):
         self.view = view
         self.covers = ScaledCache()
         self.picks: dict = {}
+        # Hover lift, as in Steam's library: the hovered cover rises and grows a little over
+        # LIFT_MS, and settles back when the mouse leaves. lift[row] runs from 0 to 1.
+        self.lift: dict[int, float] = {}
+        self._hot = -1
+        self._lift_timer = QTimer(self, interval=16, timeout=self._step_lift)
+
+    LIFT_MS = 120
+
+    def _hover(self, row: int, on: bool):
+        """Called from paint: start lifting the row the mouse is on, settle the one it left."""
+        if on and row != self._hot:
+            self._hot = row
+        elif not on and row == self._hot:
+            self._hot = -1
+        else:
+            return
+        if not self._lift_timer.isActive():
+            self._lift_timer.start()
+
+    def _step_lift(self):
+        step = self._lift_timer.interval() / self.LIFT_MS
+        rows = set(self.lift) | ({self._hot} if self._hot >= 0 else set())
+        for row in rows:
+            t = self.lift.get(row, 0.0)
+            t = min(1.0, t + step) if row == self._hot else max(0.0, t - step)
+            if t > 0:
+                self.lift[row] = t
+            else:
+                self.lift.pop(row, None)
+            item = self.view.item(row) if row < self.view.count() else None
+            if item is not None:
+                self.view.viewport().update(self.view.visualItemRect(item).adjusted(-10, -10, 10, 10))
+        if all(r == self._hot and t == 1.0 for r, t in self.lift.items()) and (self._hot < 0 or self._hot in self.lift):
+            self._lift_timer.stop()  # everything has risen or settled
 
     def tile_height(self, font: QFont) -> int:
         # Asked on every mouse move over the wall (hit testing): worked out once per font.
@@ -935,9 +969,22 @@ class WallDelegate(QStyledItemDelegate):
         focus = bool(option.state & QStyle.StateFlag.State_HasFocus) and theme.kbd_focus(self.view)
         pick = self.win.pending.get(sc.appid, "grid")
         new = pick is not None and not pick.clears
+        self._hover(index.row(), hover)
         if not new and (pick is not None or self.win.cover_path(sc) is None):
             draw_dashed_empty(p, r, sc.name, plus=False, focus=hover or focus)
         else:
+            p.save()
+            t = self.lift.get(index.row(), 0.0)
+            if t > 0:
+                e = 1 - (1 - t) ** 3  # eases out, the way Steam's covers rise
+                for i in range(4):  # a soft shadow under the raised cover
+                    p.setPen(Qt.PenStyle.NoPen)
+                    p.setBrush(QColor(0, 0, 0, int(26 * e)))
+                    p.drawRoundedRect(r.adjusted(-i, 2 + i * 1.5, i, 4 + i * 2.5), 4 + i, 4 + i)
+                c = r.center()
+                p.translate(c.x(), c.y() - 3 * e)
+                p.scale(1 + 0.03 * e, 1 + 0.03 * e)
+                p.translate(-c.x(), -c.y())
             clip = QPainterPath()
             clip.addRoundedRect(r, 3, 3)
             p.setClipPath(clip)
@@ -946,6 +993,8 @@ class WallDelegate(QStyledItemDelegate):
                 p.fillRect(r, q("raised"))  # decoding, or not an image
             else:
                 p.drawPixmap(r.topLeft(), pm)
+            if t > 0:
+                p.fillRect(r, QColor(255, 255, 255, int(16 * e)))  # a touch brighter, as Steam does
             p.setClipping(False)
             if new:
                 draw_tag(p, int(r.x()) + 8, int(r.y()) + 8, "", "New", NEW_BG, "#ffffff")
@@ -953,6 +1002,7 @@ class WallDelegate(QStyledItemDelegate):
                 p.setPen(QPen(q("blue"), 2 if focus else 1))
                 p.setBrush(Qt.BrushStyle.NoBrush)
                 p.drawRoundedRect(r.adjusted(0.5, 0.5, -0.5, -0.5), 3, 3)
+            p.restore()
         f = QFont(option.font)
         f.setPointSizeF(theme.pt("control"))
         p.setFont(f)

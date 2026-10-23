@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from PySide6.QtCore import QEvent, QObject, Qt
+from PySide6.QtCore import QEasingCurve, QEvent, QObject, Qt, QVariantAnimation
 from PySide6.QtGui import QColor, QFontMetrics, QGuiApplication, QPalette
 from PySide6.QtWidgets import QAbstractButton, QApplication, QWidget
 
@@ -86,6 +86,40 @@ SCALE = {
     "title": 1.9, "heading": 1.3, "appname": 1.2, "body": 1.0, "control": 1.0,
     "faint": 0.9, "caption": 0.85, "label": 0.8, "tag": 0.72, "go": 1.1,
 }
+
+
+def mix(a: QColor, b: QColor, t: float) -> QColor:
+    """`a` blended toward `b` by t (0 to 1)."""
+    return QColor.fromRgbF(*(x + (y - x) * t for x, y in zip(a.getRgbF(), b.getRgbF())))
+
+
+class SwitchGlide(QObject):
+    """Slides a switch's knob (and fades its track colour) when its button is checked or
+    unchecked, instead of jumping. `at` runs from 0 (off) to 1 (on); paint from it."""
+
+    MS = 120
+
+    def __init__(self, button: QAbstractButton):
+        super().__init__(button)
+        self.button = button
+        self.at = 1.0 if button.isChecked() else 0.0
+        self._anim = QVariantAnimation(self, duration=self.MS, easingCurve=QEasingCurve.Type.OutCubic)
+        self._anim.valueChanged.connect(self._step)
+        button.toggled.connect(self._go)
+
+    def _go(self, on: bool):
+        if not self.button.isVisible():  # set while hidden: no one to see it slide
+            self._anim.stop()
+            self.at = 1.0 if on else 0.0
+            return
+        self._anim.stop()
+        self._anim.setStartValue(self.at)
+        self._anim.setEndValue(1.0 if on else 0.0)
+        self._anim.start()
+
+    def _step(self, v):
+        self.at = float(v)
+        self.button.update()
 
 
 def base_pt() -> float:

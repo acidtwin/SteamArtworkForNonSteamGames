@@ -914,6 +914,7 @@ class SwitchRow(QAbstractButton):
         self.setFocusPolicy(Qt.FocusPolicy.StrongFocus)
         self.setAccessibleName(text)
         self.setFont(font(0.96))
+        self.glide = theme.SwitchGlide(self)
 
     def sizeHint(self):
         return QSize(self.fontMetrics().horizontalAdvance(self.text()) + 56, max(30, self.fontMetrics().height() + 12))
@@ -932,13 +933,11 @@ class SwitchRow(QAbstractButton):
             p.drawRoundedRect(track.adjusted(-2, -2, 2, 2), 11, 11)
         hover = self.underMouse()
         p.setPen(Qt.PenStyle.NoPen)
-        if self.isChecked():
-            p.setBrush(q("action_hover") if hover else q("action"))
-        else:
-            p.setBrush(q("select") if hover else q("track_off"))
+        t = self.glide.at
+        p.setBrush(theme.mix(q("select") if hover else q("track_off"), q("action_hover") if hover else q("action"), t))
         p.drawRoundedRect(track, 9, 9)
         knob = 14
-        x = track.right() - knob - 2 if self.isChecked() else track.left() + 2
+        x = track.left() + 2 + (track.width() - knob - 4) * t
         p.setBrush(q("text"))
         p.drawEllipse(QRectF(x, track.top() + 2, knob, knob))
 

@@ -64,6 +64,7 @@ class MenuRow(PopupRow):
         if item.toggle is not None:
             self.setCheckable(True)
             self.setChecked(item.toggle)
+            self.glide = theme.SwitchGlide(self)
         self.setEnabled(item.enabled)
 
     def sizeHint(self):
@@ -100,10 +101,11 @@ class MenuRow(PopupRow):
         if self.item.toggle is not None:
             track = QRectF(right - 30, (r.height() - 17) / 2, 30, 17)
             p.setPen(Qt.PenStyle.NoPen)
-            p.setBrush(q("blue") if self.isChecked() else q("track_off"))
+            t = self.glide.at
+            p.setBrush(theme.mix(q("track_off"), q("blue"), t))
             p.drawRoundedRect(track, 8.5, 8.5)
             knob = 13
-            x = track.right() - knob - 2 if self.isChecked() else track.left() + 2
+            x = track.left() + 2 + (track.width() - knob - 4) * t
             p.setBrush(q("text") if on else q("text3"))
             p.drawEllipse(QRectF(x, track.top() + 2, knob, knob))
         elif self.item.checked:
