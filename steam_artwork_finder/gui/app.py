@@ -849,8 +849,8 @@ class MainWindow(QMainWindow):
                     self.full_files[aid] = p
                     self.refresh_soon()
 
-                workers.run_retrying(workers.cached_file, asset.url, self.sgdb.download, on_done=done,
-                                     on_error=lambda _m, aid=asset.id: self._full_loading.discard(aid))
+                self._fetches.get(("file", asset.url), workers.cached_file, asset.url, self.sgdb.download,
+                                  on_done=done, on_error=lambda _m, aid=asset.id: self._full_loading.discard(aid))
             return self.motion_spec(asset, size, crop=bool(how.get("crop")))
         bound = self._bound(size)
         return ("full", asset.id), lambda: motion.make("frames", path, bound, budget, **how)
@@ -1022,13 +1022,17 @@ class MainWindow(QMainWindow):
                     self.pick_pix[key] = QPixmap.fromImage(img)
                     self.refresh_soon()
 
-            workers.run(decode_pick, pick.file if pick.file else pick.data, key[1], kind="cpu", on_done=decoded,
+            workers.run(decode_pick, pick.source, key[1], kind="cpu", on_done=decoded,
                         on_error=lambda _m, key=key: self._pick_loading.discard(key))
             return
 
-        def loaded(pm, key=key, asset=pick.asset):
+        def loaded(pm, key=key, asset=pick.asset, pick=pick):
             self._pick_loading.discard(key)
             cur = self.pending.get(*key)
+            if cur is pick and pick.fetched:  # the full file came first: that's shown instead
+                if key not in self.pick_pix:
+                    self._load_pick_pix(key, pick)
+                return
             full = tray_full_pixmap(asset.id)  # sharper than the thumbnail, if See all loaded it
             if full is not None:
                 pm = full
@@ -1036,7 +1040,24 @@ class MainWindow(QMainWindow):
                 self.pick_pix[key] = pm
                 self.refresh_soon()
 
-        self.load_thumb(pick.asset, loaded)
+        self.load_thumb(pick.asset, loaded)  # stands in until the full file is here
+        self._fetch_pick(key, pick)
+
+    def _fetch_pick(self, key, pick: Pick):
+        """Download a clicked option's full file into the cache (at once if it's there already,
+        say from See all), then show that: the thumbnail is a small, softer copy. Apply uses it."""
+        url = pick.asset.url
+        if not url.startswith(("http://", "https://")):
+            return
+
+        def got(path, key=key, pick=pick):
+            if self.pending.get(*key) is pick and not pick.fetched:
+                pick.cached = path
+                self._pick_loading.discard(key)  # a thumbnail still on its way is no longer wanted
+                self._load_pick_pix(key, pick)
+
+        self._fetches.get(("file", url), workers.cached_file, url, self.sgdb.download, on_done=got,
+                          on_error=lambda _m: None)  # Apply downloads it then, as before
 
     def stage_pick(self, slot: Slot, asset: Asset):
         sc = self.current_shortcut()
@@ -1448,7 +1469,7 @@ class MainWindow(QMainWindow):
                 if grid is not None and not grid.clears:
                     cover = self.pick_pixmap(sc, "grid")
                     if cover is None and grid.fetched:
-                        cover = QPixmap.fromImage(decode_pick(grid.file or grid.data, "grid"))
+                        cover = QPixmap.fromImage(decode_pick(grid.source, "grid"))
                 elif grid is None:
                     path = self.cover_path(sc)
                     if path:
@@ -2232,7 +2253,8 @@ class MainWindow(QMainWindow):
         # The account the picks were made for, even if another is opened before the writes.
         root, grid_dir, sfile = self.steam_root, self.user.grid_dir, self.sfile
         restart = self.steam_is_running() and self.auto_restart
-        todo = [p for _, _, p in jobs if not p.clears and not p.fetched]
+        # A pick's cached download can be gone (another copy of the app tidied its cache): fetch it again.
+        todo = [p for _, _, p in jobs if not p.clears and (not p.fetched or p.cached and not Path(p.cached).is_file())]
         # The Apply button fills a step per download, one for closing Steam, one for the writes.
         self._apply_fx = {"games": set(appids), "total": len(todo) + restart + 1, "step": 0,
                           "text": "Applying…"}

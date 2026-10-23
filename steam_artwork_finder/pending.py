@@ -29,12 +29,14 @@ class Pick:
 
     `asset` None means "clear this piece". `data` is the downloaded file once
     it has been fetched (Get Artwork fetches it straight away, into `file`; a pick
-    made by clicking an option is downloaded when it is applied).
+    made by clicking an option is downloaded into the app's cache as it's picked,
+    into `cached`, so the game page shows it at full quality before it's applied).
     """
 
     asset: Asset | None
     data: bytes | None = None
     file: str | None = None  # the download kept on disk instead of in memory (Get Artwork)
+    cached: str | None = None  # the download in the app's cache (shared, so never deleted on Apply)
 
     @property
     def clears(self) -> bool:
@@ -42,14 +44,20 @@ class Pick:
 
     @property
     def fetched(self) -> bool:
-        return self.data is not None or self.file is not None
+        return self.data is not None or self.file is not None or self.cached is not None
+
+    @property
+    def source(self) -> str | bytes | None:
+        """Where the downloaded file is: a path, else its bytes."""
+        return self.file or self.cached or self.data
 
     def content(self) -> bytes | None:
         """The downloaded file's bytes, from memory or from its spool file."""
         if self.data is not None:
             return self.data
-        if self.file is not None:
-            with open(self.file, "rb") as f:
+        path = self.file or self.cached
+        if path is not None:
+            with open(path, "rb") as f:
                 return f.read()
         return None
 

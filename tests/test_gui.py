@@ -620,6 +620,7 @@ def test_one_bad_download_keeps_the_rest_and_downloads_before_closing_steam(qapp
         return PNG
 
     win.sgdb.download = download
+    win._fetch_pick = lambda key, pick: None  # as if picked offline: Apply does the downloads
     win._stage(a, "grid", Pick(_asset(1)))
     win._stage(b, "grid", Pick(_asset(2)))
     steam_state["running"] = True
@@ -637,6 +638,44 @@ def test_one_bad_download_keeps_the_rest_and_downloads_before_closing_steam(qapp
     win.apply_all()
     _pump(qapp, 3000, until=lambda: not win.busy)
     assert steam_state["calls"] == ["download"]
+
+
+def test_a_clicked_pick_shows_its_full_file_and_apply_reuses_it(qapp, window, steam_state):
+    from pathlib import Path
+
+    from PySide6.QtCore import QBuffer, QByteArray, QIODevice
+    from PySide6.QtGui import QImage
+
+    from steam_artwork_finder.artwork import SLOTS, existing
+    from steam_artwork_finder.pending import Pick
+
+    img = QImage(64, 96, QImage.Format.Format_ARGB32)
+    img.fill(0xFF336699)
+    buf = QBuffer(ba := QByteArray())
+    buf.open(QIODevice.OpenModeFlag.WriteOnly)
+    img.save(buf, "PNG")
+    full = bytes(ba)
+    calls = []
+
+    def download(url):
+        calls.append(url)
+        return PNG if "/t" in url else full  # a 1 px thumbnail, a 64 x 96 full file
+
+    win = window
+    win.sgdb.download = download
+    sc = win.sfile.shortcuts[0]
+    pick = Pick(_asset(7))
+    win._stage(sc, "grid", pick)
+    _pump(qapp, 3000, until=lambda: (pm := win.pick_pix.get((sc.appid, "grid"))) is not None and pm.width() == 64)
+    assert win.pick_pix[(sc.appid, "grid")].size().width() == 64  # the full file, not the thumbnail
+    assert pick.fetched and Path(pick.cached).is_file()
+
+    calls.clear()
+    win.apply_games([sc.appid])
+    _pump(qapp, 3000, until=lambda: not win.busy)
+    assert calls == []  # Apply used the download it already had
+    assert existing(win.user.grid_dir, sc.appid, SLOTS["grid"]) is not None
+    assert Path(pick.cached).is_file()  # the cache's copy is left for See all and later picks
 
 
 def test_switching_and_quitting_wait_while_busy(qapp, window):
