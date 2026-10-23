@@ -10,10 +10,13 @@ from html import escape
 
 from pathlib import Path
 
-from PySide6.QtCore import QEvent, QObject, QPoint, QPointF, QRect, QRectF, QSize, QStandardPaths, Qt, QTimer, Signal
+from PySide6.QtCore import (
+    QEasingCurve, QEvent, QObject, QPoint, QPointF, QRect, QRectF, QSize, QSizeF, QStandardPaths, Qt, QTimer,
+    QVariantAnimation, Signal,
+)
 from PySide6.QtGui import (
-    QAction, QColor, QFont, QFontMetrics, QFontMetricsF, QKeySequence, QLinearGradient, QPainter, QPainterPath, QPalette,
-    QPen, QPixmap,
+    QAction, QColor, QFont, QFontMetrics, QFontMetricsF, QImage, QKeySequence, QLinearGradient, QPainter, QPainterPath,
+    QPalette, QPen, QPixmap,
 )
 from PySide6.QtWidgets import (
     QApplication,
@@ -381,6 +384,111 @@ class CustomImageButton(QPushButton):
         menu.deleteLater()
 
 
+def _soft_shadow(size: QSize, pad: int) -> QPixmap:
+    """A blurred dark rounded rect `pad` px bigger all round than `size` (like box-shadow 0 10px 30px #0008).
+
+    Drawn small and scaled up smoothly, which blurs it cheaply."""
+    k = 8
+    w, h = size.width() + 2 * pad, size.height() + 2 * pad
+    small = QImage(max(1, w // k), max(1, h // k), QImage.Format.Format_ARGB32_Premultiplied)
+    small.fill(Qt.GlobalColor.transparent)
+    p = QPainter(small)
+    p.setRenderHint(QPainter.RenderHint.Antialiasing)
+    p.setPen(Qt.PenStyle.NoPen)
+    p.setBrush(QColor(0, 0, 0, 128))
+    p.drawRoundedRect(QRectF(pad / k, pad / k, size.width() / k, size.height() / k), 1, 1)
+    p.end()
+    mid = small.scaled(small.width() * 2, small.height() * 2, Qt.AspectRatioMode.IgnoreAspectRatio,
+                       Qt.TransformationMode.SmoothTransformation)
+    return QPixmap.fromImage(mid.scaled(w, h, Qt.AspectRatioMode.IgnoreAspectRatio,
+                                        Qt.TransformationMode.SmoothTransformation))
+
+
+class _Flight(QWidget):
+    """A picked option's picture flying from its tile into the piece in use, growing as it goes.
+
+    It's an overlay on the page, so it can cross from the strip to the piece; until it lands
+    it covers the piece with what was there before (`under`), then it goes and the pick shows.
+    """
+
+    MS = 320
+    PAD = 30  # room for the shadow
+    ROUND = 3
+
+    def __init__(self, host: QWidget, tile: QWidget, art: QWidget, picture: QPixmap, under: QPixmap):
+        super().__init__(host)
+        self.setAttribute(Qt.WidgetAttribute.WA_TransparentForMouseEvents)
+        self.art, self.picture, self.under = art, picture, under
+        self.src = QRectF(QPointF(tile.mapTo(host, QPoint(0, 0))), QSizeF(tile.size()))
+        self.dest = self._dest() or self.src
+        self.shadow = _soft_shadow(art.size(), self.PAD)
+        self.clip = QRectF(host.rect())
+        vp = host.scroll.viewport() if isinstance(getattr(host, "scroll", None), QScrollArea) else None
+        if vp is not None:  # the page's scrolling body: don't draw over anything outside it
+            self.clip = QRectF(QPointF(vp.mapTo(host, QPoint(0, 0))), QSizeF(vp.size()))
+        self.t = 0.0
+        self._landed = False
+        self.setGeometry(host.rect())
+        self.raise_()
+        self.show()
+        art.destroyed.connect(self.land)  # the row went mid-flight
+        self.anim = QVariantAnimation(self, startValue=0.0, endValue=1.0, duration=self.MS,
+                                      easingCurve=QEasingCurve.Type.OutCubic)
+        self.anim.valueChanged.connect(self._step)
+        self.anim.finished.connect(self.land)
+        self.anim.start()
+
+    def _dest(self) -> QRectF | None:
+        """Where the piece is now (the page may scroll mid-flight)."""
+        try:
+            return QRectF(QPointF(self.art.mapTo(self.parentWidget(), QPoint(0, 0))), QSizeF(self.art.size()))
+        except RuntimeError:
+            return None
+
+    def _area(self) -> QRect:
+        m = self.PAD + 12
+        return self.src.united(self.dest).adjusted(-m, -m, m, m + 10).toAlignedRect()
+
+    def _step(self, t):
+        before = self._area()
+        self.t = float(t)
+        self.dest = self._dest() or self.dest
+        self.update(before.united(self._area()))
+
+    def land(self):
+        """End the flight now: the flyer goes and the piece shows the pick."""
+        if self._landed:
+            return
+        self._landed = True
+        try:
+            self.anim.stop()
+            self.hide()
+            self.deleteLater()
+        except RuntimeError:  # already gone with the page
+            pass
+
+    def paintEvent(self, _):
+        if self._landed:
+            return
+        p = QPainter(self)
+        p.setRenderHint(QPainter.RenderHint.Antialiasing)
+        p.setRenderHint(QPainter.RenderHint.SmoothPixmapTransform)
+        p.setClipRect(self.clip)
+        d, s, t = self.dest, self.src, self.t
+        p.drawPixmap(d, self.under, QRectF(self.under.rect()))  # the piece as it was, till the pick lands
+        r = QRectF(s.x() + (d.x() - s.x()) * t, s.y() + (d.y() - s.y()) * t,
+                   s.width() + (d.width() - s.width()) * t, s.height() + (d.height() - s.height()) * t)
+        scale = r.width() / max(1.0, d.width())
+        pad = self.PAD * scale
+        p.setOpacity(min(1.0, (1.0 - t) / 0.25))  # the shadow settles as it lands
+        p.drawPixmap(r.adjusted(-pad, -pad + 10, pad, pad + 10), self.shadow, QRectF(self.shadow.rect()))
+        p.setOpacity(1.0)
+        clip = QPainterPath()
+        clip.addRoundedRect(r, self.ROUND, self.ROUND)
+        p.setClipPath(clip, Qt.ClipOperation.IntersectClip)
+        p.drawPixmap(r, self.picture, QRectF(self.picture.rect()))
+
+
 class ArtworkRow(QWidget):
     open_tray = Signal(object)  # slot
     thumb_loaded = Signal()  # the first option's thumbnail changed
@@ -505,6 +613,7 @@ class ArtworkRow(QWidget):
         self._rest = QTimer(self, singleShot=True, interval=140)
         self._rest.timeout.connect(self._preview_now)
         self._rest_view: ArtView | None = None
+        self._flight: _Flight | None = None  # a pick flying into the piece
 
     def eventFilter(self, obj, e):
         if e.type() == QEvent.Type.Resize and obj is self._viewport:
@@ -575,6 +684,7 @@ class ArtworkRow(QWidget):
         self.caption.setStyleSheet(style.get(tone, ""))
 
     def show_current(self):
+        self.land()  # anything else changing the piece doesn't wait for a pick in flight
         sc = self.win.current_shortcut()
         path = self.win.slot_path(sc, self.slot)
         pick = self.pick()
@@ -638,11 +748,52 @@ class ArtworkRow(QWidget):
 
     def _option_clicked(self, a: Asset):
         pick = self.pick()
+        self.land()
+        flight = None
         if pick is not None and not pick.clears and pick.asset.id == a.id:
             self.win.unstage(self.slot)
         else:
+            view = next((v for v, b in zip(self.thumbs, self.assets) if b is a), None)
+            flight = self._ready_flight(view) if view is not None else None
             self.win.stage_pick(self.slot, a)
         self.show_current()
+        if flight is not None:
+            self._flight = _Flight(*flight)
+
+    def land(self):
+        """Finish a pick still flying into the piece, at once."""
+        f, self._flight = self._flight, None
+        if f is not None:
+            f.land()
+
+    def _host(self) -> QWidget:
+        """The page the flyer is drawn on: the game page if the row is on one."""
+        w = self.parentWidget()
+        while w is not None and not isinstance(w, GamePage):
+            w = w.parentWidget()
+        return w or self.window()
+
+    def _ready_flight(self, view: ArtView) -> tuple | None:
+        """Get ready to fly a copy of the picked option's picture from its tile into the piece
+        (taken before the pick is staged, so the piece can be seen as it was till it lands).
+
+        Only for a pick made here in the strip, with the tile and the piece both on show;
+        otherwise (None) the piece just changes, as it always has."""
+        if (not self.isVisible() or not view.isVisible() or view.pixmap.isNull()
+                or view.visibleRegion().isEmpty() or self.art.visibleRegion().isEmpty()):
+            return None
+        if self._previewing or self._rest.isActive():
+            # The piece is previewing this option: go back to what's in use, for the pick to land on.
+            self._rest.stop()
+            self._rest_view = None
+            self._previewing = False
+            self.show_current()
+        dpr = self.devicePixelRatioF()
+        if self.art.checker:  # a logo: as its tile shows it, on the checks
+            picture = view.grab()
+        else:  # the real picture, sharp at the piece's size (a still of an animated one)
+            picture = fill_rect(view.pixmap, self.art.size(), dpr)
+        return self._host(), view, self.art, picture, self.art.grab()
 
     # -- your own files ------------------------------------------------------
 
@@ -839,6 +990,7 @@ class ArtworkRow(QWidget):
 
     def _clear_strip(self, keep: set[int] = frozenset()):
         """Empty the strip; views whose id() is in `keep` are only taken out, to be put back."""
+        self.land()
         self._rest.stop()
         self._rest_view = None
         had = bool(self.thumbs)

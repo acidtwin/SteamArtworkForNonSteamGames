@@ -1685,3 +1685,30 @@ def test_about_credits_acid_design_and_fits_its_text(qapp, monkeypatch):
     assert lock.phase == 1.0
     assert d.height() >= d.layout().totalHeightForWidth(d.width())  # no wrapped line cut off
     d.deleteLater()
+
+
+def test_a_strip_pick_flies_into_the_piece(qapp, window):
+    from PySide6.QtGui import QColor, QPixmap
+
+    win = window
+    win.open_game(0)
+    _pump(qapp)
+    row = win.page.rows["grid"]
+    row.set_assets([_asset(n) for n in range(1, 4)], False)
+    for v in row.thumbs:
+        pm = QPixmap(60, 90)
+        pm.fill(QColor("#3498db"))
+        v.set_pixmap(pm)
+    row.thumbs[1].clicked.emit()
+    flight = row._flight
+    assert flight is not None and flight.isVisible()
+    assert row.pick().asset.id == 2  # staged at once; only the picture waits
+    row.thumbs[2].clicked.emit()  # a second pick lands the first at once
+    assert flight._landed and row._flight is not None
+    _pump(qapp, 600, until=lambda: row._flight._landed)
+    assert row._flight._landed and row.pick().asset.id == 3
+    row.show_current()  # a change from elsewhere (See all, Get All, undo) doesn't fly
+    assert row._flight is None
+    row.thumbs[0].hide()  # a tile not on show just picks, as before
+    row._option_clicked(row.assets[0])
+    assert row._flight is None and row.pick().asset.id == 1
