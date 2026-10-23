@@ -45,7 +45,7 @@ from PySide6.QtWidgets import (
 
 from ..sgdb import Game, SteamGridDB
 from . import icons, theme, workers
-from .chrome import Overlay
+from .chrome import Overlay, SwitchRow
 from .scrim import run_dialog
 from .theme import C
 from .widgets import FlowLayout, fill_rect
@@ -54,65 +54,165 @@ API_KEY_URL = "https://www.steamgriddb.com/profile/preferences/api"
 
 
 class KeyBadge(QWidget):
-    """The blue rounded square with a key, at the top of the API key window."""
+    """A rounded square badge with an icon: SteamGridDB's blue key, or the Steam Store's logo
+    on Steam's own navy."""
 
-    def __init__(self, parent=None):
+    def __init__(self, parent=None, icon: str = "key", colors: tuple[str, str] = (C["blue"], "#1a4f8a"), size: int = 44):
         super().__init__(parent)
-        self.setFixedSize(44, 44)
+        self.icon_name, self.colors = icon, colors
+        self.setFixedSize(size, size)
 
     def paintEvent(self, _):
         p = QPainter(self)
         p.setRenderHint(QPainter.RenderHint.Antialiasing)
         g = QLinearGradient(0, 0, self.width(), self.height())
-        g.setColorAt(0, QColor(C["blue"]))
-        g.setColorAt(1, QColor("#1a4f8a"))
+        g.setColorAt(0, QColor(self.colors[0]))
+        g.setColorAt(1, QColor(self.colors[1]))
         p.setPen(Qt.PenStyle.NoPen)
         p.setBrush(g)
-        p.drawRoundedRect(QRectF(self.rect()), 10, 10)
-        icons.draw(p, "key", QRect(11, 11, 22, 22), "#ffffff")
+        r = self.width() * 0.23
+        p.drawRoundedRect(QRectF(self.rect()), r, r)
+        m = self.width() // (5 if self.icon_name == "steam" else 4)  # the logo fills more of its badge
+        icons.draw(p, self.icon_name, QRect(m, m, self.width() - 2 * m, self.width() - 2 * m), "#ffffff")
+
+
+# Each source's tag (words, colour, ground) and the line under it when something's wrong, by state.
+SGDB_TAG = {"connected": ("CONNECTED", "ok", "ok_ground"), "connecting": ("CHECKING", "text3", "raised"),
+            "disconnected": ("CAN'T REACH", "warn", "warn_ground"), "nokey": ("NO KEY", "warn", "warn_ground"),
+            "rejected": ("KEY REJECTED", "bad", "bad_ground")}
+STORE_TAG = {"connected": ("CONNECTED", "ok", "ok_ground"), "connecting": ("CHECKING", "text3", "raised"),
+             "unknown": ("CHECKING", "text3", "raised"), "disconnected": ("CAN'T REACH", "warn", "warn_ground"),
+             "off": ("OFF", "text3", "raised")}
+SGDB_PROBLEM = {"disconnected": ("Can't reach SteamGridDB. It's tried again by itself.", "warn"),
+                "nokey": ("Add a free API key to search SteamGridDB's artwork.", "warn"),
+                "rejected": ("SteamGridDB didn't accept this key. Copy it again from your SteamGridDB profile.", "bad")}
+STORE_PROBLEM = {"disconnected": ("Can't reach the Steam Store. It's tried again by itself.", "warn")}
+
+
+class SourceCard(QFrame):
+    """One artwork source in the Artwork Sources pop-out: badge, name, what it gives you and a state
+    tag, a line saying what to do when something's wrong, then the source's own controls. A problem
+    paints an amber or red edge down its left side."""
+
+    def __init__(self, badge: QWidget, name: str, what: str, parent=None):
+        super().__init__(parent)
+        self.setObjectName("srccard")
+        self.setAttribute(Qt.WidgetAttribute.WA_StyledBackground)
+        self.edge: str | None = None
+        lay = QVBoxLayout(self)
+        lay.setContentsMargins(12, 12, 12, 12)
+        lay.setSpacing(10)
+        head = QHBoxLayout()
+        head.setSpacing(12)
+        head.addWidget(badge, 0, Qt.AlignmentFlag.AlignVCenter)
+        words = QVBoxLayout()
+        words.setSpacing(1)
+        title = QLabel(name)
+        _bold(title, weight=QFont.Weight.Bold)
+        words.addWidget(title)
+        sub = QLabel(what)
+        sub.setStyleSheet(f"color: {C['text3']};")
+        sub.setFont(_scaled(sub.font(), 0.92))
+        words.addWidget(sub)
+        head.addLayout(words, 1)
+        self.tag = QLabel()
+        self.tag.setFont(_scaled(self.tag.font(), 0.78, QFont.Weight.Bold, 0.06))
+        head.addWidget(self.tag, 0, Qt.AlignmentFlag.AlignVCenter)
+        lay.addLayout(head)
+        self.problem = QLabel()
+        self.problem.setWordWrap(True)
+        self.problem.setFont(_scaled(self.problem.font(), 0.92))
+        self.problem.hide()
+        lay.addWidget(self.problem)
+        self.body = lay
+        self.setAccessibleName(name)
+
+    def set_state(self, tag: tuple[str, str, str], problem: tuple[str, str] | None):
+        words, ink, ground = tag
+        self.tag.setText(words)
+        self.tag.setStyleSheet(f"background: {C[ground]}; color: {C[ink]}; border-radius: 2px; padding: 2px 7px;")
+        self.problem.setVisible(problem is not None)
+        if problem:
+            self.problem.setText(problem[0])
+            self.problem.setStyleSheet(f"color: {C[problem[1]]};")
+        self.edge = {"warn": C["warn"], "bad": C["off"]}.get(problem[1]) if problem else None
+        self.setAccessibleDescription(f"{words.capitalize()}. {problem[0] if problem else ''}".strip())
+        self.update()
+
+    def paintEvent(self, e):
+        super().paintEvent(e)
+        if self.edge:
+            p = QPainter(self)
+            p.fillRect(QRect(0, 0, 3, self.height()), QColor(self.edge))
+
+
+def _scaled(f: QFont, scale: float, weight: QFont.Weight | None = None, spacing_em: float = 0.0) -> QFont:
+    f = QFont(f)
+    f.setPointSizeF(f.pointSizeF() * scale)
+    if weight is not None:
+        f.setWeight(weight)
+    if spacing_em:
+        f.setLetterSpacing(QFont.SpacingType.PercentageSpacing, 100 + spacing_em * 100)
+    return f
 
 
 class KeyPopover(Overlay):
-    """Asks for the SteamGridDB API key, above the connection item in the status bar."""
+    """The Artwork Sources pop-out, above that item in the status bar: a card for SteamGridDB (its
+    state, the API key, a link to get one) and one for the Steam Store (its state, the official
+    artwork switch), each with its own Retry."""
 
     saved = Signal(str)
+    retry_sgdb = Signal()
+    retry_store = Signal()
+    steam_art_changed = Signal(bool)
 
     def __init__(self, parent):
         super().__init__(parent)
-        self.setAccessibleName("SteamGridDB API key")
-        self.setFixedWidth(480)
+        self.setAccessibleName("Artwork Sources")
+        self.setFixedWidth(460)
         lay = QVBoxLayout(self)
-        lay.setContentsMargins(18, 18, 18, 16)
-        lay.setSpacing(14)
+        lay.setContentsMargins(14, 8, 8, 14)  # the × sits closer to the corner than the cards do
+        lay.setSpacing(10)
 
-        hero = QHBoxLayout()
-        hero.setSpacing(14)
-        hero.addWidget(KeyBadge(), 0, Qt.AlignmentFlag.AlignVCenter)
-        words = QVBoxLayout()
-        words.setSpacing(3)
-        title = QLabel("Connect to SteamGridDB")
+        head = QHBoxLayout()
+        head.setContentsMargins(0, 0, 0, 0)
+        title = QLabel("Artwork Sources")
         f = QFont(title.font())
         f.setPointSizeF(theme.pt("heading"))
         f.setWeight(QFont.Weight.Bold)
         title.setFont(f)
-        words.addWidget(title)
-        sub = QLabel("Artwork comes from SteamGridDB. A free API key lets this app search it. "
-                     "It stays on this computer.")
-        sub.setWordWrap(True)
-        sub.setStyleSheet(f"color: {C['text2']};")
-        words.addWidget(sub)
-        hero.addLayout(words, 1)
-        lay.addLayout(hero)
+        head.addWidget(title, 1)
+        self.close_btn = QToolButton()
+        self.close_btn.setObjectName("spopx")
+        self.close_btn.setIcon(icons.icon("close", 14, C["text3"]))
+        self.close_btn.setIconSize(QSize(14, 14))
+        self.close_btn.setToolTip("Close")
+        self.close_btn.setAccessibleName("Close")
+        self.close_btn.setCursor(Qt.CursorShape.PointingHandCursor)
+        self.close_btn.clicked.connect(self.dismiss)
+        head.addWidget(self.close_btn)
+        lay.addLayout(head)
 
+        cards = QVBoxLayout()
+        cards.setContentsMargins(0, 0, 6, 0)
+        cards.setSpacing(10)
+        self.sgdb_card = SourceCard(KeyBadge(size=34), "SteamGridDB", "Community artwork, animated too")
+        cards.addWidget(self.sgdb_card)
+        self.store_card = SourceCard(KeyBadge(icon="steam", colors=("#2a475e", "#171a21"), size=34), "Steam Store",
+                                     "Official artwork. No key needed.")
+        cards.addWidget(self.store_card)
+        lay.addLayout(cards)
+
+        # SteamGridDB: the key box, Paste and Save, the key check's answer, then the link and Retry.
         row = QHBoxLayout()
         row.setSpacing(8)
         box = QFrame()
         box.setObjectName("keybox")
-        box.setFixedHeight(40)  # level with the Paste button beside it
+        box.setFixedHeight(36)  # level with the buttons beside it
         box.setStyleSheet(f"""
             #keybox {{ background: {C['input']}; border: 1px solid {C['line']}; border-radius: 3px; }}
-            #keybox QLineEdit {{ background: transparent; border: none; min-height: 0; padding: 0 0 0 11px; }}
-            #keybox QToolButton {{ min-width: 32px; max-width: 32px; min-height: 32px; max-height: 32px; padding: 0; }}
+            #keybox QLineEdit {{ background: transparent; border: none; min-height: 0; padding: 0 0 0 10px; }}
+            #keybox QToolButton {{ min-width: 28px; max-width: 28px; min-height: 28px; max-height: 28px; padding: 0; }}
         """)
         bl = QHBoxLayout(box)
         bl.setContentsMargins(0, 0, 4, 0)
@@ -134,16 +234,20 @@ class KeyPopover(Overlay):
         self.keybox = box
         row.addWidget(box, 1)
         paste = QPushButton("Paste")
-        paste.setIcon(icons.icon("paste", 16, C["text"]))
         paste.setAccessibleDescription("Paste the key from the clipboard")
         paste.clicked.connect(self._paste)
         row.addWidget(paste)
-        lay.addLayout(row)
+        self.save = QPushButton("Save")
+        self.save.setProperty("kind", "confirm")
+        self.save.clicked.connect(self._check)
+        self.edit.returnPressed.connect(self._check)
+        row.addWidget(self.save)
+        self.sgdb_card.body.addLayout(row)
 
         self.status = QLabel()
         self.status.setWordWrap(True)
         self.status.hide()
-        lay.addWidget(self.status)
+        self.sgdb_card.body.addWidget(self.status)
 
         foot = QHBoxLayout()
         foot.setSpacing(8)
@@ -156,17 +260,56 @@ class KeyPopover(Overlay):
         link.clicked.connect(lambda: QDesktopServices.openUrl(QUrl(API_KEY_URL)))
         foot.addWidget(link)
         foot.addStretch(1)
-        cancel = QPushButton("Cancel")
-        cancel.clicked.connect(self.dismiss)
-        foot.addWidget(cancel)
-        self.save = QPushButton("Save")
-        self.save.setProperty("kind", "confirm")
-        self.save.clicked.connect(self._check)
-        self.edit.returnPressed.connect(self._check)
-        foot.addWidget(self.save)
-        lay.addLayout(foot)
+        self.sgdb_retry = self._retry_button("SteamGridDB", self.retry_sgdb)
+        foot.addWidget(self.sgdb_retry)
+        self.sgdb_card.body.addLayout(foot)
+
+        # Steam Store: the switch (the same setting as the ⋯ menu's) and Retry.
+        srow = QHBoxLayout()
+        srow.setSpacing(14)
+        self.steam_switch = SwitchRow("Use Steam's Official Artwork")
+        self.steam_switch.toggled.connect(self.steam_art_changed)
+        srow.addWidget(self.steam_switch, 1)
+        self.store_retry = self._retry_button("the Steam Store", self.retry_store)
+        srow.addWidget(self.store_retry)
+        self.store_card.body.addLayout(srow)
+
         self._run = 0  # each key check; closing the pop-over drops the check on its way
+        self.sources = ("disconnected", "unknown")
         self._changed()
+        self.set_sources(*self.sources)
+
+    def _retry_button(self, what: str, signal) -> QPushButton:
+        b = QPushButton("Retry")
+        b.setIcon(icons.icon("refresh", 14, C["fade_ink"]))
+        b.setIconSize(QSize(14, 14))
+        b.setAccessibleDescription(f"Check {what} again now")
+        b.clicked.connect(signal)
+        return b
+
+    def set_sources(self, sgdb: str, store: str):
+        """Show each source's state (the keys of chrome.SGDB_WORDS and STORE_WORDS)."""
+        self.sources = (sgdb, store)
+        self.sgdb_card.set_state(SGDB_TAG[sgdb], SGDB_PROBLEM.get(sgdb))
+        self.store_card.set_state(STORE_TAG[store], STORE_PROBLEM.get(store))
+        on = store != "off"
+        if self.steam_switch.isChecked() != on:
+            self.steam_switch.blockSignals(True)  # the glide doesn't hear it either: set it by hand
+            self.steam_switch.setChecked(on)
+            self.steam_switch.blockSignals(False)
+            self.steam_switch.glide.at = 1.0 if on else 0.0
+            self.steam_switch.update()
+        for b, state, down, can in ((self.sgdb_retry, sgdb, sgdb == "disconnected", sgdb != "nokey"),
+                                    (self.store_retry, store, store == "disconnected", store != "off")):
+            busy = state in ("connecting", "unknown")
+            b.setText("Checking…" if busy else "Retry")
+            b.setEnabled(can and not busy)
+            b.setProperty("kind", "" if down else "quiet")  # stands out only when it's needed
+            b.style().unpolish(b)
+            b.style().polish(b)
+        keybad = sgdb == "rejected"
+        self.keybox.setProperty("bad", keybad)
+        self._border()
 
     def open_for(self, current: str, anchor: QPoint):
         if not self.isVisible():
@@ -184,11 +327,15 @@ class KeyPopover(Overlay):
         self.eye.setToolTip("Hide key" if shown else "Show key")
         self.eye.setAccessibleName(self.eye.toolTip())
 
+    def _border(self):
+        """The key box's edge: blue while typing in it, red while the saved key is rejected."""
+        colour = C["blue"] if self.edit.hasFocus() else C["bad"] if self.keybox.property("bad") else C["line"]
+        self.keybox.setStyleSheet(self.keybox.styleSheet().split("/*focus*/")[0]
+                                  + f"/*focus*/ #keybox {{ border-color: {colour}; }}")
+
     def eventFilter(self, obj, e):
         if obj is self.edit and e.type() in (e.Type.FocusIn, e.Type.FocusOut):
-            colour = C["blue"] if e.type() == e.Type.FocusIn else C["line"]
-            self.keybox.setStyleSheet(self.keybox.styleSheet().split("/*focus*/")[0]
-                                      + f"/*focus*/ #keybox {{ border-color: {colour}; }}")
+            self._border()
         return super().eventFilter(obj, e)  # the pop-over's own click-outside handling
 
     def _paste(self):

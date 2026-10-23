@@ -547,7 +547,7 @@ PROCESS = {
 # What each artwork source's line in the tooltip says, by state.
 SGDB_WORDS = {"connected": "Connected", "connecting": "Connecting…", "disconnected": "Can't reach, retrying",
               "nokey": "No API key", "rejected": "Key rejected"}
-STORE_WORDS = {"connected": "Connected", "unknown": "Not used yet", "disconnected": "Can't reach, retrying",
+STORE_WORDS = {"connected": "Connected", "connecting": "Checking…", "unknown": "Not used yet", "disconnected": "Can't reach, retrying",
                "off": "Off"}
 
 
@@ -716,7 +716,7 @@ class StatusBar(QWidget):
         self.connection_state, self.store_state = sgdb, store
         self.connection.set_state("Artwork Sources", dot=C[sources_dot(sgdb, store)])
         lines = f"SteamGridDB: {SGDB_WORDS[sgdb]}\nSteam Store: {STORE_WORDS[store]}"
-        self.connection.setToolTip(_tip(lines, "Click to change your API key"))
+        self.connection.setToolTip(_tip(lines, "Click for both sources and your API key"))
         self.connection.setAccessibleName(f"Artwork sources. SteamGridDB: {SGDB_WORDS[sgdb]}. "
                                           f"Steam Store: {STORE_WORDS[store]}. Change API key")
         self.connection.dot_alpha = 1.0
