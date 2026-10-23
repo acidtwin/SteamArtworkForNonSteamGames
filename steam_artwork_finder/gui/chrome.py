@@ -637,7 +637,6 @@ class StatusBar(QWidget):
 
         self.kind: str | None = None
         self.steam_found = False
-        self.process_state = "closed"
         self.connection_state = "disconnected"
         self.set_message(None, "")
         self.set_steam(False, "")
@@ -698,7 +697,6 @@ class StatusBar(QWidget):
 
     def set_process(self, state: str):
         """"closed", "running" or "restart"."""
-        self.process_state = state
         word, ic, col = PROCESS[state]
         self.process.set_state(word, ic, C[col])
         self.process.setToolTip(_tip(word, "Click for more about Steam"))

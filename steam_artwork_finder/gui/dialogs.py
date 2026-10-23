@@ -13,7 +13,6 @@ from PySide6.QtWidgets import (
     QCheckBox,
     QComboBox,
     QDialog,
-    QDialogButtonBox,
     QFrame,
     QHBoxLayout,
     QLabel,
@@ -34,12 +33,6 @@ from .theme import C
 from .widgets import FlowLayout, fill_rect
 
 API_KEY_URL = "https://www.steamgriddb.com/profile/preferences/api"
-
-
-def _confirm(bb: QDialogButtonBox, button):
-    b = bb.button(button)
-    if b is not None:
-        b.setProperty("kind", "confirm")
 
 
 class KeyBadge(QWidget):

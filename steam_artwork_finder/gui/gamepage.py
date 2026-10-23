@@ -382,7 +382,6 @@ class CustomImageButton(QPushButton):
 
 
 class ArtworkRow(QWidget):
-    choose = Signal(object, object)  # slot, Asset (unused: options stage through win.stage_pick)
     open_tray = Signal(object)  # slot
     thumb_loaded = Signal()  # the first option's thumbnail changed
 
@@ -1385,7 +1384,6 @@ class MatchCard(QWidget):
 
 
 class GamePage(QWidget):
-    fill = Signal()  # kept for compatibility; the banner header has the buttons now
     change_match = Signal()
     confirm_match = Signal()
 

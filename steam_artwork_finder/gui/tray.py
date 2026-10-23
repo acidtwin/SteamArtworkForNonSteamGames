@@ -482,8 +482,6 @@ class _Ghost(QWidget):
 
 class OptionTray(QWidget):
     closed = Signal()
-    use = Signal(object, object)  # slot, Asset (no longer emitted: picks stage through win.stage_pick)
-    remove = Signal(object)  # slot (no longer emitted: clearing stages through win.stage_clear)
     preview = Signal(object, object, object)  # slot, QPixmap or None, Asset or None
     slot_changed = Signal(object)
 

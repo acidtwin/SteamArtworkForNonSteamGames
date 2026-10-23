@@ -182,10 +182,6 @@ class ScaledCache:
                     on_error=lambda _m, key=key: done(QImage(), key))
         return None
 
-    def forget(self, path: Path):
-        s = str(path)
-        for k in [k for k in self.ready if k[0] == s]:
-            self.used -= self._bytes(self.ready.pop(k))
 
 
 def fill_rect(pm: QPixmap, target: QSize, dpr: float = 1.0, top: bool = False) -> QPixmap:

@@ -855,10 +855,6 @@ class GameList(QWidget):
         self.clear_link.setVisible(link)
         self.empty.setVisible(bool(text))
 
-    def current_index(self) -> int | None:
-        it = self.list.currentItem()
-        return it.data(ROLE_INDEX) if it else None
-
     def select(self, idx: int):
         """Select a game's row; -1 clears the selection (the start page is showing)."""
         for row in range(self.list.count()):

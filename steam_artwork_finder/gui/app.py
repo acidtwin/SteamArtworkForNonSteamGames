@@ -18,7 +18,6 @@ from PySide6.QtWidgets import (
     QHBoxLayout,
     QListWidgetItem,
     QMainWindow,
-    QMenu,
     QMessageBox,
     QPushButton,
     QSplitter,
@@ -29,7 +28,7 @@ from PySide6.QtWidgets import (
 
 from .. import APP_NAME, __version__
 from .. import artwork
-from ..artwork import IMAGE_EXTS, SLOTS, Slot, current_icon, existing, prune_replaced, remove_asset, save_asset, undo
+from ..artwork import IMAGE_EXTS, SLOTS, Slot, current_icon, prune_replaced, remove_asset, save_asset, undo
 from ..config import Config, cache_dir
 from ..exeicon import exe_icon, exe_path
 from ..pending import LocalFile, Pending, Pick
@@ -375,7 +374,6 @@ class MainWindow(QMainWindow):
         bar.view.set_view(view)
         self.start.set_view(view)
         self.page = GamePage(self)
-        self.page.fill.connect(self.fill_current)
         self.page.change_match.connect(self.change_match)
         self.page.confirm_match.connect(self.confirm_match)
         for w in (self.nosteam, self.nogames, self.start, self.page):
