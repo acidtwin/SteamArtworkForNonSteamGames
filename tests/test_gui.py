@@ -793,6 +793,36 @@ def test_background_matching_stops_on_a_bad_key(qapp, window):
     assert "SteamGridDB: Key rejected" in win.statusbar.connection.toolTip()
 
 
+def test_artwork_sources_pop_out_shows_both_sources(qapp, window):
+    win = window
+    win.config.data["api_key"] = "x"
+    win.config.data["steam_art"] = True
+    asked = []
+
+    def reachable():
+        asked.append(1)
+        raise OSError("no store")
+
+    win.steam.reachable = reachable
+    win.set_connection("rejected")
+    win.ask_api_key()  # the store hasn't been asked yet: opening the pop-out asks it
+    pop = win.keypop
+    assert pop.is_open() and win.store_conn == "connecting"
+    assert pop.store_retry.text() == "Checking…" and not pop.store_retry.isEnabled()
+    _pump(qapp, 2000, until=lambda: win.store_conn == "disconnected")
+    assert asked and pop.store_card.tag.text() == "CAN'T REACH" and pop.store_retry.isEnabled()
+    assert pop.sgdb_card.tag.text() == "KEY REJECTED" and pop.sgdb_card.problem.isVisibleTo(pop)
+    win.steam.reachable = lambda: True
+    pop.store_retry.click()
+    _pump(qapp, 2000, until=lambda: win.store_conn == "connected")
+    assert pop.store_card.tag.text() == "CONNECTED" and not pop.store_card.problem.isVisibleTo(pop)
+    pop.steam_switch.click()  # the same setting as the ⋯ menu's
+    assert not win.steam_art and pop.store_card.tag.text() == "OFF" and not pop.store_retry.isEnabled()
+    pop.steam_switch.click()
+    assert win.steam_art and pop.steam_switch.isChecked()
+    pop.dismiss()
+
+
 def test_artwork_sources_dot_covers_both_services():
     from steam_artwork_finder.gui.chrome import sources_dot
 

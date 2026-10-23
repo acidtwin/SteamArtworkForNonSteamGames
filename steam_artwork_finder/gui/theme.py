@@ -332,6 +332,7 @@ def stylesheet() -> str:
     #spop {{ background: {c['ground']}; border: 1px solid {c['line']}; border-radius: 4px; }}
     #spop QPushButton {{ min-height: 36px; padding: 0 12px; }}
     #spopcheck {{ color: {c['text']}; spacing: 10px; }}
+    #srccard {{ background: {c['panel']}; border-radius: 3px; }}
     #spopx {{ min-width: 26px; min-height: 26px; max-width: 26px; max-height: 26px; }}
     #fseg {{ background: rgba(0,0,0,0.3); border-radius: 4px; }}
     #fseg QPushButton {{ background: transparent; color: {c['text2']}; min-height: 34px; border-radius: 2px; }}

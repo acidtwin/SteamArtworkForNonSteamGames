@@ -426,6 +426,9 @@ class MainWindow(QMainWindow):
         self.keypop = KeyPopover(self)
         self.keypop.anchor_widget = self.statusbar.connection
         self.keypop.saved.connect(self._key_saved)
+        self.keypop.retry_sgdb.connect(self.check_connection)
+        self.keypop.retry_store.connect(self._check_store)
+        self.keypop.steam_art_changed.connect(self._set_steam_art)
         self.folderpop = SteamFolderPopover(self)
         self.folderpop.anchor_widget = self.statusbar.steam
         self.folderpop.use_root.connect(self.use_steam_root)
@@ -469,7 +472,7 @@ class MainWindow(QMainWindow):
             Item("Restore Steam's Game List…", "history", self.restore_backup, bool(self.sfile)),
             "Settings",
             Item("Steam Folder…", "folder", self.show_folder_popover),
-            Item("SteamGridDB API Key…", "key", self.ask_api_key),
+            Item("Artwork Sources…", "key", self.ask_api_key),
             Item("Restart Steam When I Apply", "power", self._menu_auto_restart, toggle=self.auto_restart),
             Item("Apply When I Quit", "exit", self._menu_apply_on_quit, toggle=self.apply_on_quit),
             Item("Show Animated Artwork", "play", self._set_show_animated, toggle=self.show_animated),
@@ -1689,6 +1692,7 @@ class MainWindow(QMainWindow):
         sgdb = "nokey" if not self.config.api_key else self.conn
         store = self.store_conn if self.steam_art else "off"
         self.statusbar.set_sources(sgdb, store)
+        self.keypop.set_sources(sgdb, store)
         down = sgdb == "disconnected" or store == "disconnected"
         if not down:
             self._recheck.stop()
@@ -1704,12 +1708,22 @@ class MainWindow(QMainWindow):
                         on_done=lambda ok: self.set_connection("connected" if ok else "rejected"),
                         on_error=lambda _m: self.set_connection("disconnected"))
         if self.steam_art and self.store_conn == "disconnected":
-            def back(_):
-                self.set_store(True)
-                sc = self.current_shortcut()
-                if sc is not None and sc.appid not in self.steam_found and self.stage.currentWidget() is self.page:
-                    self.load_steam()  # the open game's official artwork, now it can be had
-            workers.run(self.steam.reachable, on_done=back, on_error=lambda _m: self.set_store(False))
+            self._check_store()
+
+    def _check_store(self):
+        """Ask Steam's store whether it can be reached (Retry in Artwork Sources, or by itself)."""
+        if not self.steam_art or self.store_conn == "connecting":
+            return
+        self.store_conn = "connecting"
+        self._show_sources()
+
+        def back(_):
+            self.set_store(True)
+            sc = self.current_shortcut()
+            if sc is not None and sc.appid not in self.steam_found and self.stage.currentWidget() is self.page:
+                self.load_steam()  # the open game's official artwork, now it can be had
+
+        workers.run(self.steam.reachable, on_done=back, on_error=lambda _m: self.set_store(False))
 
     def match_all(self):
         """Look every unmatched game up on SteamGridDB in the background, so best
@@ -2491,12 +2505,14 @@ class MainWindow(QMainWindow):
         return False
 
     def ask_api_key(self):
-        """Open the API key pop-over; saving it reconnects and reloads (see _key_saved)."""
+        """Open the Artwork Sources pop-over; saving a key there reconnects and reloads (see _key_saved)."""
         if self.keypop.is_open() and self.sender() is self.statusbar:
             return self.keypop.dismiss()  # a second click on the status item closes it
         self.popover.dismiss()
         self.folderpop.dismiss()
         self.keypop.open_for(self.config.api_key, self.statusbar.connection_anchor())
+        if self.store_conn == "unknown":
+            self._check_store()  # so the Steam Store card says how it is, not "checking" for ever
 
     def _key_saved(self, key: str):
         self.config.api_key = key
