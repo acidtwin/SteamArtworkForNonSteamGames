@@ -46,11 +46,6 @@ SORTS = (("az", "A to Z", "sort-az"), ("za", "Z to A", "sort-za"),
 PIECES = ("Covers", "Wide covers", "Banners", "Logos", "Icons")
 
 
-def draw_all_games_icon(p: QPainter, rect: QRect, color: QColor) -> None:
-    """The shelf icon (the filter button), in the given colour (rendered once per colour)."""
-    icons.draw(p, "all-games", rect, color)
-
-
 _PALETTE = ["#2d5a8c", "#6b3f8c", "#3f7e1d", "#8c5a2d", "#8c2d3f", "#2d7e7a", "#5a5a8c", "#7e6b1d"]
 
 
@@ -280,7 +275,7 @@ class GameRowDelegate(QStyledItemDelegate):
 
 
 class FilterButton(QToolButton):
-    """The shelf button inside the search box; blue while a filter is on."""
+    """The funnel button inside the search box; blue while a filter is on."""
 
     def __init__(self, parent=None):
         super().__init__(parent)
@@ -329,7 +324,7 @@ class FilterButton(QToolButton):
             color = q("blue_ink")
         else:
             color = q("text") if hover else q("text2")
-        draw_all_games_icon(p, QRect((self.width() - 22) // 2, (self.height() - 22) // 2, 22, 22), color)
+        icons.draw(p, "filter", QRect((self.width() - 20) // 2, (self.height() - 20) // 2, 20, 20), color)
 
 
 class FilterRow(PopupRow):
@@ -846,7 +841,9 @@ class GameList(QWidget):
         elif shown:
             text = ""
         elif term:
-            text, link = f"No games match “{self.search.text().strip()}”.", True
+            # Short here: the library says it in full, with its own Clear search, and the search
+            # box has its own clear button.
+            text = "No matches."
         elif self.filter_mode == "check":
             text = "Nothing needs a look. Every game was found and matched exactly."
         else:
@@ -1370,7 +1367,7 @@ class DetailsHeader(QWidget):
     def __init__(self, view, parent=None):
         super().__init__(parent)
         self.view = view
-        self.setFixedHeight(30)
+        self.setFixedHeight(34)  # room for a two-line column name
 
     def event(self, e):
         if e.type() == QEvent.Type.ToolTip:  # the column names are short; say the piece in full
@@ -1401,7 +1398,14 @@ class DetailsHeader(QWidget):
         p.drawText(QRectF(x0 + NAME_X, 0, max(0.0, name_end - NAME_X - 4), h), Qt.AlignmentFlag.AlignVCenter,
                    fm.elidedText("NAME", Qt.TextElideMode.ElideRight, int(max(0.0, name_end - NAME_X - 4))))
         for label, x in zip(DETAIL_COLS, centres):
-            text = fm.elidedText(label.upper(), Qt.TextElideMode.ElideRight, int(col) + 12)  # may overhang a little
+            text = label.upper()
+            if " " in text and fm.horizontalAdvance(text) > col - 6:
+                # Two words wider than the column ("WIDE COVER") go on two lines, so they never run
+                # into the next column's name.
+                p.drawText(QRectF(x0 + x - col / 2, 0, col, h), Qt.AlignmentFlag.AlignCenter | Qt.TextFlag.TextWordWrap
+                           | Qt.TextFlag.TextDontClip, text)
+                continue
+            text = fm.elidedText(text, Qt.TextElideMode.ElideRight, int(col) + 12)  # may overhang a little
             p.drawText(QRectF(x0 + x - col / 2, 0, col, h), Qt.AlignmentFlag.AlignCenter | Qt.TextFlag.TextDontClip, text)
         if status_x is not None:
             p.drawText(QRectF(x0 + status_x, 0, STATUS_W, h), Qt.AlignmentFlag.AlignVCenter, "STATUS")

@@ -419,7 +419,10 @@ class MainWindow(QMainWindow):
                          (QKeySequence.StandardKey.Undo, self.toast.undo_now),
                          (QKeySequence.StandardKey.Refresh, self.reload_game_list),
                          (QKeySequence("Ctrl+R"), self.reload_game_list),
-                         (QKeySequence("Ctrl+Q"), self.close)):
+                         (QKeySequence("Ctrl+Q"), self.close),
+                         (QKeySequence("Ctrl+Return"), self._apply_key),
+                         (QKeySequence("Ctrl+Enter"), self._apply_key),
+                         (QKeySequence.StandardKey.Back, self._back_key)):  # Alt+Left
             act = QAction(self)
             act.setShortcut(keys)
             # Nothing behind the dim reacts to the keyboard either; quitting still works.
@@ -1700,23 +1703,40 @@ class MainWindow(QMainWindow):
             gl = self.game_list
             self.cbar.show_library(len(games) if self.users else None,
                                    sum(map(gl.matches, games)) if gl.narrowed() else None)
-            needy = [g for g in games if (self._unstaged_missing(g) and self.status.get(g.appid) != "notfound")
-                     or self.rename_due(g)]
-            need = len(needy)
+            # Get Artwork also takes along suggested titles, but the button counts and names what
+            # each game gets, so a game that only needs a new name never reads as missing artwork.
+            art = [g for g in games if self._unstaged_missing(g) and self.status.get(g.appid) != "notfound"]
+            names = [g for g in games if g not in art and self.rename_due(g)]
             ready = len(self.pending.games())
             specs = []
-            if games and (need or not ready):
-                specs.append((f"Get Artwork ({plural(need, 'Game')})" if need else "Get Artwork",
-                              "ghost" if ready else "go", bool(need) and not self.busy, self.fill_everything))
+            if games and (art or names or not ready):
+                if art:
+                    text = f"Get Artwork ({plural(len(art), 'Game')})"
+                elif names:
+                    text = f"Get Names ({plural(len(names), 'Game')})"
+                else:
+                    text = "Get Artwork"
+                specs.append((text, "ghost" if ready else "go", bool(art or names) and not self.busy,
+                              self.fill_everything))
             if ready:
                 specs.append((f"Apply ({plural(ready, 'Game')})", "go", not self.busy, self.apply_all))
             buttons = self.cbar.set_buttons(specs)
             if specs and specs[0][3] == self.fill_everything:
-                names = [g.name or "(unnamed)" for g in needy]
-                buttons[0].setToolTip("Get artwork for:\n" + "\n".join(names[:20])
-                                      + (f"\n…and {len(names) - 20} more" if len(names) > 20 else "")
-                                      if names else "Every game has all the artwork SteamGridDB has")
+                buttons[0].setToolTip(self._get_tip(art, names))
         self._show_status()
+
+    def _get_tip(self, art: list[Shortcut], names: list[Shortcut]) -> str:
+        """The library Get button's tooltip: who gets artwork, and who only gets a new title."""
+        def listing(games, line):
+            shown = [line(g) for g in games[:20]]
+            return "\n".join(shown) + (f"\n…and {len(games) - 20} more" if len(games) > 20 else "")
+        parts = []
+        if art:
+            parts.append("Get artwork for:\n" + listing(art, lambda g: g.name or "(unnamed)"))
+        if names:
+            parts.append("Rename, from SteamGridDB:\n"
+                         + listing(names, lambda g: f"{g.name or '(unnamed)'} → {self.rename_due(g)}"))
+        return "\n\n".join(parts) or "Every game has all the artwork SteamGridDB has"
 
     def refresh_soon(self):
         """refresh_all within 100 ms, once however many changes arrive meanwhile."""
@@ -1773,6 +1793,22 @@ class MainWindow(QMainWindow):
             self.game_list.rebuild()
         if self.start.order() != want:
             self.start.rebuild()
+
+    def _apply_key(self):
+        """Ctrl+Enter: Apply what's waiting, for the open game on its page, else for every game."""
+        if self.busy:
+            return
+        sc = self.current_shortcut()
+        if sc is not None and self.stage.currentWidget() is self.page:
+            if self.pending.count(sc.appid):
+                self.apply_games([sc.appid])
+        elif self.pending.games():
+            self.apply_all()
+
+    def _back_key(self):
+        """Alt+Left: from a game page back to the library."""
+        if self.stage.currentWidget() is self.page:
+            self.go_home()
 
     def go_home(self):
         if self.sfile and self.sfile.shortcuts:

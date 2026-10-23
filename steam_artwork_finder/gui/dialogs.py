@@ -31,6 +31,7 @@ from PySide6.QtWidgets import (
     QComboBox,
     QDialog,
     QFrame,
+    QGridLayout,
     QHBoxLayout,
     QLabel,
     QLineEdit,
@@ -582,12 +583,10 @@ class MatchDialog(QDialog):
         self.p_meta = QLabel()
         self.p_meta.setTextFormat(Qt.TextFormat.RichText)
         pl.addWidget(self.p_meta)
-        grid = QHBoxLayout()
+        grid = QGridLayout()  # rows shared across both columns, so the tiles line up
         grid.setSpacing(6)
-        cols = [QVBoxLayout(), QVBoxLayout()]
-        for c in cols:
-            c.setSpacing(6)
-            grid.addLayout(c)
+        grid.setColumnStretch(0, 1)
+        grid.setColumnStretch(1, 1)
         self.stats: dict[str, QLabel] = {}
         for i, (kind, label) in enumerate((("grid", "covers"), ("wide", "wide covers"), ("hero", "banners"),
                                            ("logo", "logos"), ("icon", "icons"))):
@@ -596,7 +595,7 @@ class MatchDialog(QDialog):
             box.setTextFormat(Qt.TextFormat.RichText)
             box.setContentsMargins(8, 6, 8, 6)
             box.setProperty("label", label)
-            cols[i % 2].addWidget(box)
+            grid.addWidget(box, i // 2, i % 2)
             self.stats[kind] = box
         pl.addSpacing(4)
         pl.addLayout(grid)
