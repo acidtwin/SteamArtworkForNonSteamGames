@@ -288,3 +288,37 @@ def test_library_covers_shimmer_while_get_artwork_fetches_them(qapp, window):
     assert sc.appid in delegate._shimmered and drawn == [2]  # shimmering, and saying which retry
     win.fetching = None
     win.retrying.clear()
+
+
+def test_library_covers_finish_fading_in_by_themselves(qapp, window):
+    """A cover seen loading fades in all the way without a hover or anything else repainting it."""
+    from PySide6.QtGui import QImage
+
+    win = window
+    img = QImage(60, 90, QImage.Format.Format_RGB32)
+    img.fill(0x3366AA)
+    grid = win.user.grid_dir
+    grid.mkdir(parents=True, exist_ok=True)
+    for s in win.sfile.shortcuts:
+        img.save(str(grid / f"{s.appid}p.png"))
+    win.refresh_all()
+    d = win.start.wall.itemDelegate()
+    _pump(qapp, 400, until=lambda: d._since)
+    _pump(qapp, 1500, until=lambda: not d._since and not d._shimmered)
+    assert not d._since and not d._shimmered
+
+
+def test_pulse_keeps_its_own_copy_of_a_cells_rect(qapp):
+    """A delegate's option.rect is gone once its paint ends; the repaint asked for must still happen."""
+    from PySide6.QtCore import QRect
+    from PySide6.QtWidgets import QStyleOptionViewItem, QWidget
+    from steam_artwork_finder.gui.widgets import pulse
+
+    w = QWidget()
+    opt = QStyleOptionViewItem()
+    opt.rect = QRect(3, 4, 50, 60)
+    pulse().want(w, opt.rect)
+    del opt
+    rects = pulse()._want[id(w)][1]
+    assert rects[-1] == QRect(3, 4, 50, 60)
+    pulse()._tick()  # and asking for the repaint doesn't fail

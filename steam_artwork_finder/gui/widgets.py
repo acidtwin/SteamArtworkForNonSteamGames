@@ -334,7 +334,9 @@ class _Pulse(QObject):
     def want(self, widget: QWidget, rect: QRect | None = None):
         """Repaint `widget` (or just `rect` of it) on the next tick."""
         entry = self._want.setdefault(id(widget), (widget, []))
-        entry[1].append(rect)
+        # A copy: a delegate's option.rect goes with its paint, and updating a deleted rect
+        # failed quietly, leaving a cover part faded in until something else repainted it.
+        entry[1].append(QRect(rect) if rect is not None else None)
         if not self.timer.isActive():
             self.timer.start()
 
