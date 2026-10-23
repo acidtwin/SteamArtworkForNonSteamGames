@@ -240,6 +240,9 @@ class FadingPopup(QFrame):
         super().__init__(parent, Qt.WindowType.Popup | Qt.WindowType.FramelessWindowHint
                          | Qt.WindowType.NoDropShadowWindowHint)
         self.setAttribute(Qt.WidgetAttribute.WA_TranslucentBackground)
+        # A click outside only closes it, as everything behind a pop-out waits while it shows:
+        # clicking the button that opened it closes it rather than closing and opening it again.
+        self.setAttribute(Qt.WidgetAttribute.WA_NoMouseReplay)
         self.setFixedWidth(width + SHADOW * 2)
         outer = QVBoxLayout(self)
         outer.setContentsMargins(SHADOW, SHADOW, SHADOW, SHADOW)

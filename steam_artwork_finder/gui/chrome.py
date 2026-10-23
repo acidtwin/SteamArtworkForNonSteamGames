@@ -103,11 +103,11 @@ class _Click(QWidget):
 # ---- header -----------------------------------------------------------------
 
 class _Avatar(QWidget):
-    """32 px avatar: the Steam picture, or the name's first letter on a gradient, in a cyan ring."""
+    """28 px avatar: the Steam picture, or the name's first letter on a gradient, in a cyan ring."""
 
     def __init__(self, parent=None):
         super().__init__(parent)
-        self.setFixedSize(36, 36)
+        self.setFixedSize(32, 32)
         self.pm: QPixmap | None = None
         self.letter = ""
 
@@ -115,11 +115,11 @@ class _Avatar(QWidget):
         p = QPainter(self)
         p.setRenderHint(QPainter.RenderHint.Antialiasing)
         p.setRenderHint(QPainter.RenderHint.SmoothPixmapTransform)
-        ring = QRectF(1, 1, 34, 34)
+        ring = QRectF(1, 1, 30, 30)
         p.setPen(Qt.PenStyle.NoPen)
         p.setBrush(QColor(RING))
         p.drawRoundedRect(ring, 4, 4)
-        inner = QRectF(2, 2, 32, 32)
+        inner = QRectF(2, 2, 28, 28)
         path = QPainterPath()
         path.addRoundedRect(inner, 2, 2)
         p.setClipPath(path)
@@ -141,7 +141,8 @@ class _Account(_Click):
     def __init__(self, parent=None):
         super().__init__(parent)
         lay = QHBoxLayout(self)
-        lay.setContentsMargins(4, 4, 10, 4)
+        self.setFixedHeight(36)  # as the ⋯ button beside it, not the top bar's full height
+        lay.setContentsMargins(4, 2, 10, 2)
         lay.setSpacing(10)
         self.avatar = _Avatar()
         lay.addWidget(self.avatar)
@@ -223,6 +224,7 @@ class Header(QWidget):
         self.more = QToolButton()
         self.more.setIcon(icons.icon("more", 22, C["text"]))
         self.more.setIconSize(QSize(22, 22))
+        self.more.setStyleSheet("min-width: 34px; min-height: 34px; max-width: 34px; max-height: 34px;")
         self.more.setToolTip("More")
         self.more.setAccessibleName("More actions")
         self.more.clicked.connect(self.more_clicked)
