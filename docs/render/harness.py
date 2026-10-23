@@ -213,6 +213,27 @@ def edit_library(path: Path, edit: dict):
     print("game list:", ", ".join(str(e.get_value(name_key(e), "")) for e in keep), flush=True)
 
 
+def keep_real_art(real_grid: Path):
+    """With a changed game list, Get All Artwork fills every game and the other scenes start from
+    what it filled. So that they show the artwork you chose rather than the top option, each piece
+    it gets for one of your own games is swapped for the picture already in your grid folder; only
+    the added games keep the top option."""
+    from steam_artwork_finder import artwork
+
+    spool = appmod._spool_pick
+
+    def yours(data: bytes, appid: int, slot_key: str):
+        p = artwork.existing(real_grid, appid, artwork.SLOTS[slot_key])
+        if p is not None:
+            try:
+                data = p.read_bytes()
+            except OSError:
+                pass
+        return spool(data, appid, slot_key)
+
+    appmod._spool_pick = yours
+
+
 def setup_real(have: str = "full"):
     """Copy the real Steam user's game list and artwork, and the app's settings, into the throwaway
     home. have="none" leaves the artwork behind, for Get All Artwork to fill."""
@@ -235,6 +256,8 @@ def setup_real(have: str = "full"):
     shutil.copy2(ucfg / "shortcuts.vdf", cfg_dst / "shortcuts.vdf")
     if os.environ.get("LIBRARY"):
         edit_library(cfg_dst / "shortcuts.vdf", json.loads(os.environ["LIBRARY"]))
+        if have == "none":
+            keep_real_art(ucfg / "grid")
     if have != "none" and (ucfg / "grid").is_dir():
         shutil.copytree(ucfg / "grid", cfg_dst / "grid", ignore=shutil.ignore_patterns(".replaced"),
                         ignore_dangling_symlinks=True)  # Steam leaves broken links behind
