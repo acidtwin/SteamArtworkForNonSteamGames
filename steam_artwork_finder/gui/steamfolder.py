@@ -363,7 +363,7 @@ class SteamFolderPopover(Overlay):
     Choose Folder: a drop zone. Both tabs are the same size, so it never jumps."""
 
     use_root = Signal(Path)  # use this Steam folder
-    account_chosen = Signal(int)
+    accounts_wanted = Signal(QWidget)  # Switch was clicked: open the account switcher under this
 
     def __init__(self, parent):
         super().__init__(parent)
@@ -618,18 +618,8 @@ class SteamFolderPopover(Overlay):
         menu.deleteLater()
 
     def _switch(self):
-        if len(self.users) < 2:
-            return
-        menu = QMenu(self)
-        group = QActionGroup(menu)
-        for i, name in enumerate(self.users):
-            act = QAction(name, menu, checkable=True, checked=i == self.user_index)
-            act.triggered.connect(lambda _=False, i=i: self.account_chosen.emit(i) if i != self.user_index else None)
-            group.addAction(act)
-            menu.addAction(act)
-        b = self.account.switch
-        menu.exec(b.mapToGlobal(QPoint(0, b.height() + 2)))
-        menu.deleteLater()
+        if len(self.users) >= 2:
+            self.accounts_wanted.emit(self.account.switch)
 
     def _say_hint(self, error: str = ""):
         if error:

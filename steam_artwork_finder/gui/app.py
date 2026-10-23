@@ -48,7 +48,7 @@ from ..steam import (
 )
 from . import icons, localfile, motion, theme, workers
 from .chrome import ContentBar, Header, StatusBar, SteamPopover
-from .steamfolder import SteamFolderPopover
+from .steamfolder import SteamFolderPopover, tilde
 from .scrim import Scrim, run_dialog
 from .dialogs import (
     AboutDialog, ConfirmDialog, KeyPopover, MatchDialog, QuitDialog, RestoreDialog, tell,
@@ -329,7 +329,7 @@ class MainWindow(QMainWindow):
         outer.setSpacing(0)
         self.header = Header()
         self.header.home_clicked.connect(self.go_home)
-        self.header.user_chosen.connect(self._account_changed)
+        self.header.accounts_clicked.connect(lambda: self.show_account_menu(self.header.account))
         self.header.more_clicked.connect(self.show_more_menu)
         outer.addWidget(self.header)
         self.notice = Notice()
@@ -406,7 +406,7 @@ class MainWindow(QMainWindow):
         self.folderpop = SteamFolderPopover(self)
         self.folderpop.anchor_widget = self.statusbar.steam
         self.folderpop.use_root.connect(self.use_steam_root)
-        self.folderpop.account_chosen.connect(self._account_changed)
+        self.folderpop.accounts_wanted.connect(lambda b: self.show_account_menu(b, from_folder=True))
         self.popover.set_auto_restart(self.auto_restart)
         self.popover.auto_restart_changed.connect(self._set_auto_restart)
         self.popover.set_apply_on_quit(self.apply_on_quit)
@@ -459,6 +459,51 @@ class MainWindow(QMainWindow):
         menu.adjustSize()
         b = self.header.more
         menu.popup(b.mapToGlobal(QPoint(b.width() - menu.width() + SHADOW, b.height() + 4)))
+
+    def show_account_menu(self, anchor: QWidget, from_folder: bool = False):
+        """The account switcher, under the avatar in the top bar or under Switch in the Steam
+        folder pop-over (which then leaves out its own Steam Folder… link)."""
+        from .accounts import Account, AccountMenu
+
+        if not self.users or self._wait_for_busy():
+            return
+        cur = self.users.index(self.user) if self.user in self.users else -1
+        accounts = [Account(u.label, self._game_count(u), self._avatar_of(u)) for u in self.users]
+        folder = "" if from_folder else (tilde(self.steam_root) if self.steam_root else "")
+        menu = AccountMenu(accounts, cur, folder, self)
+        menu.chosen.connect(self._account_changed)
+        menu.folder.connect(self.show_folder_popover)
+        chip = self.header.account
+        if anchor is chip:
+            chip.open = True
+            chip.update()
+            menu.closed.connect(lambda: (setattr(chip, "open", False), chip.update()))
+        self._account_menu = menu  # kept alive while it shows
+        menu.popup_under(anchor)
+
+    def _game_count(self, user) -> int | None:
+        """How many non-Steam games `user` has; others' lists are read once per change on disk."""
+        if user is self.user and self.sfile is not None:
+            return len(self.sfile.shortcuts)
+        path = user.shortcuts_path
+        try:
+            stamp = path.stat().st_mtime_ns
+        except OSError:
+            return 0  # no list yet: Steam writes it with the first non-Steam game
+        cache = self.__dict__.setdefault("_counts", {})
+        if cache.get(path, (None,))[0] != stamp:
+            from ..shortcuts import ShortcutsFile
+
+            try:
+                cache[path] = (stamp, len(ShortcutsFile(path).shortcuts))
+            except Exception:
+                cache[path] = (stamp, None)
+        return cache[path][1]
+
+    def _avatar_of(self, user) -> QPixmap | None:
+        p = avatar_path(user.userdata.parent.parent, user.account_id)
+        pm = load_pixmap(p) if p else None
+        return pm if pm is not None and not pm.isNull() else None
 
     def show_get_menu(self, button):
         """The still/animated menu under the arrow beside Get All Artwork."""
