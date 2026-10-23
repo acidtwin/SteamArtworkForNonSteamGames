@@ -2,15 +2,15 @@
 
 [![Tests](https://github.com/acidtwin/steam-artwork-for-non-steam-games/actions/workflows/tests.yml/badge.svg)](https://github.com/acidtwin/steam-artwork-for-non-steam-games/actions/workflows/tests.yml)
 
-A small desktop app that gives your **non-Steam games** proper artwork in Steam. It finds Steam on its own, lists every non-Steam shortcut you've added, and pulls all five artwork types from [SteamGridDB](https://www.steamgriddb.com) in one click. You can then swap any piece you don't like from a visual picker.
+A small desktop app that gives your **non-Steam games** proper artwork in Steam. It finds Steam on its own, lists every non-Steam shortcut you've added, and pulls all five artwork types from [SteamGridDB](https://www.steamgriddb.com), or Steam's own store art when the game is sold there, in one click. Still or animated. You can then swap any piece you don't like from a visual picker.
 
 I made it because the two tools most people use for this on Linux felt clunky and hard to figure out. This one aims to be simpler and nicer to look at.
 
-![Getting artwork for every game in one click, then applying it](docs/get-artwork.webp)
+![Getting animated artwork for every game in one click, then applying it](docs/get-artwork.webp)
 
 Linux first, including Steam Deck desktop mode: the window fits the Deck's 1280×800 screen. Windows support is built in but not yet packaged or tested on real hardware.
 
-<sub>The games and artwork in these pictures are made up for the demo. Your own library will show SteamGridDB's real artwork.</sub>
+<sub>The games and artwork in these pictures are made up for the demo. Your own library will show real artwork.</sub>
 
 ## Features
 
@@ -29,31 +29,39 @@ The start page looks like your Steam library. Games without a cover show as dash
 
 ![A game's page: a row for each piece, with the art in use and a strip of options](docs/game-page.png)
 
-**Cover, Wide cover, Banner, Logo and Icon** each get a row that says where Steam shows it and what size it is, with the art in use and a strip of SteamGridDB options next to it. Hover an option to preview it in place, click to pick it. **See more** opens every option, with style filters. Tick **Show it on the banner** to judge a logo against the banner it will sit on.
+**Cover, Wide cover, Banner, Logo and Icon** each get a row that says where Steam shows it and what size it is, with the art in use and a strip of options next to it. Hover an option to preview it in place, click to pick it. Pictures shimmer while they load, retry by themselves if the connection drops, and say so if they still can't load.
 
 ![Hovering options to preview them, picking an animated cover, then applying](docs/pick-artwork.webp)
 
-![The option tray: every cover for a game, with style filters](docs/tray.png)
+**See more** opens a panel with every option for that piece, four covers wide, animated ones playing at full size. Filter by style, hover to see an option on the page behind, click to pick it.
+
+![The See all panel: every cover for a game, with style filters](docs/tray.png)
 
 ### Animated artwork
 
 ![Animated covers playing on the cover wall](docs/animated-covers.webp)
 
-Animated covers, wide covers, banners and logos sit in the same strips as still ones, marked with a small play tag, and play in the app and in your Steam library. Turn them off with **Show Animated Artwork** in the ⋯ menu. Icons stay still, as Steam doesn't animate them.
+Animated covers, wide covers, banners and logos sit in the same strips as still ones, marked with a small play tag, and play in the app and in your Steam library. The game page plays them too, with the logo over the banner as Steam shows it. Turn them off with **Show Animated Artwork** in the ⋯ menu. Icons stay still, as Steam doesn't animate them.
+
+### Steam's own artwork
+
+If the game is also sold on Steam, its official store art comes first in each row, tagged **STEAM**, and Get All Artwork uses it before anything else. It works without a SteamGridDB key, and **Change Game** picks a different Steam game if the name matched the wrong one. Turn it off with **Use Steam's Official Artwork** in the ⋯ menu. The pictures are fetched from the store on your computer when you ask for them; none are shipped with the app.
 
 ### Your own pictures
 
-Every row starts with a **Your file** tile. Click it to choose a picture, paste one with Ctrl+V, or drop one on the row. On Apply the picture is copied into Steam's artwork folder under the name Steam expects, and your original is left alone.
+Every row has a **Custom Image** button. Click it to choose a picture, paste one with Ctrl+V, or drop one on the row. On Apply the picture is copied into Steam's artwork folder under the name Steam expects, and your original is left alone.
+
+If neither SteamGridDB nor Steam has an icon for a game, the icon inside the game's own .exe is used.
 
 ### Proper names for games called "Launcher"
-
-![A game called "Launcher" with a button to rename it to Glass Tide](docs/rename.png)
 
 Shortcuts often end up with titles like `Launcher` or `game.exe`. The app looks those up by the folder the game sits in, and offers to rename them to the game they turned out to be. Get Artwork and Apply take the new title along by default, and the game keeps its artwork links when it's renamed.
 
 ### One click for everything
 
 **Get Artwork** matches every shortcut on SteamGridDB and fills whatever it's missing with the top-rated option. It never replaces artwork you already have. A game matched by a best guess is tagged **Check match**, and **Change Game** lets you search SteamGridDB yourself. Your choice is remembered.
+
+On a game's page, **Get All Artwork** does the same for one game. The arrow beside it chooses whether it takes **Still** or **Animated** artwork, and the button says **Animated** when that's on. The same choice is **Get All Prefers Animated Artwork** in the ⋯ menu, and Get Artwork on the library page follows it too.
 
 ### Nothing changes until you press Apply
 
@@ -71,7 +79,7 @@ Native, Flatpak and Snap installs on Linux (`~/.local/share/Steam`, `~/.steam/st
 
 ## Install
 
-Packages for **Flathub**, **PyPI** (`pipx install`) and the **AUR** are planned for the 1.0 release. For now, run it from source.
+Version 1.0.0. It isn't on Flathub, PyPI or the AUR yet, so for now run it from source, or build the Flatpak yourself from the manifest in [`packaging/flatpak/`](packaging/flatpak/).
 
 You need Python 3.10 or newer.
 
@@ -136,7 +144,7 @@ To restore a backup, use **⋯ → Restore Steam's Game List…**. The list you 
 
 ## Keyboard
 
-Arrow keys move through the game list, Tab reaches every piece and option, Enter opens or applies, Esc closes the option tray. Ctrl+F jumps to the search box, Ctrl+V pastes a picture into a row, Ctrl+Z undoes the last change while its message is showing, and F5 or Ctrl+R re-reads Steam's game list.
+Arrow keys move through the game list, Tab reaches every piece and option, Enter opens or applies, Esc closes the See all panel and menus. Ctrl+F jumps to the search box, Ctrl+V pastes a picture into a row, Ctrl+Z undoes the last change while its message is showing, and F5 or Ctrl+R re-reads Steam's game list.
 
 ## Development
 
@@ -153,14 +161,17 @@ The tests build synthetic `shortcuts.vdf` files, so they don't need Steam instal
 | `steam_artwork_finder/binvdf.py` | Lossless binary VDF reader and writer |
 | `steam_artwork_finder/shortcuts.py` | Shortcut list, app ids, backups and safe saving |
 | `steam_artwork_finder/sgdb.py` | SteamGridDB API v2 client |
+| `steam_artwork_finder/steamstore.py` | Steam store search and official artwork |
+| `steam_artwork_finder/exeicon.py` | Icons read from a game's .exe |
 | `steam_artwork_finder/artwork.py` | Artwork types, file names and saving |
 | `steam_artwork_finder/pending.py` | Picks waiting for Apply |
-| `steam_artwork_finder/gui/` | The Qt (PySide6) window: `library.py` (game list, cover wall), `gamepage.py` (artwork rows), `tray.py` (every option), `motion.py` (animated artwork), `theme.py` (colours from DESIGN.md) |
+| `steam_artwork_finder/gui/` | The Qt (PySide6) window: `library.py` (game list, cover wall), `gamepage.py` (artwork rows), `tray.py` (the See all panel), `motion.py` (animated artwork), `workers.py` (downloads and retries), `theme.py` (colours from DESIGN.md) |
+| `docs/render/` | Makes the README pictures: runs the app offscreen against made-up games, or a copy of your own library (`REAL=1`) |
 | `packaging/` | Desktop entry, icon and AppStream metainfo for Linux |
 
 ## Roadmap
 
-- 1.0 release on Flathub, PyPI and the AUR (the Flatpak needs read/write access to `~/.local/share/Steam`, `~/.steam` and `~/.var/app/com.valvesoftware.Steam`, and `--talk-name=org.freedesktop.Flatpak` to tell whether Steam is running from inside the sandbox)
+- Publish on Flathub, PyPI and the AUR (the Flatpak needs read/write access to `~/.local/share/Steam`, `~/.steam` and `~/.var/app/com.valvesoftware.Steam`, and `--talk-name=org.freedesktop.Flatpak` to tell whether Steam is running from inside the sandbox)
 - Touch-friendly menus and previews for Steam Deck
 - Windows build with PyInstaller, tested on a real install
 
