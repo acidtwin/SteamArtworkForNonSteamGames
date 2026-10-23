@@ -2,13 +2,17 @@
 
 from __future__ import annotations
 
+import time
+from collections import OrderedDict
 from pathlib import Path
 
-from PySide6.QtCore import QBuffer, QByteArray, QIODevice, QPoint, QPointF, QRect, QRectF, QSize, Qt, QTimer, Signal
-from PySide6.QtGui import QColor, QFont, QImage, QImageReader, QPainter, QPainterPath, QPen, QPixmap
+from PySide6.QtCore import (QBuffer, QByteArray, QIODevice, QObject, QPoint, QPointF, QRect, QRectF, QSize, Qt,
+                            QTimer, Signal)
+from PySide6.QtGui import (QColor, QFont, QFontMetrics, QImage, QImageReader, QLinearGradient, QPainter, QPainterPath,
+                           QPen, QPixmap)
 from PySide6.QtWidgets import QFrame, QHBoxLayout, QLabel, QLayout, QPushButton, QSizePolicy, QWidget
 
-from . import icons, theme, workers
+from . import icons, motion, theme, workers
 from .theme import C, q
 
 _cache: dict[tuple, QPixmap] = {}
@@ -43,6 +47,20 @@ def _read_image(path: Path | None, data: bytes | None) -> QImage:
     return reader.read()
 
 
+def remember(key, pm: QPixmap):
+    """Keep `pm` in the full-size cache under `key` (as load_pixmap does)."""
+    if key is None or pm.isNull():
+        return
+    while len(_cache) >= FULL_CACHE:
+        _cache.pop(next(iter(_cache)))
+    _cache[key] = pm
+
+
+def read_image(data: bytes) -> QImage:
+    """Worker: decode picture bytes (off the GUI thread, so a page of thumbnails arriving doesn't stutter)."""
+    return _read_image(None, data)
+
+
 def load_pixmap(path: Path | None = None, data: bytes | None = None, key=None) -> QPixmap:
     """A full-size pixmap from a file or bytes, cached."""
     if path is not None:
@@ -53,15 +71,13 @@ def load_pixmap(path: Path | None = None, data: bytes | None = None, key=None) -
     if key is not None and key in _cache:
         return _cache[key]
     pm = QPixmap.fromImage(_read_image(path, data)) if path is not None or data else QPixmap()
-    if key is not None and not pm.isNull():
-        while len(_cache) >= FULL_CACHE:
-            _cache.pop(next(iter(_cache)))
-        _cache[key] = pm
+    remember(key, pm)
     return pm
 
 
-def decode_scaled(path: str, w: int, h: int) -> QImage:
-    """Worker: decode an image file straight to a `w`×`h` cover-cropped QImage.
+def decode_scaled(path: str, w: int, h: int, contain: bool = False) -> QImage:
+    """Worker: decode an image file straight to a `w`×`h` cover-cropped QImage
+    (or, with `contain`, the whole picture centred on a clear `w`×`h`).
 
     Never holds the full-size image longer than the decode itself, so a
     300-game wall costs a few megabytes instead of hundreds.
@@ -71,11 +87,22 @@ def decode_scaled(path: str, w: int, h: int) -> QImage:
     _largest_frame(reader)
     size = reader.size()
     if size.isValid() and w > 0 and h > 0:
-        scale = max(w / size.width(), h / size.height())
-        reader.setScaledSize(QSize(max(w, round(size.width() * scale)), max(h, round(size.height() * scale))))
+        if contain:
+            scale = min(w / size.width(), h / size.height())
+            reader.setScaledSize(QSize(max(1, round(size.width() * scale)), max(1, round(size.height() * scale))))
+        else:
+            scale = max(w / size.width(), h / size.height())
+            reader.setScaledSize(QSize(max(w, round(size.width() * scale)), max(h, round(size.height() * scale))))
     img = reader.read()
     if img.isNull():
         return img
+    if contain:
+        out = QImage(w, h, QImage.Format.Format_ARGB32_Premultiplied)
+        out.fill(Qt.GlobalColor.transparent)
+        painter = QPainter(out)
+        painter.drawImage((w - img.width()) // 2, (h - img.height()) // 2, img)
+        painter.end()
+        return out
     x = (img.width() - w) // 2
     y = (img.height() - h) // 2
     return img.copy(x, y, w, h)
@@ -88,20 +115,57 @@ class ScaledCache:
     returns None, and calls `on_ready` later so the view can repaint.
     """
 
-    def __init__(self, limit: int = 2000):
-        self.ready: dict[tuple, QPixmap] = {}
+    def __init__(self, budget: int = 96 * 1024 * 1024):
+        self.ready: OrderedDict[tuple, QPixmap] = OrderedDict()  # oldest first
         self.pending: set[tuple] = set()
-        self.limit = limit
+        self.budget, self.used = budget, 0
+        self._notify: list = []  # repaints asked for by decodes that landed, run together
 
-    def get(self, path: Path, size: QSize, on_ready=None, dpr: float = 1.0) -> QPixmap | None:
-        """`dpr` is the screen's scale, so the decode has enough pixels to stay sharp."""
+    @staticmethod
+    def _bytes(pm: QPixmap) -> int:
+        return pm.width() * pm.height() * 4
+
+    def _put(self, key, pm: QPixmap):
+        for k in [k for k in self.ready if k[0] == key[0] and k[1] != key[1]]:
+            self.used -= self._bytes(self.ready.pop(k))  # an older version of a replaced file
+        old = self.ready.pop(key, None)
+        if old is not None:
+            self.used -= self._bytes(old)
+        self.ready[key] = pm
+        self.used += self._bytes(pm)
+        while self.used > self.budget and len(self.ready) > 1:
+            _, gone = self.ready.popitem(last=False)
+            self.used -= self._bytes(gone)
+
+    def _ready_soon(self, on_ready):
+        # Many thumbnails land at once when a wall first shows: one repaint for the batch.
+        if on_ready is None:
+            return
+        if not self._notify:
+            QTimer.singleShot(16, self._flush)
+        if on_ready not in self._notify:
+            self._notify.append(on_ready)
+
+    def _flush(self):
+        calls, self._notify = self._notify, []
+        for fn in calls:
+            try:
+                fn()
+            except RuntimeError:  # its view was deleted meanwhile
+                pass
+
+    def get(self, path: Path, size: QSize, on_ready=None, dpr: float = 1.0,
+            contain: bool = False) -> QPixmap | None:
+        """`dpr` is the screen's scale, so the decode has enough pixels to stay sharp;
+        `contain` fits the whole picture in, rather than cropping it to fill."""
         w, h = round(size.width() * dpr), round(size.height() * dpr)
         try:
-            key = (str(path), path.stat().st_mtime_ns, w, h)
+            key = (str(path), path.stat().st_mtime_ns, w, h, contain)
         except OSError:
             return QPixmap()
         pm = self.ready.get(key)
         if pm is not None:
+            self.ready.move_to_end(key)
             return pm
         if key in self.pending:
             return None
@@ -109,33 +173,31 @@ class ScaledCache:
 
         def done(img: QImage, key=key):
             self.pending.discard(key)
-            if len(self.ready) >= self.limit:
-                self.ready.clear()
             pm = QPixmap.fromImage(img)  # null if the file wasn't an image
             pm.setDevicePixelRatio(dpr)
-            self.ready[key] = pm
-            if on_ready:
-                on_ready()
+            self._put(key, pm)
+            self._ready_soon(on_ready)
 
-        workers.run(decode_scaled, key[0], w, h, on_done=done,
+        workers.run(decode_scaled, key[0], w, h, contain, kind="cpu", on_done=done,
                     on_error=lambda _m, key=key: done(QImage(), key))
         return None
 
-    def forget(self, path: Path):
-        s = str(path)
-        for k in [k for k in self.ready if k[0] == s]:
-            del self.ready[k]
 
 
-def fill_rect(pm: QPixmap, target: QSize, dpr: float = 1.0) -> QPixmap:
+def fill_rect(pm: QPixmap, target: QSize, dpr: float = 1.0, top: bool = False) -> QPixmap:
     """Scale to cover target, cropping the overflow (like CSS object-fit: cover).
 
-    With `dpr` above 1 the result has that many more pixels, for sharp HiDPI drawing."""
+    With `dpr` above 1 the result has that many more pixels, for sharp HiDPI drawing.
+    `top` keeps the top of the image and crops only the bottom, as Steam does with a banner."""
     target = QSize(round(target.width() * dpr), round(target.height() * dpr))
+    if pm.size() == target:  # made to measure (an animation's frame): drawn as it is
+        out = QPixmap(pm)
+        out.setDevicePixelRatio(dpr)
+        return out
     s = pm.scaled(target, Qt.AspectRatioMode.KeepAspectRatioByExpanding,
                   Qt.TransformationMode.SmoothTransformation)
     x = (s.width() - target.width()) // 2
-    y = (s.height() - target.height()) // 2
+    y = 0 if top else (s.height() - target.height()) // 2
     out = s.copy(x, y, target.width(), target.height())
     out.setDevicePixelRatio(dpr)
     return out
@@ -201,11 +263,42 @@ def draw_badge(p: QPainter, rect: QRectF, text: str = "IN USE"):
     p.restore()
 
 
-def draw_dots(p: QPainter, x: float, y: float, states: list[bool], d: float = 7, gap: float = 4):
+def draw_animated_tag(p: QPainter, rect: QRectF):
+    """A small dark pill in the bottom-right corner marking an animated option: a play
+    triangle, with the word when there's room."""
+    p.save()
+    f = QFont(p.font())
+    f.setPointSizeF(theme.pt("tag"))
+    f.setWeight(QFont.Weight.Bold)
+    p.setFont(f)
+    fm = p.fontMetrics()
+    h = fm.height() + 4
+    text = "ANIMATED" if rect.width() >= 120 else ""
+    w = h + (fm.horizontalAdvance(text) + 6 if text else 0)
+    r = QRectF(rect.right() - w - 4, rect.bottom() - h - 4, w, h)
+    p.setRenderHint(QPainter.RenderHint.Antialiasing)
+    p.setPen(Qt.PenStyle.NoPen)
+    p.setBrush(QColor(11, 16, 22, 200))
+    p.drawRoundedRect(r, h / 2, h / 2)
+    icons.draw(p, "play", QRectF(r.left() + 3, r.top() + 2, h - 4, h - 4), QColor("white"))
+    if text:
+        p.setPen(QColor("white"))
+        p.drawText(r.adjusted(h - 2, 0, -6, 0), Qt.AlignmentFlag.AlignCenter, text)
+    p.restore()
+
+
+def draw_dots(p: QPainter, x: float, y: float, states: list, d: float = 7, gap: float = 4):
+    """One dot per piece: filled (has it), ring (missing), or a small grey dot ("none":
+    SteamGridDB has nothing for it, so there's nothing to get)."""
     p.save()
     p.setRenderHint(QPainter.RenderHint.Antialiasing)
     for i, on in enumerate(states):
         r = QRectF(x + i * (d + gap), y, d, d)
+        if on == "none":
+            p.setPen(Qt.PenStyle.NoPen)
+            p.setBrush(q("text3"))
+            p.drawEllipse(r.adjusted(d * 0.3, d * 0.3, -d * 0.3, -d * 0.3))
+            continue
         if on:
             p.setPen(Qt.PenStyle.NoPen)
             p.setBrush(q("blue_ink"))
@@ -215,6 +308,145 @@ def draw_dots(p: QPainter, x: float, y: float, states: list[bool], d: float = 7,
         p.drawEllipse(r.adjusted(0.6, 0.6, -0.6, -0.6))
     p.restore()
     return x + len(states) * (d + gap)
+
+
+# ---- loading and "couldn't load" ---------------------------------------------------
+
+FADE_IN = 0.16  # seconds a picture takes to fade in over its loading shimmer
+
+
+class _Pulse(QObject):
+    """Drives the loading shimmer and fade-ins: about 30 times a second it repaints just what
+    asked (each paint of a loading tile asks again), and stops once nothing is loading."""
+
+    PERIOD = 1.6  # seconds for the light band to cross a tile
+
+    def __init__(self):
+        super().__init__()
+        self._want: dict[int, tuple] = {}
+        self.timer = QTimer(self, interval=33)
+        self.timer.timeout.connect(self._tick)
+
+    def phase(self) -> float:
+        """0..1 across the band's sweep; shared, so every tile on screen sweeps together, as Steam's do."""
+        return (time.monotonic() % self.PERIOD) / self.PERIOD
+
+    def want(self, widget: QWidget, rect: QRect | None = None):
+        """Repaint `widget` (or just `rect` of it) on the next tick."""
+        entry = self._want.setdefault(id(widget), (widget, []))
+        entry[1].append(rect)
+        if not self.timer.isActive():
+            self.timer.start()
+
+    def _tick(self):
+        want, self._want = self._want, {}
+        if not want:
+            self.timer.stop()
+            return
+        for w, rects in want.values():
+            try:
+                if None in rects:
+                    w.update()
+                else:
+                    for r in rects:
+                        w.update(r)
+            except RuntimeError:  # gone meanwhile
+                pass
+
+
+_pulse: _Pulse | None = None
+
+
+def pulse() -> _Pulse:
+    global _pulse
+    if _pulse is None:
+        _pulse = _Pulse()
+    return _pulse
+
+
+def fade(since: float | None) -> float:
+    """How far a picture that arrived at `since` has faded in (1.0: fully)."""
+    if since is None:
+        return 1.0
+    return min(1.0, (time.monotonic() - since) / FADE_IN)
+
+
+def draw_loading(p: QPainter, rect: QRectF, phase: float, ground: QColor | None = None):
+    """A tile still loading: the plain dark tile with a faint light band drifting across it."""
+    p.save()
+    p.fillRect(rect, ground if ground is not None else q("raised"))
+    w = rect.width()
+    band = max(40.0, w * 0.6)
+    x = rect.left() - band + phase * (w + 2 * band)
+    g = QLinearGradient(QPointF(x - band / 2, rect.top()), QPointF(x + band / 2, rect.top() + band * 0.35))
+    g.setColorAt(0.0, QColor(255, 255, 255, 0))
+    g.setColorAt(0.5, QColor(255, 255, 255, 15))
+    g.setColorAt(1.0, QColor(255, 255, 255, 0))
+    p.fillRect(rect, g)
+    p.restore()
+
+
+def retry_text(n: int, width: float, fm: QFontMetrics) -> str:
+    """"Retrying (2 of 3)…", shortened to fit `width`."""
+    for text in (f"Retrying ({n} of {workers.RETRIES})…", f"Retry {n} of {workers.RETRIES}", f"{n}/{workers.RETRIES}"):
+        if fm.horizontalAdvance(text) <= width:
+            return text
+    return ""
+
+
+def draw_retrying(p: QPainter, rect: QRectF, n: int):
+    """The retry count, in amber, along the bottom of a loading tile (strip options have no caption)."""
+    p.save()
+    f = QFont(p.font())
+    f.setPointSizeF(theme.pt("label"))
+    f.setWeight(QFont.Weight.DemiBold)
+    p.setFont(f)
+    fm = QFontMetrics(f)
+    text = retry_text(n, rect.width() - 12, fm)
+    if text:
+        p.setPen(q("warn"))
+        p.drawText(rect.adjusted(6, 0, -6, -5), Qt.AlignmentFlag.AlignBottom | Qt.AlignmentFlag.AlignHCenter, text)
+    p.restore()
+
+
+def draw_failed(p: QPainter, rect: QRectF, words: bool = True, hot: bool = False):
+    """A tile that couldn't load: a warning mark, and "Couldn't load" over a blue "Retry" where there's room."""
+    p.save()
+    p.fillRect(rect, QColor("#283240") if hot else QColor("#222a35"))
+    f = QFont(p.font())
+    f.setPointSizeF(theme.pt("label"))
+    f.setWeight(QFont.Weight.DemiBold)
+    p.setFont(f)
+    fm = QFontMetrics(f)
+    d = 20 if rect.height() >= 60 else 16
+    lines = [("Couldn't load", q("text2")), ("Retry", q("blue_ink"))]
+    if not words or rect.height() < d + 2 * fm.height() + 10 or fm.horizontalAdvance(lines[0][0]) > rect.width() - 8:
+        lines = [("Retry", q("blue_ink"))] if words and rect.height() >= d + fm.height() + 8 else []
+    h = d + len(lines) * (fm.height() + 2) + (2 if lines else 0)
+    y = rect.top() + (rect.height() - h) / 2
+    icons.draw(p, "warning", QRectF(rect.center().x() - d / 2, y, d, d), q("text3"))
+    y += d + 4
+    for text, color in lines:
+        p.setPen(color)
+        p.drawText(QRectF(rect.left(), y, rect.width(), fm.height()), Qt.AlignmentFlag.AlignCenter, text)
+        y += fm.height() + 2
+    p.restore()
+
+
+FRAME_CACHE = 64 * 1024 * 1024  # bytes of scaled animation frames one ArtView keeps
+HIDDEN_DROP_MS = 5000  # an animation hidden this long lets go of its frames (made again when shown)
+
+
+def _unhook(signal, slot):
+    """Disconnect, quietly if it wasn't connected."""
+    import warnings
+
+    with warnings.catch_warnings():
+        warnings.simplefilter("ignore", RuntimeWarning)
+        try:
+            signal.disconnect(slot)
+        except (RuntimeError, TypeError):
+            pass
 
 
 class ArtView(QWidget):
@@ -232,8 +464,19 @@ class ArtView(QWidget):
         self.checker = checker
         self.badge = False
         self.selected = False
+        self.animated = False  # marks an animated option with a small tag
         self.round = 3
         self._scaled: tuple | None = None  # (key, backdrop, art) as drawn at this size
+        self._frames: dict = {}  # scaled frames of a looping animation, so each loop only draws
+        self._frames_bytes = 0
+        self._motion = None
+        self._parked: tuple | None = None  # (key, Motion) replaced by a preview, kept paused to go back to
+        self._drop_timer: QTimer | None = None
+        self.motion_spec: tuple = (None, None)  # (key, factory) of what's playing, for previews
+        self.load_state: tuple | None = None  # ("loading", retry n) or ("failed", retry fn) until a picture comes
+        self._fade_since: float | None = None  # when the picture arrived over the shimmer, for its fade-in
+        self._shimmered = False  # painted as loading since the last picture
+        self._desc: str | None = None  # what a screen reader said before "couldn't load"
         self.setCursor(Qt.CursorShape.PointingHandCursor)
         self.setFocusPolicy(Qt.FocusPolicy.StrongFocus)
         self.setAttribute(Qt.WidgetAttribute.WA_Hover)
@@ -244,23 +487,158 @@ class ArtView(QWidget):
         """What a screen reader says for this piece."""
         self.setAccessibleName(text)
 
+    def set_loading(self, retry: int = 0):
+        """A picture is on its way (`retry`: which retry this is, 0 for the first try)."""
+        self.load_state = ("loading", retry)
+        self._not_failed()
+        self.update()
+
+    def set_failed(self, retry_fn):
+        """It couldn't load even after retrying; a click (or Enter) calls `retry_fn`."""
+        self.load_state = ("failed", retry_fn)
+        self.setToolTip("Couldn't load this picture. Click to try again.")
+        if self._desc is None:
+            self._desc = self.accessibleDescription()
+        self.setAccessibleDescription("Couldn't load. Press Enter to try again")
+        self.update()
+
+    def _not_failed(self):
+        if self._desc is not None:
+            self.setToolTip("")
+            self.setAccessibleDescription(self._desc)
+            self._desc = None
+
+    def _arrived(self):
+        if self.load_state is not None:
+            self.load_state = None
+            self._not_failed()
+        if self._shimmered:  # it was seen loading: fade the picture in
+            self._shimmered = False
+            self._fade_since = time.monotonic()
+
     def set_pixmap(self, pm: QPixmap | None, backdrop: QPixmap | None = None):
-        self.pixmap = pm or QPixmap()
-        self.backdrop = backdrop or QPixmap()
+        pm, backdrop = pm or QPixmap(), backdrop or QPixmap()
+        if not pm.isNull():
+            self._arrived()
+        if pm.cacheKey() == self.pixmap.cacheKey() and backdrop.cacheKey() == self.backdrop.cacheKey():
+            return  # the same pictures (a refresh): keep what's already scaled
+        self.pixmap = pm
+        self.backdrop = backdrop
         self._scaled = None
         self.update()
 
+    def set_motion(self, key=None, factory=None):
+        """Play an animation here: `factory()` makes the Motion, `key` says what it is, so asking
+        again for the same thing carries on rather than restarting. No key stops it.
+
+        The Motion is made only once the view is on show, so options that don't fit the strip
+        never decode. The one it replaces is kept aside, paused, so a hover preview that ends
+        goes straight back to it instead of decoding it again."""
+        if key is not None and key == self.motion_spec[0]:
+            return
+        back = None
+        if key is not None and self._parked is not None and self._parked[0] == key:
+            back, self._parked = self._parked[1], None  # going back to the one kept aside
+        if self._motion is not None:
+            self._park(self.motion_spec[0], self._motion)
+            self._motion = None
+        self._frames = {}
+        self._frames_bytes = 0
+        self.motion_spec = (key, factory)
+        self._make(back)
+
+    def drop_motion(self):
+        """Stop and let go of every animation here, for good (the view is going)."""
+        self.motion_spec = (None, None)
+        self._let_go()
+
+    def _let_go(self):
+        for m in (self._motion, self._parked[1] if self._parked else None):
+            if m is not None:
+                m.retire()
+        self._motion = self._parked = None
+        self._frames = {}
+        self._frames_bytes = 0
+
+    def _park(self, key, m):
+        m.stop()
+        _unhook(m.frame, self._frame)
+        if self._parked is not None:
+            self._parked[1].retire()
+        self._parked = (key, m) if key is not None else None
+        if key is None:
+            m.retire()
+
+    def _make(self, m=None):
+        key, factory = self.motion_spec
+        if key is None or factory is None or self._motion is not None:
+            return
+        if m is not None:
+            pass
+        elif self.isVisible():
+            m = factory()
+        else:
+            return  # made when it's shown
+        self._motion = m
+        m.frame.connect(self._frame)
+        if self.isVisible():
+            m.start()
+
+    def _frame(self, pm: QPixmap):
+        first = self.pixmap.isNull()
+        if first:
+            self._arrived()
+        self.pixmap = pm
+        self.update()
+        if first:
+            self.frame_arrived()
+
+    def frame_arrived(self):
+        """The first picture of an animation has arrived (for subclasses)."""
+
+    def showEvent(self, e):
+        if self._drop_timer is not None:
+            self._drop_timer.stop()
+        if self._motion is not None:
+            self._motion.start()
+        else:
+            self._make()
+        super().showEvent(e)
+
+    def hideEvent(self, e):
+        if self._motion is not None:
+            self._motion.stop()  # nothing plays where it can't be seen
+        if not e.spontaneous() and (self._motion is not None or self._parked is not None):
+            # Hidden for a while (a strip option that no longer fits, the page left for the
+            # library): let go of its frames or video player; it's made again when shown.
+            if self._drop_timer is None:
+                self._drop_timer = QTimer(self, singleShot=True, interval=HIDDEN_DROP_MS)
+                self._drop_timer.timeout.connect(self._drop_hidden)
+            self._drop_timer.start()
+        super().hideEvent(e)
+
+    def _drop_hidden(self):
+        if not self.isVisible():
+            spec = self.motion_spec
+            self._let_go()
+            self.motion_spec = spec
+
     def resizeEvent(self, e):
         self._scaled = None
+        self._frames = {}
+        self._frames_bytes = 0
         super().resizeEvent(e)
 
     def _render(self) -> tuple[QPixmap | None, QPixmap | None]:
         """The backdrop and the art scaled for this size, made once rather than on every repaint."""
         dpr = self.devicePixelRatioF()
         key = (self.pixmap.cacheKey(), self.backdrop.cacheKey(), self.checker, dpr)
+        if (self._scaled is None or self._scaled[0] != key) and key in self._frames:
+            self._scaled = self._frames[key]
         if self._scaled is None or self._scaled[0] != key:
             bd = fill_rect(self.backdrop, self.size(), dpr) if not self.backdrop.isNull() else None
             art = None
+            exact = False
             if not self.pixmap.isNull():
                 if self.checker or bd is not None:
                     # Logos keep their shape, centred with a margin.
@@ -269,8 +647,14 @@ class ArtView(QWidget):
                                              Qt.TransformationMode.SmoothTransformation)
                     art.setDevicePixelRatio(dpr)
                 else:
+                    exact = self.pixmap.size() == QSize(round(self.width() * dpr), round(self.height() * dpr))
                     art = fill_rect(self.pixmap, self.size(), dpr)
             self._scaled = (key, bd, art)
+            # The same frames come round again: keep them scaled, unless made to measure already.
+            if (isinstance(self._motion, motion.FrameMotion) and not (exact and bd is None)
+                    and self._frames_bytes < FRAME_CACHE):
+                self._frames[key] = self._scaled
+                self._frames_bytes += sum(pm.width() * pm.height() * 4 for pm in (bd, art) if pm is not None)
         return self._scaled[1], self._scaled[2]
 
     def paintEvent(self, _):
@@ -281,6 +665,22 @@ class ArtView(QWidget):
         clip = QPainterPath()
         clip.addRoundedRect(r, self.round, self.round)
         focus = theme.kbd_focus(self)
+        if self.pixmap.isNull() and self.load_state is not None:
+            p.setClipPath(clip)
+            if self.load_state[0] == "failed":
+                draw_failed(p, r, hot=self.underMouse())
+            else:
+                self._shimmered = True
+                draw_loading(p, r, pulse().phase(), QColor("#1f2a38") if self.checker else None)
+                if self.load_state[1]:
+                    draw_retrying(p, r, self.load_state[1])
+                pulse().want(self)
+            p.setClipping(False)
+            if focus:
+                p.setPen(QPen(q("text"), 2))
+                p.setBrush(Qt.BrushStyle.NoBrush)
+                p.drawRoundedRect(r.adjusted(1, 1, -1, -1), self.round, self.round)
+            return
         if self.pixmap.isNull():
             if not self.backdrop.isNull():
                 # An empty logo over its banner: the slot stays plainly empty, the banner faint behind it.
@@ -296,6 +696,13 @@ class ArtView(QWidget):
             return
         p.setClipPath(clip)
         bd, art = self._render()
+        shown = fade(self._fade_since)
+        if shown < 1.0:  # fading in over the shimmer it replaces
+            draw_loading(p, r, pulse().phase(), QColor("#1f2a38") if self.checker else None)
+            p.setOpacity(shown)
+            pulse().want(self)
+        else:
+            self._fade_since = None
         if bd is not None:
             p.drawPixmap(self.rect(), bd)
         elif self.checker:
@@ -307,9 +714,12 @@ class ArtView(QWidget):
                 p.drawPixmap(QPointF((self.width() - w) / 2, (self.height() - h) / 2), art)
             else:
                 p.drawPixmap(self.rect(), art)
+        p.setOpacity(1.0)
         p.setClipping(False)
         if self.badge:
             draw_badge(p, r)
+        if self.animated:
+            draw_animated_tag(p, r)
         # Picked: a blue outline and a ticked corner. Keyboard focus: a white ring inside it, so the
         # option you're on never looks like a second pick.
         if self.selected or self.underMouse():
@@ -341,13 +751,21 @@ class ArtView(QWidget):
 
     def mouseReleaseEvent(self, e):
         if e.button() == Qt.MouseButton.LeftButton and self.rect().contains(e.position().toPoint()):
-            self.clicked.emit()
+            self._activate()
 
     def keyPressEvent(self, e):
         if e.key() in (Qt.Key.Key_Return, Qt.Key.Key_Enter, Qt.Key.Key_Space):
-            self.clicked.emit()
+            self._activate()
         else:
             super().keyPressEvent(e)
+
+
+    def _activate(self):
+        """A click or Enter: on a picture that couldn't load, try it again rather than picking it."""
+        if self.pixmap.isNull() and self.load_state is not None and self.load_state[0] == "failed":
+            self.load_state[1]()
+            return
+        self.clicked.emit()
 
 
 class IconLabel(QWidget):
@@ -496,9 +914,12 @@ class FlowLayout(QLayout):
         size = QSize()
         for item in self._items:
             size = size.expandedTo(item.minimumSize())
-        return size
+        m = self.contentsMargins()
+        return size + QSize(m.left() + m.right(), m.top() + m.bottom())
 
     def _do_layout(self, rect, test):
+        m = self.contentsMargins()  # Qt hands a custom layout the whole rect: margins are ours to keep
+        outer, rect = rect, rect.adjusted(m.left(), m.top(), -m.right(), -m.bottom())
         x, y, line = rect.x(), rect.y(), 0
         for item in self._items:
             if item.widget() is not None and item.widget().isHidden():  # hidden on purpose (not just not shown yet)
@@ -512,7 +933,7 @@ class FlowLayout(QLayout):
                 item.setGeometry(QRect(QPoint(x, y), hint))
             x += hint.width() + self._spacing
             line = max(line, hint.height())
-        return y + line - rect.y()
+        return y + line - outer.y() + m.bottom()
 
 
 def label(text: str, name: str = "", wrap=False) -> QLabel:

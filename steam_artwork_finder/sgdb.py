@@ -24,6 +24,10 @@ class AuthError(SGDBError):
     pass
 
 
+class GoneError(SGDBError):
+    """The file isn't there (or isn't ours to have): asking again won't help."""
+
+
 @dataclass
 class Game:
     id: int
@@ -43,6 +47,11 @@ class Asset:
     score: int
     style: str
     author: str
+
+    @property
+    def animated(self) -> bool:
+        """SteamGridDB gives animated options a video thumbnail."""
+        return self.thumb.lower().split("?")[0].endswith((".webm", ".mp4"))
 
 
 def clean_name(name: str) -> str:
@@ -83,6 +92,40 @@ def looks_like_file(name: str) -> bool:
     return bool(_FILEISH.search(name.strip()))
 
 
+# Titles that say nothing about which game it is.
+_GENERIC = {
+    "launcher", "game launcher", "launch", "game", "start", "start game", "play", "play game", "run", "setup",
+    "main", "client", "app", "application", "program", "bootstrap", "loader", "unity", "godot", "shipping",
+}
+
+
+def _program(exe: str) -> str:
+    """The program's own name, without its folder or file ending ("game" for ".../game.exe")."""
+    base = re.split(r"[\\/]+", exe.strip().strip('"'))[-1]
+    return _FILEISH.sub("", base)
+
+
+def generic_name(name: str, exe: str = "") -> bool:
+    """True for a shortcut title that doesn't name the game: a file name ("game.exe"), a word
+    like "Launcher", or the program's own name when its folder says something else
+    ("hollow_knight" in Games/Hollow Knight/)."""
+    name = name.strip()
+    if not name:
+        return False
+    if looks_like_file(name) or _tidy(name).casefold() in _GENERIC:
+        return True
+    folder = _folder(exe)
+    return bool(folder) and name.casefold() == _program(exe).casefold() != folder.casefold()
+
+
+def search_name(name: str, exe: str = "") -> str:
+    """What to look a shortcut up by: its title, or for a generic title the folder the
+    program is in (else the file name without its ending)."""
+    if not generic_name(name, exe):
+        return name
+    return _folder(exe) or (_tidy(_FILEISH.sub("", name.strip())) if looks_like_file(name) else "") or name
+
+
 def _tidy(word: str) -> str:
     return clean_name(word.replace("_", " "))
 
@@ -106,8 +149,8 @@ def _folder(exe: str) -> str:
 def suggestions(name: str, exe: str = "") -> list[tuple[str, str]]:
     """Search terms worth trying for a shortcut, best first, as (term, where it came from).
 
-    A name like "SB.exe" says little, so the folder the program sits in comes
-    first, then the file name without its extension.
+    A name like "SB.exe" or "Launcher" says little, so the folder the program sits
+    in comes first, then the file name without its extension (or the name itself).
     """
     out: list[tuple[str, str]] = []
 
@@ -119,10 +162,31 @@ def suggestions(name: str, exe: str = "") -> list[tuple[str, str]]:
     if looks_like_file(name):
         add(folder, "folder")
         add(_tidy(_FILEISH.sub("", name.strip())), "file")
+    elif generic_name(name, exe):
+        add(folder, "folder")
+        add(name_variants(name)[-1] if name_variants(name) else "", "name")
     else:
         add(name_variants(name)[-1] if name_variants(name) else "", "name")
         add(folder, "folder")
     return out
+
+
+def retrying_session() -> requests.Session:
+    """A Session that quietly retries dropped connections, read timeouts and 5xx replies
+    (429 is handled by the callers, which honour Retry-After and tell the user)."""
+    from requests.adapters import HTTPAdapter
+    from urllib3.util.retry import Retry
+
+    retry = Retry(
+        total=3, connect=3, read=2, status=2, backoff_factor=0.5,
+        status_forcelist=(500, 502, 503, 504), allowed_methods=frozenset({"GET", "HEAD"}),
+        respect_retry_after_header=False, raise_on_status=False,
+    )
+    s = requests.Session()
+    adapter = HTTPAdapter(max_retries=retry, pool_connections=4, pool_maxsize=8)
+    s.mount("https://", adapter)
+    s.mount("http://", adapter)
+    return s
 
 
 class SteamGridDB:
@@ -140,7 +204,7 @@ class SteamGridDB:
         s = getattr(self._local, "session", None)
         if s is None:
             # requests.Session is not thread-safe; workers each get their own.
-            s = self._local.session = requests.Session()
+            s = self._local.session = retrying_session()
             s.headers["User-Agent"] = f"steam-artwork-finder/{__version__}"
         return s
 
@@ -161,9 +225,10 @@ class SteamGridDB:
                 break
             # Rate limited: wait as long as SteamGridDB asks (capped), then retry.
             try:
-                wait = min(float(r.headers.get("Retry-After", 5)), 60.0)
+                wait = float(r.headers.get("Retry-After", 5))
             except ValueError:
                 wait = 5.0
+            wait = 5.0 if wait != wait else max(0.0, min(wait, 60.0))  # NaN, negative, huge
             if self.on_wait:
                 self.on_wait(wait)
             self.sleep(wait)
@@ -177,6 +242,8 @@ class SteamGridDB:
             body = r.json()
         except ValueError:
             raise SGDBError(f"SteamGridDB returned HTTP {r.status_code}")
+        if not isinstance(body, dict):
+            raise SGDBError(f"SteamGridDB returned an unexpected reply (HTTP {r.status_code})")
         if not r.ok or not body.get("success", False):
             errs = body.get("errors") or [f"HTTP {r.status_code}"]
             raise SGDBError("; ".join(map(str, errs)))
@@ -195,6 +262,8 @@ class SteamGridDB:
             return []
         out = []
         for g in self._get("/search/autocomplete/" + quote(term, safe="")):
+            if not isinstance(g, dict) or "id" not in g or not g.get("name"):
+                continue
             year = ""
             if g.get("release_date"):
                 year = str(datetime.datetime.fromtimestamp(g["release_date"], datetime.timezone.utc).year)
@@ -224,15 +293,18 @@ class SteamGridDB:
                 first = (results[0], len(results))
         return first
 
-    def assets(self, kind: str, game_id: int, page: int = 0) -> list[Asset]:
+    def assets(self, kind: str, game_id: int, page: int = 0, animated: bool = False) -> list[Asset]:
+        """One page of options; `animated` mixes in animated ones where Steam plays them."""
         from .artwork import SLOTS
 
         slot = SLOTS[kind]
-        params = dict(slot.query)
+        params = slot.search(animated)
         params.update(nsfw="false", humor="any", page=page)
         data = self._get(f"/{slot.endpoint}/game/{game_id}", params)
         out = []
         for a in data:
+            if not isinstance(a, dict) or "id" not in a or not a.get("url"):
+                continue
             out.append(
                 Asset(
                     id=a["id"],
@@ -251,6 +323,8 @@ class SteamGridDB:
     def download(self, url: str) -> bytes:
         try:
             r = self.http.get(url, timeout=60)
+            if r.status_code in (400, 401, 403, 404, 410):
+                raise GoneError(f"Download failed: HTTP {r.status_code}")
             r.raise_for_status()
         except requests.RequestException as e:
             raise SGDBError(f"Download failed: {e}") from e

@@ -1,5 +1,6 @@
-"""The pop-over above "Steam Detected": it searches for Steam as it opens, shows the account
-in use, and lets you choose a folder by hand."""
+"""The pop-over above "Steam Detected": it shows the Steam folder and account in use, searches
+for Steam when asked (or by itself only while no folder is in use), and lets you choose a folder
+by hand."""
 
 from __future__ import annotations
 
@@ -39,8 +40,15 @@ def _games(root: Path) -> int:
         return 0
 
 
-def search(places: list[Place], progress, delay: float = STEP_DELAY):
-    """Check each place in turn, reporting ("now", i) then ("done", i, [Found])."""
+# The functions below run on a worker thread: they touch the disk (mount points, which can be a
+# sleeping network drive, and shortcuts.vdf) and never a widget.
+
+def search(places: list[Place] | None = None, progress=None, delay: float = STEP_DELAY):
+    """Check each place in turn, reporting ("places", [Place]) first when it lists them itself,
+    then ("now", i) and ("done", i, [Found]) for each."""
+    if places is None:
+        places = search_places()
+        progress(("places", places))
     seen: set[Path] = set()
     for i, place in enumerate(places):
         progress(("now", i))
@@ -52,6 +60,22 @@ def search(places: list[Place], progress, delay: float = STEP_DELAY):
                 seen.add(root)
                 hits.append(Found(place, root, _games(root)))
         progress(("done", i, hits))
+
+
+def locate(root: Path) -> tuple[list[Place], int, Found | None]:
+    """Which of the usual places `root` is in, without searching the others: (places, index, Found),
+    or (places, -1, None) when it's in none of them."""
+    places = search_places()
+    for i, place in enumerate(places):
+        if root in find_steam_roots(place.candidates):
+            return places, i, Found(place, root, _games(root))
+    return places, -1, None
+
+
+def steam_root_in(path: Path) -> Path | None:
+    """The Steam folder in (or at) a folder the user chose, if there is one."""
+    roots = find_steam_roots([path])
+    return roots[0] if roots else None
 
 
 def tilde(path: Path | str) -> str:
@@ -79,7 +103,8 @@ class Pulse(QWidget):
         """"search", "ok" or "none"."""
         self.state = state
         if state == "search":
-            self._anim.start()
+            if self.isVisible():
+                self._anim.start()  # else showEvent starts it
         else:
             self._anim.stop()
             self._t = 0.0
@@ -144,8 +169,8 @@ class Dots(QWidget):
         """"now", "hit", "miss" or ""."""
         self.states[i] = state
         running = "now" in self.states
-        if running and self._anim.state() != QVariantAnimation.State.Running:
-            self._anim.start()
+        if running and self.isVisible() and self._anim.state() != QVariantAnimation.State.Running:
+            self._anim.start()  # not while hidden: showEvent starts it
         elif not running:
             self._anim.stop()
             self._blink = 1.0
@@ -158,6 +183,11 @@ class Dots(QWidget):
     def hideEvent(self, e):
         self._anim.stop()
         super().hideEvent(e)
+
+    def showEvent(self, e):
+        if "now" in self.states:
+            self._anim.start()
+        super().showEvent(e)
 
     def paintEvent(self, _):
         if not self.labels:
@@ -328,21 +358,27 @@ class DropZone(QFrame):
 
 
 class SteamFolderPopover(Overlay):
-    """Automatic: searches as it opens, with a pulsing badge and a bar per place, then the account.
+    """Automatic: the folder in use and its account. It searches, with a pulsing badge and a bar
+    per place, on Detect Again, or as it opens only while no Steam folder is in use.
     Choose Folder: a drop zone. Both tabs are the same size, so it never jumps."""
 
     use_root = Signal(Path)  # use this Steam folder
-    account_chosen = Signal(int)
+    accounts_wanted = Signal(QWidget)  # Switch was clicked: open the account switcher under this
 
     def __init__(self, parent):
         super().__init__(parent)
         self.setAccessibleName("Steam folder")
         self.setFixedWidth(440)
-        self.places: list[Place] = search_places()
+        # Listing the places looks at every mounted drive, which can block on a sleeping network
+        # drive, so that and every other disk check happens on a worker thread.
+        self.places: list[Place] = []
         self.found: list[Found] = []
         self.searching = False
         self.delay = STEP_DELAY
-        self._run = 0
+        self._run = 0  # bumped by each search; replies from an older one are dropped
+        self._located: dict[Path, Found | None] = {}  # which place a folder in use is in (None: none)
+        self._locating: set[Path] = set()
+        self._choice = 0  # bumped by each folder dropped or browsed to
         self.root: Path | None = None
         self.users: list[str] = []
         self.user_index = -1
@@ -373,7 +409,7 @@ class SteamFolderPopover(Overlay):
         al = QVBoxLayout(auto)
         al.setContentsMargins(0, 0, 0, 0)
         al.setSpacing(10)
-        radar = QHBoxLayout()
+        radar = self._radar = QHBoxLayout()
         radar.setContentsMargins(-8, 0, 0, 0)  # the pulse's ring room overhangs the edge
         radar.setSpacing(4)
         self.pulse = Pulse()
@@ -445,7 +481,8 @@ class SteamFolderPopover(Overlay):
         self.show_tab(0)
         self._say_hint()
         self.open_above(anchor)
-        self.start_search()
+        if self.root is None and not self.searching:
+            self.start_search()  # nothing in use yet, so look; a folder in use is left alone
 
     # ---- the search -------------------------------------------------------------
 
@@ -454,14 +491,13 @@ class SteamFolderPopover(Overlay):
         run = self._run
         self.searching = True
         self.found = []
-        self.places = search_places()
-        self.dots.reset([pl.short for pl in self.places])
+        self.dots.reset(self.dots.labels)  # the worker sends the places first; keep the old ones till then
         self.pulse.set_state("search")
         self.title.setText("Looking for Steam…")
         self.sub.setText("")
         self.again.setEnabled(False)
         self.account.set_waiting(True)
-        workers.run(search, self.places, delay=self.delay,
+        workers.run(search, delay=self.delay,
                     on_progress=lambda m: self._progress(run, m),
                     on_done=lambda _r: self._finished(run),
                     on_error=lambda _m: self._finished(run))
@@ -469,7 +505,10 @@ class SteamFolderPopover(Overlay):
     def _progress(self, run: int, msg):
         if run != self._run:
             return  # an earlier search, replaced by Detect Again
-        if msg[0] == "now":
+        if msg[0] == "places":
+            self.places = msg[1]
+            self.dots.reset([pl.short for pl in self.places])
+        elif msg[0] == "now":
             i = msg[1]
             self.dots.set(i, "now")
             self._sub_text(f"Checking {self.places[i].name}", C["text3"])
@@ -497,17 +536,59 @@ class SteamFolderPopover(Overlay):
                            f"text-decoration:none'><b>Choose Folder</b></a>")
             return
         self.pulse.set_state("ok")
-        hit = next((f for f in self.found if f.root == self.root), None)
-        self.title.setText(f"Using {hit.place.name}" if hit else "Using your chosen folder")
+        hit = next((f for f in self.found if f.root == self.root), None) or self._located.get(self.root)
+        looking = hit is None and self.root not in self._located
+        if looking:
+            self._locate(self.root)
+        self.title.setText(f"Using {hit.place.name}" if hit else
+                           "Using this Steam folder" if looking else "Using your chosen folder")
         games = hit.games if hit else None
         tail = f" · {games} game{'' if games == 1 else 's'}" if games is not None else ""
         link = f" · <a href='change' style='color:{C['blue_ink']}; text-decoration:none'><b>Change</b></a>"
-        room = self.sub.width() or 300
+        room = self._sub_room()
         fm = self.sub.fontMetrics()
         path = fm.elidedText(tilde(self.root), Qt.TextElideMode.ElideMiddle,
                              max(80, room - fm.horizontalAdvance(tail + " · Change") - 8))
         self._sub_html(f"<span style='color:{C['text2']}'>{path}{tail}</span>{link}")
         self.sub.setToolTip(str(self.root))
+
+    def _sub_room(self) -> int:
+        """The width the line under the title has. Worked out from the pop-over's fixed width
+        until it's shown: before then the label hasn't been laid out, and its width is meaningless."""
+        if self.isVisible() and self.sub.width() > 0:
+            return self.sub.width()
+        m, r = self.layout().contentsMargins(), self._radar.contentsMargins()
+        return (self.width() - m.left() - m.right() - r.left() - r.right()
+                - self.pulse.width() - self._radar.spacing())
+
+    def _locate(self, root: Path):
+        """Find which place the folder in use is in, without searching the others, on a worker."""
+        if root in self._locating:
+            return
+        self._locating.add(root)
+
+        def done(result):
+            self._locating.discard(root)
+            places, i, hit = result
+            self._located[root] = hit  # kept even if it's no longer in use: it's true of that folder
+            if root != self.root or self.searching:
+                return  # the user moved on to another folder, or a search is filling the dots
+            if hit is not None:
+                self.places = places
+                if self.dots.labels != [pl.short for pl in places]:
+                    self.dots.reset([pl.short for pl in places])
+                self.dots.set(i, "hit")
+                if all(f.root != root for f in self.found):
+                    self.found.append(hit)
+            self._settle()
+
+        def failed(_msg):
+            self._locating.discard(root)
+            self._located[root] = None
+            if root == self.root and not self.searching:
+                self._settle()
+
+        workers.run(locate, root, on_done=done, on_error=failed)
 
     def _sub_text(self, text: str, colour: str):
         self.sub.setText(f"<span style='color:{colour}'>{text}</span>")
@@ -537,18 +618,8 @@ class SteamFolderPopover(Overlay):
         menu.deleteLater()
 
     def _switch(self):
-        if len(self.users) < 2:
-            return
-        menu = QMenu(self)
-        group = QActionGroup(menu)
-        for i, name in enumerate(self.users):
-            act = QAction(name, menu, checkable=True, checked=i == self.user_index)
-            act.triggered.connect(lambda _=False, i=i: self.account_chosen.emit(i) if i != self.user_index else None)
-            group.addAction(act)
-            menu.addAction(act)
-        b = self.account.switch
-        menu.exec(b.mapToGlobal(QPoint(0, b.height() + 2)))
-        menu.deleteLater()
+        if len(self.users) >= 2:
+            self.accounts_wanted.emit(self.account.switch)
 
     def _say_hint(self, error: str = ""):
         if error:
@@ -558,10 +629,18 @@ class SteamFolderPopover(Overlay):
                               f"usually <b>{NO_BREAK_PATH}</b>.</span>")
 
     def _chosen(self, path: Path):
-        roots = find_steam_roots([path])
-        if not roots:
-            return self._say_hint(f"{tilde(path)} doesn't have a Steam “userdata” folder inside it.")
-        self._say_hint()
-        self.use_root.emit(roots[0])
-        self.show_tab(0)
-        self._settle()
+        """A folder dropped or browsed to: checked on a worker, then put to use if Steam is in it."""
+        self._choice += 1
+        choice = self._choice
+
+        def done(root):
+            if choice != self._choice or not self.is_open():
+                return  # another folder was chosen since, or the pop-over was closed
+            if root is None:
+                return self._say_hint(f"{tilde(path)} doesn't have a Steam “userdata” folder inside it.")
+            self._say_hint()
+            self.use_root.emit(root)
+            self.show_tab(0)
+            self._settle()
+
+        workers.run(steam_root_in, path, on_done=done, on_error=lambda _m: done(None))

@@ -29,6 +29,7 @@ class Item:
     shortcut: str = ""  # shown faintly on the right, e.g. "Ctrl+R"
     toggle: bool | None = None  # a switch on the right; clicking flips it and keeps the menu open
     external: bool = False  # opens a web page: a small arrow on the right
+    checked: bool | None = None  # one of a set of choices: a tick on the right when it's the one in use
 
 
 class PopupRow(QAbstractButton):
@@ -48,15 +49,22 @@ class PopupRow(QAbstractButton):
     def keyPressEvent(self, e):
         self.window().keyPressEvent(e)  # the menu handles arrows, Enter and Esc
 
+    def leaveEvent(self, e):
+        if self.hasFocus():  # pointing at a greyed-out row, a separator or outside: nothing stays lit
+            self.window().setFocus(Qt.FocusReason.MouseFocusReason)
+        super().leaveEvent(e)
+
 
 class MenuRow(PopupRow):
     def __init__(self, item: Item, parent=None):
         super().__init__(item.text, parent)
         self.item = item
-        self.setAccessibleName(f"{item.text}, {item.badge}" if item.badge else item.text)
+        self.setAccessibleName(f"{item.text}, {item.badge}" if item.badge
+                               else f"{item.text}, selected" if item.checked else item.text)
         if item.toggle is not None:
             self.setCheckable(True)
             self.setChecked(item.toggle)
+            self.glide = theme.SwitchGlide(self)
         self.setEnabled(item.enabled)
 
     def sizeHint(self):
@@ -93,12 +101,15 @@ class MenuRow(PopupRow):
         if self.item.toggle is not None:
             track = QRectF(right - 30, (r.height() - 17) / 2, 30, 17)
             p.setPen(Qt.PenStyle.NoPen)
-            p.setBrush(q("blue") if self.isChecked() else q("track_off"))
+            t = self.glide.at
+            p.setBrush(theme.mix(q("track_off"), q("blue"), t))
             p.drawRoundedRect(track, 8.5, 8.5)
             knob = 13
-            x = track.right() - knob - 2 if self.isChecked() else track.left() + 2
+            x = track.left() + 2 + (track.width() - knob - 4) * t
             p.setBrush(q("text") if on else q("text3"))
             p.drawEllipse(QRectF(x, track.top() + 2, knob, knob))
+        elif self.item.checked:
+            icons.draw(p, "tick", QRect(int(right) - 15, (self.height() - 15) // 2, 15, 15), q("blue_ink"))
         elif self.item.external:
             icons.draw(p, "external", QRect(int(right) - 13, (self.height() - 13) // 2, 13, 13), q("text3"))
         elif self.item.shortcut:
@@ -229,6 +240,9 @@ class FadingPopup(QFrame):
         super().__init__(parent, Qt.WindowType.Popup | Qt.WindowType.FramelessWindowHint
                          | Qt.WindowType.NoDropShadowWindowHint)
         self.setAttribute(Qt.WidgetAttribute.WA_TranslucentBackground)
+        # A click outside only closes it, as everything behind a pop-out waits while it shows:
+        # clicking the button that opened it closes it rather than closing and opening it again.
+        self.setAttribute(Qt.WidgetAttribute.WA_NoMouseReplay)
         self.setFixedWidth(width + SHADOW * 2)
         outer = QVBoxLayout(self)
         outer.setContentsMargins(SHADOW, SHADOW, SHADOW, SHADOW)

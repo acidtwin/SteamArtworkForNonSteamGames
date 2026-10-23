@@ -8,15 +8,16 @@ from typing import Callable
 
 from PySide6.QtCore import QEvent, QPoint, QPointF, QRect, QRectF, QSize, Qt, QTimer, QVariantAnimation, Signal
 from PySide6.QtGui import (
-    QAction, QActionGroup, QColor, QFont, QFontInfo, QFontMetrics, QGuiApplication, QLinearGradient,
+    QColor, QFont, QFontInfo, QFontMetrics, QGuiApplication, QLinearGradient,
     QPainter, QPainterPath, QPen, QPixmap,
 )
 from PySide6.QtWidgets import (
-    QAbstractButton, QApplication, QCheckBox, QFrame, QGraphicsOpacityEffect, QHBoxLayout, QLabel, QMenu, QPushButton, QSizePolicy,
+    QAbstractButton, QApplication, QFrame, QGraphicsOpacityEffect, QHBoxLayout, QLabel, QPushButton, QSizePolicy,
     QToolButton, QVBoxLayout, QWidget,
 )
 
 from . import icons, theme
+from .scrim import scrim_of
 from .theme import C, q
 
 RING = "#57cbde"
@@ -70,17 +71,6 @@ class _Click(QWidget):
         self.setFocusPolicy(Qt.FocusPolicy.TabFocus)
         self.setAttribute(Qt.WidgetAttribute.WA_Hover)
         self.hovered = False
-        self.kbd_focus = False
-
-    def focusInEvent(self, e):
-        self.kbd_focus = e.reason() in (Qt.FocusReason.TabFocusReason, Qt.FocusReason.BacktabFocusReason)
-        self.update()
-        super().focusInEvent(e)
-
-    def focusOutEvent(self, e):
-        self.kbd_focus = False
-        self.update()
-        super().focusOutEvent(e)
 
     def event(self, e):
         if e.type() in (QEvent.Type.HoverEnter, QEvent.Type.HoverLeave):
@@ -103,7 +93,7 @@ class _Click(QWidget):
             super().keyPressEvent(e)
 
     def paintEvent(self, e):
-        if self.hasFocus() and self.kbd_focus:
+        if theme.kbd_focus(self):
             p = QPainter(self)
             p.setRenderHint(QPainter.RenderHint.Antialiasing)
             p.setPen(QPen(q("blue"), 2))
@@ -113,11 +103,11 @@ class _Click(QWidget):
 # ---- header -----------------------------------------------------------------
 
 class _Avatar(QWidget):
-    """32 px avatar: the Steam picture, or the name's first letter on a gradient, in a cyan ring."""
+    """28 px avatar: the Steam picture, or the name's first letter on a gradient, in a cyan ring."""
 
     def __init__(self, parent=None):
         super().__init__(parent)
-        self.setFixedSize(36, 36)
+        self.setFixedSize(32, 32)
         self.pm: QPixmap | None = None
         self.letter = ""
 
@@ -125,11 +115,11 @@ class _Avatar(QWidget):
         p = QPainter(self)
         p.setRenderHint(QPainter.RenderHint.Antialiasing)
         p.setRenderHint(QPainter.RenderHint.SmoothPixmapTransform)
-        ring = QRectF(1, 1, 34, 34)
+        ring = QRectF(1, 1, 30, 30)
         p.setPen(Qt.PenStyle.NoPen)
         p.setBrush(QColor(RING))
         p.drawRoundedRect(ring, 4, 4)
-        inner = QRectF(2, 2, 32, 32)
+        inner = QRectF(2, 2, 28, 28)
         path = QPainterPath()
         path.addRoundedRect(inner, 2, 2)
         p.setClipPath(path)
@@ -146,12 +136,13 @@ class _Avatar(QWidget):
 
 
 class _Account(_Click):
-    """Avatar + persona name; opens a menu of Steam users when there is more than one."""
+    """Avatar + persona name; opens the account switcher."""
 
     def __init__(self, parent=None):
         super().__init__(parent)
         lay = QHBoxLayout(self)
-        lay.setContentsMargins(4, 4, 10, 4)
+        self.setFixedHeight(36)  # as the ⋯ button beside it, not the top bar's full height
+        lay.setContentsMargins(4, 2, 10, 2)
         lay.setSpacing(10)
         self.avatar = _Avatar()
         lay.addWidget(self.avatar)
@@ -160,10 +151,10 @@ class _Account(_Click):
         self.chev = QLabel()
         self.chev.setPixmap(_chevron(C["text2"]))
         lay.addWidget(self.chev)
-        self.multi = False
+        self.open = False  # lit while its switcher shows
 
     def paintEvent(self, e):
-        if self.multi and self.hovered:
+        if (self.hovered or self.open) and self.isEnabled():
             p = QPainter(self)
             p.setRenderHint(QPainter.RenderHint.Antialiasing)
             p.setPen(Qt.PenStyle.NoPen)
@@ -190,7 +181,7 @@ class Header(QWidget):
     """The top bar: app mark (home), the Steam account and the ⋯ menu."""
 
     home_clicked = Signal()
-    user_chosen = Signal(int)
+    accounts_clicked = Signal()
     more_clicked = Signal()
 
     def __init__(self, parent=None):
@@ -224,24 +215,22 @@ class Header(QWidget):
 
         self.account = _Account()
         self.account.setAccessibleName("Steam account")
-        self.account.clicked.connect(self._open_users)
+        self.account.clicked.connect(self.accounts_clicked)
         self.account.hide()
         lay.addWidget(self.account)
-        self._users: list[str] = []
-        self._current = 0
 
         self.more = QToolButton()
         self.more.setIcon(icons.icon("more", 22, C["text"]))
         self.more.setIconSize(QSize(22, 22))
+        self.more.setStyleSheet("min-width: 34px; min-height: 34px; max-width: 34px; max-height: 34px;")
         self.more.setToolTip("More")
         self.more.setAccessibleName("More actions")
         self.more.clicked.connect(self.more_clicked)
+        self.more.clicked.connect(lambda: theme.hold_open(self.more))  # after the menu has opened
         lay.addWidget(self.more)
 
     def set_users(self, labels: list[str], current: int, avatar: QPixmap | None = None):
-        """Show the signed-in user; several labels make the area a switcher. Empty hides it."""
-        self._users = list(labels)
-        self._current = current
+        """Show the signed-in user; clicking it opens the account switcher. Empty hides it."""
         if not labels or not 0 <= current < len(labels):
             self.account.hide()
             return
@@ -251,27 +240,9 @@ class Header(QWidget):
         a.avatar.pm = avatar
         a.avatar.letter = name.strip()[:1].upper()
         a.avatar.update()
-        a.multi = len(labels) > 1
-        a.chev.setVisible(a.multi)
-        a.setCursor(Qt.CursorShape.PointingHandCursor if a.multi else Qt.CursorShape.ArrowCursor)
-        a.setFocusPolicy(Qt.FocusPolicy.TabFocus if a.multi else Qt.FocusPolicy.NoFocus)
-        a.setToolTip(f"Signed in to Steam as {name}" + ("\nClick to switch Steam user" if a.multi else ""))
-        a.setAccessibleName(f"Steam user {name}" + (". Switch user" if a.multi else ""))
+        a.setToolTip(f"Signed in to Steam as {name}\nClick to see your Steam accounts")
+        a.setAccessibleName(f"Steam user {name}. Steam accounts")
         a.show()
-
-    def _open_users(self):
-        if len(self._users) < 2:
-            return
-        menu = QMenu(self)
-        group = QActionGroup(menu)
-        for i, name in enumerate(self._users):
-            act = QAction(name, menu, checkable=True, checked=i == self._current)
-            act.triggered.connect(lambda _=False, i=i: self.user_chosen.emit(i) if i != self._current else None)
-            group.addAction(act)
-            menu.addAction(act)
-        a = self.account
-        menu.exec(a.mapToGlobal(QPoint(0, a.height() + 2)))
-        menu.deleteLater()
 
     def paintEvent(self, e):
         p = QPainter(self)
@@ -396,14 +367,15 @@ class ContentBar(QWidget):
         self._btn_box.setSpacing(8)
         lay.addLayout(self._btn_box)
         self.buttons: list[QAbstractButton] = []
+        self.rest_focus = None  # puts focus on the page when a focused button turns off
         self.show_library(None)
 
-    def show_library(self, count: int | None):
-        """Start page title: NON-STEAM GAMES (count)."""
+    def show_library(self, count: int | None, shown: int | None = None):
+        """Start page title: NON-STEAM GAMES (count), or (shown of count) while the sidebar narrows it."""
         self.title.setFont(font(1.15, QFont.Weight.Bold, 0.09))
         self.title.setText("NON-STEAM GAMES")
         self.title.setAccessibleName("Non-Steam games")
-        self.count.setText("" if count is None else f"({count})")
+        self.count.setText("" if count is None else f"({count})" if shown in (None, count) else f"({shown} of {count})")
         self.count.setVisible(count is not None)
 
     def show_game(self, name: str):
@@ -433,7 +405,8 @@ class ContentBar(QWidget):
                 b = QToolButton()
                 b.setIcon(icons.icon("more", 20, C["text"]))
                 b.setIconSize(QSize(20, 20))
-                b.clicked.connect(lambda _=False, b=b: b._cb and b._cb(b.mapToGlobal(QPoint(0, b.height()))))
+                b.clicked.connect(lambda _=False, b=b: b._cb and (b._cb(b.mapToGlobal(QPoint(0, b.height()))),
+                                                                  theme.hold_open(b)))
             else:
                 b = QPushButton()
                 if kind == "go":
@@ -447,14 +420,15 @@ class ContentBar(QWidget):
             self.buttons[min(had_focus, len(self.buttons) - 1)].setFocus(Qt.FocusReason.OtherFocusReason)
         return self.buttons
 
-    @staticmethod
-    def _update(b: QAbstractButton, text: str, kind: str, enabled: bool, cb):
+    def _update(self, b: QAbstractButton, text: str, kind: str, enabled: bool, cb):
         if kind == "more":
             b.setToolTip(text or "More")
             b.setAccessibleName(text or "More")
         else:
             b.setText(text)
             b.setAccessibleName(text)
+        if not enabled and b.hasFocus() and self.rest_focus:
+            self.rest_focus()  # else Qt moves focus on to the next widget: round to the header logo
         b.setEnabled(enabled)
         b._cb = cb
 
@@ -559,7 +533,9 @@ class StatusItem(QAbstractButton):
 
 
 def _tip(title: str, hint: str) -> str:
-    return (f"<div style='white-space:pre'>{html.escape(title)}<br>"
+    """A status item's tooltip: `title` (a line for each line of it), and a smaller hint under it."""
+    lines = "<br>".join(html.escape(t) for t in title.split("\n"))
+    return (f"<div style='white-space:pre'>{lines}<br>"
             f"<span style='color:{C['text3']}; font-size:small'>{html.escape(hint)}</span></div>")
 
 
@@ -568,12 +544,27 @@ PROCESS = {
     "running": ("Steam Running", "play", "wait"),
     "restart": ("Restart Needed", "restart", "blue_ink"),
 }
-CONNECTION = {"connected": ("Connected", "ok"), "connecting": ("Connecting", "wait"),
-              "disconnected": ("Disconnected", "off"), "nokey": ("No API Key", "track_off")}
+# What each artwork source's line in the tooltip says, by state.
+SGDB_WORDS = {"connected": "Connected", "connecting": "Connecting…", "disconnected": "Can't reach, retrying",
+              "nokey": "No API key", "rejected": "Key rejected"}
+STORE_WORDS = {"connected": "Connected", "connecting": "Checking…", "unknown": "Not used yet", "disconnected": "Can't reach, retrying",
+               "off": "Off"}
+
+
+def sources_dot(sgdb: str, store: str) -> str:
+    """The Artwork Sources dot's colour: green while every source in use works, red when none does,
+    amber in between. Steam's store counts as working until it fails, and isn't counted when its
+    artwork is switched off."""
+    used = [sgdb not in ("disconnected", "nokey", "rejected")]
+    if store != "off":
+        used.append(store != "disconnected")
+    return "ok" if all(used) else "off" if not any(used) else "warn"
 
 
 class StatusBar(QWidget):
     """The 36 px bar at the bottom: a message on the left, Steam and SteamGridDB state on the right."""
+
+    MESSAGE_FADE_MS = 400  # slower than a menu's fade, so a message you were reading is seen to go
 
     steam_clicked = Signal()
     process_clicked = Signal()
@@ -613,6 +604,12 @@ class StatusBar(QWidget):
         left.setSizePolicy(QSizePolicy.Policy.Ignored, QSizePolicy.Policy.Preferred)
         lay.addWidget(left, 1)
         self.left = left
+        self._msg_fx = QGraphicsOpacityEffect(left, opacity=1.0)
+        self._msg_fx.setEnabled(False)  # only while fading, so the text stays crisp otherwise
+        left.setGraphicsEffect(self._msg_fx)
+        self._msg_fade = QVariantAnimation(self, duration=self.MESSAGE_FADE_MS, startValue=1.0, endValue=0.0)
+        self._msg_fade.valueChanged.connect(lambda v: self._msg_fx.setOpacity(float(v)))
+        self._msg_fade.finished.connect(lambda: self.set_message(None, ""))
 
         self.steam = StatusItem()
         self.steam.clicked.connect(self.steam_clicked)
@@ -626,7 +623,6 @@ class StatusBar(QWidget):
         lay.addWidget(self.div2)
         self.connection = StatusItem()
         self.connection.clicked.connect(self.connection_clicked)
-        self.connection.setToolTip(_tip("SteamGridDB", "Click to change your API key"))
         lay.addWidget(self.connection)
 
         self._pulse = QVariantAnimation(self, startValue=1.0, endValue=0.35, duration=600)
@@ -635,15 +631,30 @@ class StatusBar(QWidget):
 
         self.kind: str | None = None
         self.steam_found = False
-        self.process_state = "closed"
         self.connection_state = "disconnected"
+        self.store_state = "unknown"
         self.set_message(None, "")
         self.set_steam(False, "")
         self.set_process("closed")
-        self.set_connection("disconnected")
+        self.set_sources("disconnected", "unknown")
+
+    def fade_message(self):
+        """Fade the message out, then leave the left side empty."""
+        if self._msg_fade.state() == QVariantAnimation.State.Running:
+            return
+        if not self.message.text():
+            return self.set_message(None, "")
+        self._msg_fx.setEnabled(True)
+        self._msg_fade.start()
 
     def set_message(self, kind: str | None, text: str = ""):
         """Left side: "busy" (spinner), "info", "done" (green check) or None (empty)."""
+        if self._msg_fade.state() == QVariantAnimation.State.Running:
+            if kind is None:
+                return  # already fading to empty
+            self._msg_fade.stop()
+        self._msg_fx.setOpacity(1.0)
+        self._msg_fx.setEnabled(False)
         self.kind = kind
         self.spinner.setVisible(kind == "busy")
         self.done_icon.setVisible(kind == "done")
@@ -673,15 +684,14 @@ class StatusBar(QWidget):
             self.steam.setToolTip(_tip(path_text or "Steam folder", "Click to find Steam or choose another folder"))
             self.steam.setAccessibleName("Steam Detected. Find Steam or choose another folder")
         else:
-            self.steam.set_state("Steam Undetected", "x-circle", C["off"])
+            self.steam.set_state("Steam Not Found", "x-circle", C["off"])
             self.steam.setToolTip(_tip("No Steam folder found", "Click to choose your Steam folder"))
-            self.steam.setAccessibleName("Steam Undetected. Choose the Steam folder")
+            self.steam.setAccessibleName("Steam not found. Choose the Steam folder")
         self.process.setVisible(found)
         self.div2.setVisible(found)
 
     def set_process(self, state: str):
         """"closed", "running" or "restart"."""
-        self.process_state = state
         word, ic, col = PROCESS[state]
         self.process.set_state(word, ic, C[col])
         self.process.setToolTip(_tip(word, "Click for more about Steam"))
@@ -699,14 +709,18 @@ class StatusBar(QWidget):
         """Global top-centre of the Steam process item, for the pop-over."""
         return self.process.mapToGlobal(QPoint(self.process.width() // 2, 0))
 
-    def set_connection(self, state: str):
-        """"connected", "connecting", "disconnected" or "nokey" (no API key added yet)."""
-        self.connection_state = state
-        word, col = CONNECTION[state]
-        self.connection.set_state(word, dot=C[col])
-        self.connection.setAccessibleName(f"SteamGridDB: {word}. Change API key")
+    def set_sources(self, sgdb: str, store: str):
+        """The Artwork Sources item: one dot for SteamGridDB and Steam's store together (see sources_dot),
+        pulsing while SteamGridDB connects, and each source's state on its own line in the tooltip.
+        `sgdb` is a key of SGDB_WORDS, `store` of STORE_WORDS."""
+        self.connection_state, self.store_state = sgdb, store
+        self.connection.set_state("Artwork Sources", dot=C[sources_dot(sgdb, store)])
+        lines = f"SteamGridDB: {SGDB_WORDS[sgdb]}\nSteam Store: {STORE_WORDS[store]}"
+        self.connection.setToolTip(_tip(lines, "Click for both sources and your API key"))
+        self.connection.setAccessibleName(f"Artwork sources. SteamGridDB: {SGDB_WORDS[sgdb]}. "
+                                          f"Steam Store: {STORE_WORDS[store]}. Change API key")
         self.connection.dot_alpha = 1.0
-        if state == "connecting":
+        if sgdb == "connecting":
             if self._pulse.state() != QVariantAnimation.State.Running:
                 self._pulse.setDirection(QVariantAnimation.Direction.Forward)
                 self._pulse.start()
@@ -734,9 +748,8 @@ class StatusBar(QWidget):
 # ---- Steam pop-over ----------------------------------------------------------------
 
 POPOVER_TEXT = {
-    "closed": "Steam is closed, so new artwork is saved straight away and shows the next time you open Steam.",
-    "running": "Steam is open. It only loads new artwork when it starts, and it rewrites its game list when it "
-               "closes, so icons are saved once Steam has closed.",
+    "closed": "New artwork is saved straight away and shows next time you open Steam.",
+    "running": "Steam shows new artwork after a restart. Icons are saved once it closes.",
     "restart": "New artwork is saved. Restart Steam to see it.",
 }
 
@@ -760,18 +773,16 @@ class Overlay(QFrame):
         self._anim.finished.connect(self._faded)
         self._leaving = False
         self._return_to: QWidget | None = None  # where keyboard focus goes back to on closing
+        self._anchor: tuple[QPoint, bool] | None = None  # where it opened: (global point, align_right)
         self.hide()
 
     def open_above(self, anchor: QPoint, align_right: bool = False):
         """Open above `anchor` (a global point), kept inside the window."""
-        host = self.parentWidget()
-        self.adjustSize()
-        w, h = self.width(), self.sizeHint().height()
-        a = host.mapFromGlobal(anchor)
-        x = a.x() - w + 24 if align_right else a.x() - w // 2
-        x = max(8, min(x, host.width() - w - 8))
-        y = max(8, a.y() - h - 8)
-        self.setGeometry(x, y, w, h)
+        self._anchor = (QPoint(anchor), align_right)
+        self._place()
+        scrim = scrim_of(self)
+        if scrim is not None:
+            scrim.cover(self, self.dismiss)  # the window dims behind it, and a click there closes it
         self.raise_()
         focus = QApplication.focusWidget()
         if focus is not None and focus is not self and not self.isAncestorOf(focus):
@@ -783,6 +794,37 @@ class Overlay(QFrame):
         self._fade(self._fx.opacity(), 1.0)
         QApplication.instance().installEventFilter(self)
 
+    def _place(self):
+        """Size it to its contents, its bottom edge just above the anchor."""
+        host = self.parentWidget()
+        anchor, align_right = self._anchor
+        self.adjustSize()
+        w = self.width()
+        h = self.heightForWidth(w) if self.hasHeightForWidth() else -1
+        h = max(h, self.sizeHint().height())
+        a = host.mapFromGlobal(anchor)
+        x = a.x() - w + 24 if align_right else a.x() - w // 2
+        x = max(8, min(x, host.width() - w - 8))
+        y = max(8, a.y() - h - 8)
+        if self.geometry() != QRect(x, y, w, h):
+            self.setGeometry(x, y, w, h)
+
+    def event(self, e):
+        if e.type() == QEvent.Type.LayoutRequest and getattr(self, "_anchor", None) is not None:
+            # Its contents changed size (an error line appeared): grow upwards, so it never
+            # squashes its contents or covers the status bar it opened from.
+            QTimer.singleShot(0, self, self._replace)
+        return super().event(e)
+
+    def _replace(self):
+        if self.is_open():
+            self._place()
+
+    def _on_top(self) -> bool:
+        """Whether it's the topmost thing open: a dialog opened over it handles clicks and Esc itself."""
+        scrim = scrim_of(self)
+        return scrim is None or scrim.top() is None or scrim.top() is self
+
     def is_open(self) -> bool:
         return self.isVisible() and not self._leaving
 
@@ -791,6 +833,7 @@ class Overlay(QFrame):
             return
         self._leaving = True
         QApplication.instance().removeEventFilter(self)
+        self._uncover()
         focus = QApplication.focusWidget()
         if focus is not None and (focus is self or self.isAncestorOf(focus)):
             # Back to the status item that opened it, else to wherever focus was before.
@@ -811,9 +854,21 @@ class Overlay(QFrame):
             self._leaving = False
             self.hide()
 
+    def _uncover(self):
+        scrim = scrim_of(self)
+        if scrim is not None:
+            scrim.uncover(self)
+
+    def hideEvent(self, e):
+        if not e.spontaneous():  # a spontaneous hide is the window being minimised: it stays open
+            self._uncover()
+            QApplication.instance().removeEventFilter(self)  # also when hidden without dismiss()
+        super().hideEvent(e)
+
     def eventFilter(self, obj, e):
         t = e.type()
-        if t == QEvent.Type.MouseButtonPress and isinstance(obj, QWidget) and obj.window() is self.window():
+        if (t == QEvent.Type.MouseButtonPress and isinstance(obj, QWidget) and obj.window() is self.window()
+                and self._on_top()):
             inside = obj is self or self.isAncestorOf(obj)
             on_anchor = self.anchor_widget is not None and (
                 obj is self.anchor_widget or self.anchor_widget.isAncestorOf(obj))
@@ -823,7 +878,8 @@ class Overlay(QFrame):
             self.dismiss()  # its anchor moved
         elif (t == QEvent.Type.KeyPress and e.key() == Qt.Key.Key_Escape and self.isVisible()
               and isinstance(obj, QWidget) and obj.window() is self.window()
-              and QApplication.activePopupWidget() is None and QApplication.activeModalWidget() is None):
+              and QApplication.activePopupWidget() is None and QApplication.activeModalWidget() is None
+              and self._on_top()):
             self.dismiss()  # only Esc meant for this window: a dialog or menu over it closes itself
             return True
         return False
@@ -844,8 +900,50 @@ class Overlay(QFrame):
                 return True
 
 
+class SwitchRow(QAbstractButton):
+    """A setting in a pop-over: its words on the left, a switch on the right (like the ⋯ menu's).
+    Clicking anywhere on the row flips it."""
+
+    def __init__(self, text: str, parent=None):
+        super().__init__(parent)
+        self.setText(text)
+        self.setCheckable(True)
+        self.setCursor(Qt.CursorShape.PointingHandCursor)
+        self.setAttribute(Qt.WidgetAttribute.WA_Hover)
+        self.setFocusPolicy(Qt.FocusPolicy.StrongFocus)
+        self.setAccessibleName(text)
+        self.setFont(font(0.96))
+        self.glide = theme.SwitchGlide(self)
+
+    def sizeHint(self):
+        return QSize(self.fontMetrics().horizontalAdvance(self.text()) + 56, max(30, self.fontMetrics().height() + 12))
+
+    def paintEvent(self, _):
+        p = QPainter(self)
+        p.setRenderHint(QPainter.RenderHint.Antialiasing)
+        r = QRectF(self.rect())
+        p.setPen(q("text"))
+        p.setFont(self.font())
+        p.drawText(r.adjusted(0, 0, -44, 0), Qt.AlignmentFlag.AlignVCenter, self.text())
+        track = QRectF(r.right() - 2 - 32, (r.height() - 18) / 2, 32, 18)
+        if theme.kbd_focus(self):
+            p.setPen(QPen(q("blue"), 2))
+            p.setBrush(Qt.BrushStyle.NoBrush)
+            p.drawRoundedRect(track.adjusted(-2, -2, 2, 2), 11, 11)
+        hover = self.underMouse()
+        p.setPen(Qt.PenStyle.NoPen)
+        t = self.glide.at
+        p.setBrush(theme.mix(q("select") if hover else q("track_off"), q("action_hover") if hover else q("action"), t))
+        p.drawRoundedRect(track, 9, 9)
+        knob = 14
+        x = track.left() + 2 + (track.width() - knob - 4) * t
+        p.setBrush(q("text"))
+        p.drawEllipse(QRectF(x, track.top() + 2, knob, knob))
+
+
 class SteamPopover(Overlay):
-    """The pop-up above the Steam process item: what the state means, auto-restart, Restart Now."""
+    """The pop-up above the Steam process item: what the state means, two switches, Restart Now.
+    Kept small: one short sentence, an × to close, and one button that does something."""
 
     restart_clicked = Signal()
     auto_restart_changed = Signal(bool)
@@ -854,51 +952,66 @@ class SteamPopover(Overlay):
     def __init__(self, parent):
         super().__init__(parent)
         self.setAccessibleName("Steam")
-        self.setFixedWidth(380)
         lay = QVBoxLayout(self)
-        lay.setContentsMargins(16, 14, 16, 14)
-        lay.setSpacing(10)
+        lay.setContentsMargins(12, 8, 8, 12)  # the × sits closer to the corner than the text does
+        lay.setSpacing(6)
         head = QHBoxLayout()
         head.setSpacing(8)
         self.icon = QLabel()
         self.icon.setFixedSize(16, 16)
         head.addWidget(self.icon)
-        self.title = _label("", font(1.08, QFont.Weight.Bold), C["text"])
+        self.title = _label("", font(1.0, QFont.Weight.Bold), C["text"])
         head.addWidget(self.title, 1)
+        self.close_btn = QToolButton()
+        self.close_btn.setObjectName("spopx")
+        self.close_btn.setIcon(icons.icon("close", 14, C["text3"]))
+        self.close_btn.setIconSize(QSize(14, 14))
+        self.close_btn.setToolTip("Close")
+        self.close_btn.setAccessibleName("Close")
+        self.close_btn.setCursor(Qt.CursorShape.PointingHandCursor)
+        self.close_btn.clicked.connect(self.dismiss)
+        head.addWidget(self.close_btn)
         lay.addLayout(head)
         self.body = QLabel()
         self.body.setWordWrap(True)
+        self.body.setFont(font(0.92))
         self.body.setStyleSheet(f"color: {C['text2']}; background: transparent;")
+        self.body.setContentsMargins(0, 0, 4, 2)  # lines up with the switches, not the ×
         lay.addWidget(self.body)
-        self.auto = QCheckBox("Restart Steam when I apply")
-        self.auto.setObjectName("spopcheck")
+        rows = QVBoxLayout()
+        rows.setContentsMargins(0, 0, 4, 0)
+        rows.setSpacing(0)
+        self.auto = SwitchRow("Restart Steam when I apply")
         self.auto.toggled.connect(self.auto_restart_changed)
-        lay.addWidget(self.auto)
-        self.on_quit = QCheckBox("Apply when I quit, without asking")
-        self.on_quit.setObjectName("spopcheck")
+        rows.addWidget(self.auto)
+        self.on_quit = SwitchRow("Apply when I quit, without asking")
         self.on_quit.toggled.connect(self.apply_on_quit_changed)
-        lay.addWidget(self.on_quit)
-        row = QHBoxLayout()
-        row.setSpacing(8)
-        row.addStretch(1)
+        rows.addWidget(self.on_quit)
+        lay.addLayout(rows)
+        lay.addSpacing(2)
         self.restart = QPushButton("Restart Steam Now")
+        self.restart.setProperty("kind", "confirm")
+        self.restart.setIcon(icons.icon("restart", 14, "white"))
+        self.restart.setIconSize(QSize(14, 14))
         self.restart.clicked.connect(self._restart)
-        row.addWidget(self.restart)
-        self.close_btn = QPushButton("Close")
-        self.close_btn.clicked.connect(self.dismiss)
-        row.addWidget(self.close_btn)
-        lay.addLayout(row)
+        foot = QHBoxLayout()
+        foot.setContentsMargins(0, 0, 4, 0)
+        foot.addWidget(self.restart)
+        lay.addLayout(foot)
+        self.setFixedWidth(max(300, self.on_quit.sizeHint().width() + 24))
         self.state = "closed"
 
     def set_apply_on_quit(self, on: bool):
         self.on_quit.blockSignals(True)
         self.on_quit.setChecked(on)
         self.on_quit.blockSignals(False)
+        self.on_quit.glide.snap()
 
     def set_auto_restart(self, on: bool):
         self.auto.blockSignals(True)
         self.auto.setChecked(on)
         self.auto.blockSignals(False)
+        self.auto.glide.snap()
 
     def set_state(self, state: str, waiting_icons: int = 0):
         self.state = state
@@ -907,8 +1020,7 @@ class SteamPopover(Overlay):
         self.icon.setPixmap(icons.pixmap(ic, 16, C[col], self.devicePixelRatioF()))
         text = POPOVER_TEXT[state]
         if state == "restart" and waiting_icons > 0:
-            text += (f" {waiting_icons} {'icon' if waiting_icons == 1 else 'icons'} will be added "
-                     "when Steam closes.")
+            text += f" {waiting_icons} {'icon waits' if waiting_icons == 1 else 'icons wait'} for Steam to close."
         self.body.setText(text)
         self.restart.setVisible(state != "closed")
         self.setAccessibleDescription(text)

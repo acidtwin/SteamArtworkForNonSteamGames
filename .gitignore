@@ -7,3 +7,5 @@ dist/
 *.egg-info/
 wheel-debug.on
 wheel-debug.log
+build-dir/
+.flatpak-builder/

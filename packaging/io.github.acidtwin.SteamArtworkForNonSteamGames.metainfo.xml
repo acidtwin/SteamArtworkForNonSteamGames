@@ -2,15 +2,14 @@
 <component type="desktop-application">
   <id>io.github.acidtwin.SteamArtworkForNonSteamGames</id>
   <metadata_license>CC0-1.0</metadata_license>
-  <!-- Set this once a LICENSE file is chosen for the repo; Flathub needs a real SPDX id. -->
-  <project_license>LicenseRef-proprietary</project_license>
+  <project_license>MIT</project_license>
   <name>Steam Artwork for Non-Steam Games</name>
   <summary>Artwork and icons for your non-Steam games</summary>
-  <developer id="io.github.acidtwin"><name>acidtwin</name></developer>
+  <developer id="io.github.acidtwin"><name>Acid Design</name></developer>
   <description>
-    <p>Gives the games you added to Steam yourself (emulators, GOG, itch.io, Heroic and Lutris installs) the same artwork as the rest of your library: cover, wide cover, banner, logo and icon, from SteamGridDB.</p>
-    <p>It finds your Steam install on its own, lists every non-Steam shortcut, and fills in whatever is missing in one click. You can swap any piece from a visual picker and undo any change. Steam's shortcut list is backed up before every write.</p>
-    <p>Works on desktop Linux and on the Steam Deck in desktop mode. Needs a free SteamGridDB API key. Not affiliated with Valve or SteamGridDB.</p>
+    <p>Gives the games you added to Steam yourself (emulators, GOG, itch.io, Heroic and Lutris installs) the same artwork as the rest of your library: cover, wide cover, banner, logo and icon.</p>
+    <p>It finds your Steam install on its own, lists every non-Steam shortcut, and fills in whatever is missing in one click, from SteamGridDB and from a game's official Steam store artwork. You can swap any piece from a visual picker, use animated artwork, use your own pictures, and undo any change. Steam's shortcut list is backed up before every write.</p>
+    <p>Works on desktop Linux and on the Steam Deck in desktop mode. A free SteamGridDB API key unlocks the most artwork. Not affiliated with Valve or SteamGridDB.</p>
   </description>
   <launchable type="desktop-id">io.github.acidtwin.SteamArtworkForNonSteamGames.desktop</launchable>
   <url type="homepage">https://github.com/acidtwin/steam-artwork-for-non-steam-games</url>
@@ -27,6 +26,12 @@
   </screenshots>
   <content_rating type="oars-1.1"/>
   <releases>
+    <release version="1.0.0" date="2026-10-23">
+      <description>
+        <p>The first release.</p>
+      </description>
+    </release>
+    <release version="1.0.0~rc1" date="2026-10-22" type="development"/>
     <release version="0.1.0" date="2026-10-19"/>
   </releases>
   <requires>

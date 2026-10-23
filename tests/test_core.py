@@ -309,3 +309,94 @@ def test_waiting_icons_belong_to_one_account(tmp_path):
     if sys.platform != "win32":
         assert stat.S_IMODE((tmp_path / "config.json").stat().st_mode) == 0o600
     assert not (tmp_path / "config.tmp").exists()
+
+
+def test_rename_keeps_the_appid(steam_root, tmp_path):
+    from conftest import make_shortcuts
+
+    from steam_artwork_finder import artwork, binvdf
+    from steam_artwork_finder.shortcuts import ShortcutsFile, legacy_appid
+
+    # An entry with no stored appid: Steam works its id out from exe + name.
+    body = b"\x01AppName\x00game.exe\x00\x01Exe\x00\"/g/Hollow Knight/game.exe\"\x00"
+    path = tmp_path / "shortcuts.vdf"
+    path.write_bytes(make_shortcuts([body]))
+    sf = ShortcutsFile(path)
+    sc = sf.shortcuts[0]
+    old_id = legacy_appid(sc.exe, sc.name)
+    assert sc.appid == old_id
+    artwork.set_name(sf, sc, "Hollow Knight")
+    again = ShortcutsFile(path).shortcuts[0]
+    assert again.name == "Hollow Knight" and again.appid == old_id
+    assert len(list(sf.backup_dir.glob("shortcuts-*.vdf"))) == 1
+    assert binvdf.loads(path.read_bytes())  # still a sound file
+
+
+def test_pending_counts_a_new_title():
+    from steam_artwork_finder.pending import Pending, Pick
+
+    p = Pending()
+    p.set_name(5, "Hollow Knight")
+    assert p and p.games() == [5] and p.count(5) == 1
+    p.set(5, "grid", Pick(None))
+    assert p.count(5) == 2 and p.games() == [5]
+    p.drop(5, "grid")
+    assert p.count(5) == 1
+    p.drop(5)
+    assert not p
+
+
+def test_finds_steam_in_every_linux_install_place(tmp_path, monkeypatch):
+    from steam_artwork_finder import steam
+
+    monkeypatch.setattr(steam.sys, "platform", "linux")
+    monkeypatch.setenv("HOME", str(tmp_path))
+    monkeypatch.delenv("XDG_DATA_HOME", raising=False)
+    monkeypatch.delenv("STEAM_DIR", raising=False)
+    homes = {
+        "debian": tmp_path / ".steam/debian-installation",
+        "snap-hidden": tmp_path / ".snap/data/steam/common/.local/share/Steam",
+        "xdg": tmp_path / "data/Steam",
+        "own": tmp_path / "MySteam",
+    }
+    for root in homes.values():
+        (root / "userdata").mkdir(parents=True)
+    monkeypatch.setenv("XDG_DATA_HOME", str(tmp_path / "data"))
+    monkeypatch.setenv("STEAM_DIR", str(homes["own"]))
+    roots = steam.find_steam_roots()
+    assert roots[0] == homes["own"].resolve()  # STEAM_DIR is the user's own choice, so it comes first
+    assert set(roots) == {r.resolve() for r in homes.values()}
+    places = {pl.short: steam.find_steam_roots(pl.candidates) for pl in steam.search_places()}
+    assert homes["snap-hidden"].resolve() in places["Snap"]
+    assert homes["debian"].resolve() in places["Steam"]
+
+
+def test_damaged_vdf_raises_vdf_error():
+    import pytest
+    from steam_artwork_finder import binvdf
+
+    with pytest.raises(binvdf.VDFError):
+        binvdf.loads(b"\x00shortcuts\x00\x000\x00\x02appid\x00\x01\x02")
+
+
+def test_damaged_config_is_kept_aside(tmp_path):
+    from steam_artwork_finder.config import Config
+
+    p = tmp_path / "config.json"
+    p.write_text("{not json")
+    cfg = Config(p)
+    assert cfg.data == {}
+    assert list(tmp_path.glob("config.json.bad-*"))
+    p.write_text("[]")
+    assert Config(p).data == {}
+
+
+def test_text_download_never_replaces_artwork(tmp_path):
+    import pytest
+    from steam_artwork_finder.artwork import SLOTS, save_asset
+    from steam_artwork_finder.shortcuts import Shortcut
+
+    sc = Shortcut("0", 123, "Game", "/bin/true", "", None)
+    with pytest.raises(ValueError):
+        save_asset(tmp_path / "grid", sc, SLOTS["grid"], b"<html>Sign in to Wi-Fi</html>", "image/png")
+    assert not list((tmp_path / "grid").glob("123*")) if (tmp_path / "grid").exists() else True

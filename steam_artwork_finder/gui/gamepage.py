@@ -8,10 +8,21 @@ import zlib
 from dataclasses import dataclass
 from html import escape
 
-from PySide6.QtCore import QEvent, QPointF, QRect, QRectF, QSize, Qt, Signal
-from PySide6.QtGui import QColor, QFont, QFontMetricsF, QLinearGradient, QPainter, QPainterPath, QPen, QPixmap
+from pathlib import Path
+
+from PySide6.QtCore import (
+    QEasingCurve, QEvent, QObject, QPoint, QPointF, QRect, QRectF, QSize, QSizeF, QStandardPaths, Qt, QTimer,
+    QVariantAnimation, Signal,
+)
+from PySide6.QtGui import (
+    QAction, QColor, QFont, QFontMetrics, QFontMetricsF, QImage, QKeySequence, QLinearGradient, QPainter, QPainterPath,
+    QPalette, QPen, QPixmap,
+)
 from PySide6.QtWidgets import (
+    QApplication,
     QBoxLayout,
+    QFileDialog,
+    QMenu,
     QLabel,
     QCheckBox,
     QFrame,
@@ -19,16 +30,20 @@ from PySide6.QtWidgets import (
     QPushButton,
     QScrollArea,
     QSizePolicy,
+    QStyle,
+    QStyleOptionButton,
+    QStylePainter,
     QVBoxLayout,
     QWidget,
 )
 
 from ..artwork import SLOTS, Slot
 from ..sgdb import Asset
-from . import icons, theme
+from ..steamstore import SteamAsset
+from . import icons, localfile, theme
 from .chrome import _Elided
 from .theme import C, q
-from .widgets import ArtView, fill_rect, label, load_pixmap, quiet_button
+from .widgets import ArtView, draw_loading, fill_rect, label, load_pixmap, pulse, quiet_button
 
 WAIT = C["wait"]
 NEW_BG = C["action"]
@@ -44,13 +59,14 @@ class SlotInfo:
 
 
 INFO = {
-    "grid": SlotInfo("Your library grid and collections.", "600 × 900", QSize(124, 186), QSize(88, 132), "No cover"),
-    "wide": SlotInfo("Recent games shelf and Big Picture.", "920 × 430", QSize(248, 116), QSize(196, 92), "No wide cover"),
-    "hero": SlotInfo("The wide image at the top of the game's page.", "1920 × 620", QSize(300, 97), QSize(240, 78), "No banner"),
-    "logo": SlotInfo("Laid over the banner on the game's page.", "Transparent PNG", QSize(300, 97), QSize(200, 76), "No logo"),
+    "grid": SlotInfo("Your library grid and collections.", "600 × 900", QSize(124, 186), QSize(80, 120), "No cover"),
+    "wide": SlotInfo("Recent games shelf and Big Picture.", "920 × 430", QSize(230, 108), QSize(196, 92), "No wide cover"),
+    "hero": SlotInfo("The wide image at the top of the game's page.", "1920 × 620", QSize(230, 74), QSize(240, 78), "No banner"),
+    "logo": SlotInfo("Laid over the banner on the game's page.", "Transparent PNG", QSize(230, 74), QSize(140, 53), "No logo"),
     "icon": SlotInfo("The game list, and desktop shortcuts.", "256 × 256", QSize(96, 96), QSize(64, 64), "No icon"),
 }
 STRIP = 6
+ART_W = max(i.art.width() for i in INFO.values())  # every row's middle column, so the strips line up
 
 
 def _alpha(name: str, a: int) -> QColor:
@@ -60,8 +76,9 @@ def _alpha(name: str, a: int) -> QColor:
     return c
 
 
-def draw_new_tag(p: QPainter, rect: QRectF, text: str = "NEW"):
-    """The blue tag in the top-left corner of a picked piece that isn't applied yet."""
+def draw_new_tag(p: QPainter, rect: QRectF, text: str = "NEW", bg: QColor | None = None):
+    """The blue tag in the top-left corner of a picked piece that isn't applied yet
+    (or, in `bg`, another tag in the same place, like "STEAM")."""
     p.save()
     f = QFont(p.font())
     f.setPointSizeF(theme.pt("tag"))
@@ -72,20 +89,57 @@ def draw_new_tag(p: QPainter, rect: QRectF, text: str = "NEW"):
     r = QRectF(rect.left() + 8, rect.top() + 8, fm.horizontalAdvance(text) + 14, fm.height() + 4)
     p.setRenderHint(QPainter.RenderHint.Antialiasing)
     p.setPen(Qt.PenStyle.NoPen)
-    p.setBrush(QColor(NEW_BG))
+    p.setBrush(bg if bg is not None else QColor(NEW_BG))
     p.drawRoundedRect(r, 2, 2)
     p.setPen(QColor("white"))
     p.drawText(r, Qt.AlignmentFlag.AlignCenter, text)
     p.restore()
 
 
+def describe(a: Asset) -> str:
+    """An option's tooltip line: its size, style and who made it."""
+    if isinstance(a, SteamAsset):
+        return f"{a.width} × {a.height} · Steam's official artwork, from the game's store page"
+    return (f"{a.width} × {a.height} · {'animated · ' if a.animated else ''}"
+            f"{a.style or 'style unknown'} · by {a.author or 'unknown'}")
+
+
+def draw_steam_tag(p: QPainter, rect: QRectF):
+    """The dark tag marking Steam's own official artwork."""
+    draw_new_tag(p, rect, "STEAM", QColor(11, 16, 22, 215))
+
+
+def _option_key(a) -> tuple:
+    """What makes two options the same one (Steam's and SteamGridDB's ids are separate)."""
+    return (type(a).__name__, a.id, a.animated)
+
+
+def _drop_view(v):
+    v.drop_motion()  # its decode, if still waiting, never runs
+    v.hide()
+    v.deleteLater()
+
+
+STEAM_WAIT_MS = 4000  # longest the strip waits for Steam's piece before showing SteamGridDB's options
+
+
 class OptionView(ArtView):
     """One option in a row's strip; says when its thumbnail arrives."""
 
     loaded = Signal()
+    official = False  # Steam's own artwork: tagged "STEAM"
+
+    def paintEvent(self, e):
+        super().paintEvent(e)
+        if self.official and not self.selected:
+            p = QPainter(self)
+            draw_steam_tag(p, QRectF(self.rect()))
 
     def set_pixmap(self, pm: QPixmap | None, backdrop: QPixmap | None = None):
         super().set_pixmap(pm, backdrop)
+        self.loaded.emit()
+
+    def frame_arrived(self):
         self.loaded.emit()
 
 
@@ -207,13 +261,16 @@ class CurrentArt(ArtView):
 
 class GhostStrip(QWidget):
     """Stands in for the option strip while there are no options: faint dashed
-    outlines in the options' shape, fading out, with the message in a pill."""
+    outlines in the options' shape, fading out, with the message in a pill. While
+    options are loading: shimmering tiles instead, as the options themselves show
+    while their pictures load, and no pill (the text is for screen readers)."""
 
     def __init__(self, thumb: QSize, parent=None):
         super().__init__(parent)
         self.thumb = thumb
         self.text = ""
         self.icon = ""
+        self.loading = False
         self.setFixedHeight(thumb.height() + 6)
         self.setMinimumWidth(120)
         self.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
@@ -221,11 +278,12 @@ class GhostStrip(QWidget):
         f.setPointSizeF(theme.pt("body"))
         self.setFont(f)
 
-    def setText(self, text: str, icon: str = ""):
+    def setText(self, text: str, icon: str = "", loading: bool = False):
         self.text = text
         self.icon = icon
+        self.loading = loading
         self.setAccessibleName(text)
-        self.setToolTip(text)
+        self.setToolTip("" if loading else text)
         self.update()
 
     def paintEvent(self, _):
@@ -235,7 +293,23 @@ class GhostStrip(QWidget):
         tw, th = self.thumb.width(), self.thumb.height()
         y = (self.height() - th) / 2
         x = 0.75
-        while x < w:
+        if self.loading:
+            phase = pulse().phase()
+            while x + tw <= w + 1:
+                a = max(0.0, 1.0 - max(0.0, x - w * 0.3) / (w * 0.7))
+                if a > 0.02:
+                    r = QRectF(x - 0.75, y, tw, th)
+                    clip = QPainterPath()
+                    clip.addRoundedRect(r, 3, 3)
+                    p.save()
+                    p.setClipPath(clip)
+                    p.setOpacity(a)
+                    draw_loading(p, r, phase)
+                    p.restore()
+                x += tw + 10
+            pulse().want(self)
+            return
+        while x + tw <= w + 1:  # whole outlines only, like the options' strip
             # fade from 100% to nothing across the strip
             a = max(0.0, 1.0 - max(0.0, x - w * 0.3) / (w * 0.7))
             p.setBrush(_alpha("raised", round(64 * a)))
@@ -263,8 +337,159 @@ class GhostStrip(QWidget):
         p.drawText(QRectF(tx, pill.y(), pill.right() - tx, ph), Qt.AlignmentFlag.AlignVCenter, text)
 
 
+class CustomImageButton(QPushButton):
+    """"Custom Image" under a row's name: use a picture from your own files.
+
+    Click it or press Enter to choose a file, Ctrl+V to paste a picture, or right-click
+    for both; a picture dropped anywhere on the row lights it up.
+    """
+
+    chosen = Signal()
+    pasted = Signal()
+
+    def __init__(self, what: str, parent=None):
+        super().__init__("Custom Image", parent)
+        self.setIcon(icons.icon("folder", 16, C["blue_ink"]))
+        self.setCursor(Qt.CursorShape.PointingHandCursor)
+        self.setSizePolicy(QSizePolicy.Policy.Maximum, QSizePolicy.Policy.Fixed)
+        self.setAccessibleName(f"Use a custom {what}")
+        self.setAccessibleDescription("Press Enter to choose a file, or Control V to paste a picture")
+        self.setToolTip(f"Use your own {what}: choose a picture from your files.\n"
+                        "You can also drop one on this row, or paste one with Ctrl+V.")
+        self.clicked.connect(self.chosen.emit)
+
+    def set_drop_hot(self, on: bool):
+        self.setText("Drop It Here" if on else "Custom Image")
+        self.setProperty("drop", "true" if on else "false")
+        self.style().unpolish(self)
+        self.style().polish(self)
+
+    def keyPressEvent(self, e):
+        if e.matches(QKeySequence.StandardKey.Paste):
+            self.pasted.emit()
+        else:
+            super().keyPressEvent(e)
+
+    def contextMenuEvent(self, e):
+        menu = QMenu(self)
+        pick = QAction("Choose File…", menu)
+        pick.triggered.connect(self.chosen.emit)
+        paste = QAction("Paste Picture", menu)
+        paste.setShortcut(QKeySequence.StandardKey.Paste)
+        paste.setEnabled(localfile.usable(QApplication.clipboard().mimeData()))
+        paste.triggered.connect(self.pasted.emit)
+        menu.addAction(pick)
+        menu.addAction(paste)
+        menu.exec(e.globalPos())
+        menu.deleteLater()
+
+
+def _soft_shadow(size: QSize, pad: int) -> QPixmap:
+    """A blurred dark rounded rect `pad` px bigger all round than `size` (like box-shadow 0 10px 30px #0008).
+
+    Drawn small and scaled up smoothly, which blurs it cheaply."""
+    k = 8
+    w, h = size.width() + 2 * pad, size.height() + 2 * pad
+    small = QImage(max(1, w // k), max(1, h // k), QImage.Format.Format_ARGB32_Premultiplied)
+    small.fill(Qt.GlobalColor.transparent)
+    p = QPainter(small)
+    p.setRenderHint(QPainter.RenderHint.Antialiasing)
+    p.setPen(Qt.PenStyle.NoPen)
+    p.setBrush(QColor(0, 0, 0, 128))
+    p.drawRoundedRect(QRectF(pad / k, pad / k, size.width() / k, size.height() / k), 1, 1)
+    p.end()
+    mid = small.scaled(small.width() * 2, small.height() * 2, Qt.AspectRatioMode.IgnoreAspectRatio,
+                       Qt.TransformationMode.SmoothTransformation)
+    return QPixmap.fromImage(mid.scaled(w, h, Qt.AspectRatioMode.IgnoreAspectRatio,
+                                        Qt.TransformationMode.SmoothTransformation))
+
+
+class _Flight(QWidget):
+    """A picked option's picture flying from its tile into the piece in use, growing as it goes.
+
+    It's an overlay on the page, so it can cross from the strip to the piece; until it lands
+    it covers the piece with what was there before (`under`), then it goes and the pick shows.
+    """
+
+    MS = 320
+    PAD = 30  # room for the shadow
+    ROUND = 3
+
+    def __init__(self, host: QWidget, tile: QWidget, art: QWidget, picture: QPixmap, under: QPixmap):
+        super().__init__(host)
+        self.setAttribute(Qt.WidgetAttribute.WA_TransparentForMouseEvents)
+        self.art, self.picture, self.under = art, picture, under
+        self.src = QRectF(QPointF(tile.mapTo(host, QPoint(0, 0))), QSizeF(tile.size()))
+        self.dest = self._dest() or self.src
+        self.shadow = _soft_shadow(art.size(), self.PAD)
+        self.clip = QRectF(host.rect())
+        vp = host.scroll.viewport() if isinstance(getattr(host, "scroll", None), QScrollArea) else None
+        if vp is not None:  # the page's scrolling body: don't draw over anything outside it
+            self.clip = QRectF(QPointF(vp.mapTo(host, QPoint(0, 0))), QSizeF(vp.size()))
+        self.t = 0.0
+        self._landed = False
+        self.setGeometry(host.rect())
+        self.raise_()
+        self.show()
+        art.destroyed.connect(self.land)  # the row went mid-flight
+        self.anim = QVariantAnimation(self, startValue=0.0, endValue=1.0, duration=self.MS,
+                                      easingCurve=QEasingCurve.Type.OutCubic)
+        self.anim.valueChanged.connect(self._step)
+        self.anim.finished.connect(self.land)
+        self.anim.start()
+
+    def _dest(self) -> QRectF | None:
+        """Where the piece is now (the page may scroll mid-flight)."""
+        try:
+            return QRectF(QPointF(self.art.mapTo(self.parentWidget(), QPoint(0, 0))), QSizeF(self.art.size()))
+        except RuntimeError:
+            return None
+
+    def _area(self) -> QRect:
+        m = self.PAD + 12
+        return self.src.united(self.dest).adjusted(-m, -m, m, m + 10).toAlignedRect()
+
+    def _step(self, t):
+        before = self._area()
+        self.t = float(t)
+        self.dest = self._dest() or self.dest
+        self.update(before.united(self._area()))
+
+    def land(self):
+        """End the flight now: the flyer goes and the piece shows the pick."""
+        if self._landed:
+            return
+        self._landed = True
+        try:
+            self.anim.stop()
+            self.hide()
+            self.deleteLater()
+        except RuntimeError:  # already gone with the page
+            pass
+
+    def paintEvent(self, _):
+        if self._landed:
+            return
+        p = QPainter(self)
+        p.setRenderHint(QPainter.RenderHint.Antialiasing)
+        p.setRenderHint(QPainter.RenderHint.SmoothPixmapTransform)
+        p.setClipRect(self.clip)
+        d, s, t = self.dest, self.src, self.t
+        p.drawPixmap(d, self.under, QRectF(self.under.rect()))  # the piece as it was, till the pick lands
+        r = QRectF(s.x() + (d.x() - s.x()) * t, s.y() + (d.y() - s.y()) * t,
+                   s.width() + (d.width() - s.width()) * t, s.height() + (d.height() - s.height()) * t)
+        scale = r.width() / max(1.0, d.width())
+        pad = self.PAD * scale
+        p.setOpacity(min(1.0, (1.0 - t) / 0.25))  # the shadow settles as it lands
+        p.drawPixmap(r.adjusted(-pad, -pad + 10, pad, pad + 10), self.shadow, QRectF(self.shadow.rect()))
+        p.setOpacity(1.0)
+        clip = QPainterPath()
+        clip.addRoundedRect(r, self.ROUND, self.ROUND)
+        p.setClipPath(clip, Qt.ClipOperation.IntersectClip)
+        p.drawPixmap(r, self.picture, QRectF(self.picture.rect()))
+
+
 class ArtworkRow(QWidget):
-    choose = Signal(object, object)  # slot, Asset (unused: options stage through win.stage_pick)
     open_tray = Signal(object)  # slot
     thumb_loaded = Signal()  # the first option's thumbnail changed
 
@@ -288,6 +513,11 @@ class ArtworkRow(QWidget):
         left.addLayout(head)
         left.addWidget(label(info.where, "muted", wrap=True))
         left.addWidget(label(info.size, "faint"))
+        self.file_btn = CustomImageButton(slot.label.lower())
+        self.file_btn.chosen.connect(self.choose_file)
+        self.file_btn.pasted.connect(self.paste_file)
+        left.addSpacing(8)
+        left.addWidget(self.file_btn, 0, Qt.AlignmentFlag.AlignLeft)
         self.on_banner = None
         self.missing.setAccessibleName("Missing")
         if slot.key == "logo":
@@ -319,8 +549,9 @@ class ArtworkRow(QWidget):
         mid.setContentsMargins(0, 0, 0, 0)
         mw = QWidget()
         mw.setLayout(mid)
-        # Wide enough for the longest caption, semibold, at any font size.
-        mw.setFixedWidth(max(info.art.width(), 124, round(theme.text_width("Removed when you apply") * 0.98)))
+        # As wide as the widest piece in every row, so the strips start in line, and wide
+        # enough for the longest caption, semibold, at any font size.
+        mw.setFixedWidth(max(ART_W, round(theme.text_width("Removed when you apply") * 0.98)))
         self.mid_col = mw
         lay.addWidget(mw)
 
@@ -336,8 +567,14 @@ class ArtworkRow(QWidget):
         self.see_all.setAccessibleName(f"See all {slot.label.lower()} options")
         top.addWidget(self.see_all)
         right.addLayout(top)
+        body = QHBoxLayout()
+        body.setSpacing(10)
+        options = QVBoxLayout()
+        options.setSpacing(0)
+        options.setContentsMargins(0, 0, 0, 0)
+        body.addLayout(options, 1)
         self.message = GhostStrip(info.thumb)
-        right.addWidget(self.message)
+        options.addWidget(self.message)
         self.strip_host = QWidget()
         self.strip = QHBoxLayout(self.strip_host)
         self.strip.setContentsMargins(0, 0, 0, 4)
@@ -353,14 +590,25 @@ class ArtworkRow(QWidget):
         self._viewport = scroll.viewport()
         self._viewport.installEventFilter(self)
         self.scroll = scroll
-        right.addWidget(scroll)
+        options.addWidget(scroll)
+        right.addLayout(body)
         right.addStretch(1)
+        self.setAcceptDrops(True)
         lay.addLayout(right, 1)
 
         self.assets: list[Asset] = []
+        self.steam_assets: list[Asset] = []
+        # Steam's piece goes first, so the strip waits for Steam's answer (up to STEAM_WAIT_MS)
+        # before showing: options showing and then shuffling along when it came looked unsettled.
+        self.steam_waiting = False
+        self._steam_cap = QTimer(self, singleShot=True, interval=STEAM_WAIT_MS)
+        self._steam_cap.timeout.connect(self._steam_late)
+        self._sgdb: tuple = ("loading",)
         self.thumbs: list[ArtView] = []
         self.total = 0
         self._previewing = False
+        self.gen = 0  # counts option loads, so a late answer to an earlier one is ignored
+        self._flight: _Flight | None = None  # a pick flying into the piece
 
     def eventFilter(self, obj, e):
         if e.type() == QEvent.Type.Resize and obj is self._viewport:
@@ -431,29 +679,48 @@ class ArtworkRow(QWidget):
         self.caption.setStyleSheet(style.get(tone, ""))
 
     def show_current(self):
+        self.land()  # anything else changing the piece doesn't wait for a pick in flight
         sc = self.win.current_shortcut()
         path = self.win.slot_path(sc, self.slot)
         pick = self.pick()
         self.missing.setVisible(path is None and (pick is None or pick.clears))
         backdrop = self._backdrop(sc)
+        spec, animated = (None, None), False
         if pick is not None and pick.clears:
             pm = None
             backdrop = None
             self._set_caption("Removed when you apply" if path else "Nothing set", "rm" if path else "")
         elif pick is not None:
             pm = self._pick_pixmap(sc, self.slot.key, pick)
-            self._set_caption("Not applied yet", "new")
+            self._set_caption("From the game's .exe · not applied yet" if pick.asset.style == "exe"
+                              else "Not applied yet", "new")
+            spec = self.win.motion_spec(pick.asset, self.art.size(), crop=not self.art.checker)
+            animated = pick.asset.animated
         else:
             pm = load_pixmap(path) if path else None
+            spec = self.win.file_motion_spec(path, self.art.size())
+            animated = spec[0] is not None
             applied = self.win.config.get_applied(sc.appid, self.slot.key)
             if path is None:
                 self._set_caption("Nothing set")
+            elif applied and applied.get("from_exe"):
+                self._set_caption("In use · from the game's .exe")
+            elif applied and applied.get("file"):
+                self._set_caption("In use · custom image")
+            elif applied and applied.get("steam"):
+                self._set_caption("In use · from Steam")
             elif applied and applied.get("author"):
                 self._set_caption(f"In use · by {applied['author']}")
             else:
                 self._set_caption("In use")
         self.art.new = pick is not None and not pick.clears
-        self.art.set_pixmap(pm, backdrop)
+        self.art.animated = animated
+        playing = spec[0] is not None and spec[0] == self.art.motion_spec[0]
+        self.art.set_motion(*spec)
+        if not playing or self.art.pixmap.isNull():
+            self.art.set_pixmap(pm, backdrop)
+        else:  # playing: keep the frame on show, but take a new banner behind a logo
+            self.art.set_pixmap(self.art.pixmap, backdrop)
         self.art.set_clearable(pick is not None and not pick.clears or (pick is None and path is not None))
         self.art.describe(f"{self.slot.label}: {self.caption.text()}")
         applied = self.win.config.get_applied(sc.appid, self.slot.key)
@@ -461,8 +728,7 @@ class ArtworkRow(QWidget):
             chosen = pick is not None and not pick.clears and pick.asset.id == a.id
             view.selected = chosen
             view.badge = pick is None and bool(applied and applied.get("id") == a.id and path is not None)
-            view.setToolTip(f"{a.width} × {a.height} · {a.style or 'style unknown'} · by {a.author or 'unknown'}\n"
-                            + ("Click to un-pick it" if chosen else "Click to pick it"))
+            view.setToolTip(describe(a) + "\n" + ("Click to un-pick it" if chosen else "Click to pick it"))
             view.update()
 
     def clear_piece(self):
@@ -477,62 +743,215 @@ class ArtworkRow(QWidget):
 
     def _option_clicked(self, a: Asset):
         pick = self.pick()
+        self.land()
+        flight = None
+        sc = self.win.current_shortcut()
+        applied = self.win.config.get_applied(sc.appid, self.slot.key) if sc else None
+        in_use = bool(applied and applied.get("id") == a.id and self.win.slot_path(sc, self.slot) is not None)
+        view = next((v for v, b in zip(self.thumbs, self.assets) if b is a), None)
         if pick is not None and not pick.clears and pick.asset.id == a.id:
             self.win.unstage(self.slot)
+        elif in_use:
+            # Already on disk: going back to it from a waiting pick flies it back in;
+            # with nothing waiting it's the piece already, so nothing happens.
+            if pick is not None:
+                flight = self._ready_flight(view) if view is not None else None
+                self.win.unstage(self.slot)
         else:
+            flight = self._ready_flight(view) if view is not None else None
             self.win.stage_pick(self.slot, a)
         self.show_current()
+        if flight is not None:
+            self._flight = _Flight(*flight)
+
+    def land(self):
+        """Finish a pick still flying into the piece, at once."""
+        f, self._flight = self._flight, None
+        if f is not None:
+            f.land()
+
+    def _host(self) -> QWidget:
+        """The page the flyer is drawn on: the game page if the row is on one."""
+        w = self.parentWidget()
+        while w is not None and not isinstance(w, GamePage):
+            w = w.parentWidget()
+        return w or self.window()
+
+    def _ready_flight(self, view: ArtView) -> tuple | None:
+        """Get ready to fly a copy of the picked option's picture from its tile into the piece
+        (taken before the pick is staged, so the piece can be seen as it was till it lands).
+
+        Only for a pick made here in the strip, with the tile and the piece both on show;
+        otherwise (None) the piece just changes, as it always has."""
+        if (not self.isVisible() or not view.isVisible() or view.pixmap.isNull()
+                or view.visibleRegion().isEmpty() or self.art.visibleRegion().isEmpty()):
+            return None
+        dpr = self.devicePixelRatioF()
+        if self.art.checker:  # a logo: as its tile shows it, on the checks
+            picture = view.grab()
+        else:  # the real picture, sharp at the piece's size (a still of an animated one)
+            picture = fill_rect(view.pixmap, self.art.size(), dpr)
+        return self._host(), view, self.art, picture, self.art.grab()
+
+    # -- your own files ------------------------------------------------------
+
+    def choose_file(self):
+        start = self.win.config.data.get("last_image_folder", "")
+        if not start or not Path(start).is_dir():
+            start = QStandardPaths.writableLocation(QStandardPaths.StandardLocation.PicturesLocation)
+        path, _ = QFileDialog.getOpenFileName(self.window(), f"Choose a {self.slot.label.lower()}", start,
+                                              localfile.FILTER)
+        if path:
+            self.win.stage_file(self.slot, path=path)
+
+    def paste_file(self):
+        src = localfile.source(QApplication.clipboard().mimeData())
+        if src is None:
+            self.win.toast.show_message("There's no picture on the clipboard to paste.")
+            return
+        self.win.stage_file(self.slot, **src)
+
+    def dragEnterEvent(self, e):
+        if localfile.usable(e.mimeData()) and self.win.current_shortcut() is not None:
+            e.acceptProposedAction()
+            self.file_btn.set_drop_hot(True)
+        else:
+            e.ignore()
+
+    def dragLeaveEvent(self, e):
+        self.file_btn.set_drop_hot(False)
+
+    def dropEvent(self, e):
+        self.file_btn.set_drop_hot(False)
+        src = localfile.source(e.mimeData())
+        if src is None:
+            e.ignore()
+            return
+        e.acceptProposedAction()
+        self.win.stage_file(self.slot, **src)
 
     def _toggle_banner(self, on: bool):
         self.win.config.data["logo_on_banner"] = on
         self.win.config.save()
         self.show_current()
+        self.win.page._banner()  # the logo on the page's own banner too
 
     # -- options -----------------------------------------------------------
 
     def set_message(self, text: str, icon: str = "info"):
+        """What SteamGridDB has to say instead of options; Steam's own still show beside it."""
+        self._sgdb = ("message", text, icon)
+        self._render()
+
+    def set_loading(self):
+        """Options are on their way; results from any earlier request are now stale (see gen)."""
+        self.gen += 1
+        self._sgdb = ("loading",)
+        self._render()
+
+    def set_assets(self, assets: list[Asset], more: bool):
+        self._sgdb = ("assets", assets, more)
+        self._render()
+
+    def wait_for_steam(self):
+        """Steam's piece is being looked up: hold the options back until it's known, so they show once, in order."""
+        self.steam_assets = []
+        self.steam_waiting = True
+        self._steam_cap.start()
+        self._render()
+
+    def _steam_late(self):
+        self.steam_waiting = False  # Steam's slow to answer: don't keep SteamGridDB's options waiting
+        self._render()
+
+    def set_steam(self, assets: list[Asset]):
+        """Steam's official artwork for this piece (none, or one), shown first."""
+        self.steam_waiting = False
+        self._steam_cap.stop()
+        self.steam_assets = list(assets)
+        self._render()
+
+    def _render(self):
+        kind = self._sgdb[0]
+        if self.steam_waiting and kind in ("assets", "loading"):
+            self._show_message("Loading options…", "", loading=True)
+            return
+        sgdb = self._sgdb[1] if kind == "assets" else []
+        if self.steam_assets or sgdb:
+            self._show_assets(sgdb, kind == "assets" and self._sgdb[2])
+        elif kind == "assets":
+            self._show_message(f"No {self.slot.label.lower()} on SteamGridDB yet.")
+        elif kind == "loading":
+            self._show_message("Loading options from SteamGridDB…", "", loading=True)
+        else:
+            self._show_message(self._sgdb[1], self._sgdb[2])
+
+    def _show_message(self, text: str, icon: str = "info", loading: bool = False):
         self._clear_strip()
         self.count.setText("")
         self.count.hide()
         self.see_all.hide()
         self.scroll.hide()
-        self.message.setText(text, icon)
+        self.message.setText(text, icon, loading)
         self.message.show()
         self._right.setStretch(0, 1)
 
-    def set_loading(self):
-        self.set_message("Loading options from SteamGridDB…", "")
-
-    def set_assets(self, assets: list[Asset], more: bool):
-        self._clear_strip()
-        self.assets = assets[:STRIP]
-        n = len(assets)
-        if n == 0:
-            self.set_message(f"No {self.slot.label.lower()} on SteamGridDB yet.")
-            return
+    def _show_assets(self, sgdb: list[Asset], more: bool):
+        # Options already showing are kept as they are (picture, animation and all) rather than
+        # made again: Steam's piece and SteamGridDB's arrive separately, and a strip rebuilt for
+        # each made every picture load again (shimmering, showing, shimmering...).
+        keep = {_option_key(a): v for v, a in zip(self.thumbs, self.assets)}
+        first = self.thumbs[0] if self.thumbs else None
+        self._clear_strip(keep=set(map(id, keep.values())))
+        steam = self.steam_assets
+        self.assets = (steam + sgdb)[:STRIP]
+        n = len(sgdb)
         self.message.hide()
         self._right.setStretch(0, 0)
         self.count.show()
         self.scroll.show()
-        self.total = n if not more else 50
+        self.total = len(steam) + (n if not more else 50)
         shown = f"{n}+" if more else str(n)
-        self.count.setText(f"<b>{shown} option{'s' if n != 1 else ''}</b> on SteamGridDB")
-        self.see_all.setText(f"See all {shown}")
+        parts = []
+        if steam:
+            parts.append("<b>Official</b> from Steam")
+        kind = self._sgdb[0]
+        if kind == "assets" and n:
+            parts.append(f"<b>{shown} option{'s' if n != 1 else ''}</b> on SteamGridDB")
+        elif kind == "assets":
+            parts.append("none on SteamGridDB yet")
+        elif kind == "loading":
+            parts.append("loading SteamGridDB…")
+        self.count.setText(" · ".join(parts))
+        self.count.setToolTip("")
+        if kind == "message":
+            self.count.setToolTip(self._sgdb[1])
+        total = f"{self.total}+" if more else str(self.total)
+        self.see_all.setText(f"See all {total}")
         self.see_all.show()
         info = INFO[self.slot.key]
         for i, a in enumerate(self.assets):
-            v = OptionView(info.thumb, "", checker=self.slot.key == "logo")
-            v.describe(f"{self.slot.label} option {i + 1} of {len(self.assets)}, by {a.author or 'unknown'}"
-                       + (f", {a.style}" if a.style else ""))
-            v.setAccessibleDescription("Press Enter to pick it")
-            v.clicked.connect(lambda a=a: self._option_clicked(a))
-            v.hovered.connect(lambda on, v=v: self._preview(on, v))
-            if i == 0:
-                v.loaded.connect(self.thumb_loaded.emit)
-            v.loaded.connect(lambda a=a: self._thumb_arrived(a))
+            v = keep.pop(_option_key(a), None)
+            new = v is None
+            if new:
+                v = OptionView(info.thumb, "", checker=self.slot.key == "logo")
+                v.animated = a.animated
+                v.official = isinstance(a, SteamAsset)
+                v.setAccessibleDescription("Press Enter to pick it")
+                v.clicked.connect(lambda a=a: self._option_clicked(a))
+                v.loaded.connect(lambda v=v: self.thumbs and self.thumbs[0] is v and self.thumb_loaded.emit())
+                v.loaded.connect(lambda a=a: self._thumb_arrived(a))
+            v.describe(f"{self.slot.label} option {i + 1} of {len(self.assets)}, "
+                       + ("Steam's official artwork" if v.official else f"by {a.author or 'unknown'}")
+                       + (", animated" if a.animated else "") + (f", {a.style}" if a.style else ""))
             self.strip.insertWidget(self.strip.count() - 1, v)
             self.thumbs.append(v)
-            self.win.load_thumb(a, v)
+            if new:
+                self.win.load_thumb(a, v)
+        for v in keep.values():  # kept aside but no longer shown
+            _drop_view(v)
+        if (self.thumbs[0] if self.thumbs else None) is not first:
+            self.thumb_loaded.emit()
         self._fit()
         self.show_current()
 
@@ -544,26 +963,17 @@ class ArtworkRow(QWidget):
     def first_thumb(self) -> QPixmap | None:
         return self.thumbs[0].pixmap if self.thumbs and not self.thumbs[0].pixmap.isNull() else None
 
-    def _preview(self, on: bool, view: ArtView):
-        if on and not view.pixmap.isNull():
-            backdrop = self.art.backdrop if self.slot.key == "logo" else None
-            self.art.new = False
-            self.art.set_pixmap(view.pixmap, backdrop)
-            self._set_caption("Previewing", "preview")
-            self._previewing = True
-        elif self._previewing:
-            self._previewing = False
-            self.show_current()
-
-    def _clear_strip(self):
+    def _clear_strip(self, keep: set[int] = frozenset()):
+        """Empty the strip; views whose id() is in `keep` are only taken out, to be put back."""
+        self.land()
         had = bool(self.thumbs)
         for v in self.thumbs:
             self.strip.removeWidget(v)
-            v.hide()
-            v.deleteLater()
+            if id(v) not in keep:
+                _drop_view(v)
         self.thumbs = []
         self.assets = []
-        if had:
+        if had and not keep:
             self.thumb_loaded.emit()
 
 
@@ -578,6 +988,9 @@ class CoverThumb(QWidget):
         self._scaled: tuple | None = None  # (pixmap key, dpr, the pixmap cropped to fit)
 
     def set_pixmap(self, pm: QPixmap | None, glyph: str = ""):
+        if glyph == self.glyph and (pm is self.pixmap or pm is not None and self.pixmap is not None
+                                    and pm.cacheKey() == self.pixmap.cacheKey()):
+            return  # the same picture (a refresh): keep it scaled
         self.pixmap = pm
         self.glyph = glyph
         self._scaled = None
@@ -605,7 +1018,44 @@ class CoverThumb(QWidget):
                 icons.draw(p, self.glyph, QRect((self.width() - 18) // 2, (self.height() - 18) // 2, 18, 18), q("text3"))
 
 
-BANNER_H = 210
+class _Layer(QObject):
+    """One animated picture on the match card (its banner, logo or cover), played only while
+    the card is on show; `on_frame` takes each picture as it's due."""
+
+    def __init__(self, card: QWidget, on_frame):
+        super().__init__(card)
+        self.card, self.on_frame = card, on_frame
+        self.key = None
+        self.m = None
+
+    def set(self, key=None, factory=None) -> bool:
+        """Play this (`factory()` makes the Motion; no key stops). False when it's already playing."""
+        if key is not None and key == self.key:
+            return False
+        if self.m is not None:
+            self.m.retire()  # nothing it was still decoding reaches the card
+            self.m = None
+        self.key = key if factory is not None else None
+        if self.key is not None:
+            self.m = factory()
+            self.m.frame.connect(self.on_frame)
+            if self.card.isVisible():
+                self.m.start()
+        return True
+
+    def start(self):
+        if self.m is not None:
+            self.m.start()
+
+    def stop(self):
+        if self.m is not None:
+            self.m.stop()
+
+
+BANNER_H = 280  # tall enough for a game's logo to show its detail, as on Steam's game page
+# Frames kept for the page's own banner: it's shown big, so its frames are big, and a
+# smaller budget would drop so many that it stutters. Still one decode at a time.
+CARD_BUDGET = 96 * 1024 * 1024
 COMPACT_GAP = 12  # above the buttons when they move to a row of their own (the banner grows to fit)
 INFO_MIN = 280  # the least room for the name and match line beside the buttons
 # Colour sweeps for a game with no banner yet (dark, deep, bright, light), picked by name.
@@ -622,6 +1072,56 @@ BLANK_BANNERS = (
 )
 
 
+class GetAllButton(QPushButton):
+    """Get All Artwork, with a small ANIMATED tag on its right while Get All prefers animated artwork."""
+
+    def __init__(self, parent=None):
+        super().__init__("Get All Artwork", parent)
+        self.animated = False
+
+    def set_animated(self, on: bool):
+        if on == self.animated:
+            return
+        self.animated = on
+        self.setAccessibleName("Get All Artwork, animated" if on else "Get All Artwork")
+        self.updateGeometry()
+        self.update()
+
+    def _tag(self) -> tuple[QFont, int]:
+        f = QFont(self.font())
+        f.setPointSizeF(theme.pt("tag"))
+        f.setWeight(QFont.Weight.Bold)
+        f.setLetterSpacing(QFont.SpacingType.AbsoluteSpacing, 0.6)
+        return f, QFontMetrics(f).horizontalAdvance("ANIMATED") + 12
+
+    def sizeHint(self):
+        size = super().sizeHint()
+        return size + QSize(self._tag()[1] + 8, 0) if self.animated else size
+
+    def minimumSizeHint(self):
+        return self.sizeHint()
+
+    def paintEvent(self, e):
+        if not self.animated:
+            return super().paintEvent(e)
+        f, w = self._tag()
+        opt = QStyleOptionButton()
+        self.initStyleOption(opt)
+        p = QStylePainter(self)
+        p.drawControl(QStyle.ControlElement.CE_PushButtonBevel, opt)
+        opt.rect = self.rect().adjusted(0, 0, -(w + 8), 0)
+        p.drawControl(QStyle.ControlElement.CE_PushButtonLabel, opt)
+        ink = self.palette().color(QPalette.ColorRole.ButtonText)
+        tag = QRectF(self.width() - w - 12, (self.height() - 18) / 2, w, 18)
+        p.setRenderHint(QPainter.RenderHint.Antialiasing)
+        p.setPen(Qt.PenStyle.NoPen)
+        p.setBrush(QColor(0, 0, 0, 72))
+        p.drawRoundedRect(tag, 2, 2)
+        p.setPen(ink)
+        p.setFont(f)
+        p.drawText(tag, Qt.AlignmentFlag.AlignCenter, "ANIMATED")
+
+
 class MatchCard(QWidget):
     """The top of a game page, like a Steam game page: the game's banner fading into the page,
     with its cover, its name in Steam, which SteamGridDB game the artwork comes from, and the
@@ -632,7 +1132,11 @@ class MatchCard(QWidget):
     add_key = Signal()
     home = Signal()
     get_all = Signal()
+    get_menu = Signal(object)  # the arrow beside Get All Artwork, to open its still/animated menu under
     apply = Signal()
+    rename = Signal()
+    unrename = Signal()
+    resized = Signal()
 
     def __init__(self, parent=None):
         super().__init__(parent)
@@ -640,6 +1144,10 @@ class MatchCard(QWidget):
         self.banner: QPixmap | None = None
         self.blurred = False
         self._scaled: tuple | None = None
+        self.logo: QPixmap | None = None  # laid over the banner, as on Steam's game page
+        self._logo_scaled: tuple | None = None
+        self.layers = {"banner": _Layer(self, self._banner_frame), "logo": _Layer(self, self._logo_frame),
+                       "cover": _Layer(self, lambda pm: self.cover.set_pixmap(pm))}
         self.setFixedHeight(BANNER_H)
         outer = QVBoxLayout(self)
         outer.setContentsMargins(24, 10, 24, 16)  # in line with the rows below
@@ -682,7 +1190,9 @@ class MatchCard(QWidget):
         self.meta.setContentsMargins(0, 4, 0, 5)  # where the old one-line row with a button put it
         self.meta.setTextInteractionFlags(Qt.TextInteractionFlag.LinksAccessibleByMouse
                                           | Qt.TextInteractionFlag.LinksAccessibleByKeyboard)
-        self.meta.linkActivated.connect(lambda _href: self.change.emit())
+        self.meta.linkActivated.connect(lambda href: (self.confirm if href == "confirm" else self.change).emit())
+        self._match = ("", "", 0)
+        self._steam = ("off", "")
         info.addWidget(self.meta)
         row.addLayout(info, 1)
 
@@ -690,21 +1200,43 @@ class MatchCard(QWidget):
         acts = QHBoxLayout(self.acts)
         acts.setContentsMargins(0, 0, 0, 0)
         acts.setSpacing(8)
-        self.yes_btn = QPushButton("Yes, That's It")
-        self.yes_btn.setProperty("kind", "confirm")
-        self.yes_btn.setAccessibleDescription("Keep this SteamGridDB game as the match")
-        self.yes_btn.clicked.connect(self.confirm.emit)
-        acts.addWidget(self.yes_btn)
         self.key_btn = QPushButton("Add API Key")
         self.key_btn.setProperty("kind", "confirm")
         self.key_btn.setAccessibleDescription("Add a free SteamGridDB API key")
         self.key_btn.clicked.connect(self.add_key.emit)
         acts.addWidget(self.key_btn)
-        self.get_btn = QPushButton("Get All Artwork")
-        self.get_btn.setObjectName("bannerget")
+        # A game stuck with a title like "game.exe" is offered its SteamGridDB name.
+        self.rename_btn = QPushButton()
+        self.rename_btn.setProperty("kind", "confirm")
+        self.rename_btn.clicked.connect(self.rename.emit)
+        self.rename_btn.hide()
+        acts.addWidget(self.rename_btn)
+        self.unrename_btn = QPushButton("Keep Old Name")
+        self.unrename_btn.setObjectName("bannerghost")
+        self.unrename_btn.clicked.connect(self.unrename.emit)
+        self.unrename_btn.hide()
+        acts.addWidget(self.unrename_btn)
+        # Get All Artwork is a split button: its arrow chooses still or animated artwork.
+        get_box = QWidget()
+        gl = QHBoxLayout(get_box)
+        gl.setContentsMargins(0, 0, 0, 0)
+        gl.setSpacing(1)
+        self.get_btn = GetAllButton()
+        self.get_btn.setObjectName("bannerget")  # or "bannerghost" while something else comes first (_style_get)
+        self.get_btn.setProperty("split", "main")
         self.get_btn.setIcon(icons.icon("download", 15, "white"))
         self.get_btn.clicked.connect(self.get_all.emit)
-        acts.addWidget(self.get_btn)
+        gl.addWidget(self.get_btn)
+        self.get_arrow = QPushButton()
+        self.get_arrow.setObjectName("bannerget")
+        self.get_arrow.setProperty("split", "arrow")
+        self.get_arrow.setIcon(icons.icon("chevron-down", 12, "white"))
+        self.get_arrow.setToolTip("Choose still or animated artwork for Get All")
+        self.get_arrow.setAccessibleName("Get All Artwork options")
+        self.get_arrow.setAccessibleDescription("Choose whether Get All Artwork takes still or animated artwork")
+        self.get_arrow.clicked.connect(lambda: self.get_menu.emit(self.get_arrow))
+        gl.addWidget(self.get_arrow)
+        acts.addWidget(get_box)
         self.apply_btn = QPushButton("Apply")
         self.apply_btn.setProperty("kind", "go")
         self.apply_btn.clicked.connect(self.apply.emit)
@@ -716,14 +1248,20 @@ class MatchCard(QWidget):
         self.setStyleSheet(f"""
             #bannerback {{ background: transparent; color: white; font-weight: 600; padding: 0 6px;
                            min-height: 28px; text-align: left; }}
-            #bannerback:hover {{ background: rgba(0,0,0,.25); }}
-            #bannerghost {{ background: rgba(23,26,33,.72); color: {C['text']}; }}
-            #bannerghost:hover {{ background: rgba(61,76,94,.9); }}
-            #bannerghost:disabled {{ background: rgba(23,26,33,.5); color: {C['text3']}; }}
-            #bannerget {{ background: {C['get']}; color: white; }}
-            #bannerget:hover {{ background: {C['get_hover']}; }}
-            #bannerget:disabled {{ background: rgba(23,26,33,.5); color: {C['text3']}; }}
-            QPushButton[kind="go"]:disabled {{ background: rgba(23,26,33,.5); color: {C['text3']}; }}
+            #bannerback:hover {{ background: transparent; color: {C['fade_ink']}; }}
+            #bannerghost {{ background: rgba(0,0,0,.5); color: white; }}
+            #bannerghost:hover {{ background: {theme.grad('fade_a', 'fade_b')}; }}
+            #bannerghost:pressed {{ background: {theme.grad('fade_down_a', 'fade_down_b')}; }}
+            #bannerget {{ background: {theme.grad('get_a', 'get_b')}; color: {C['get_ink']}; font-weight: 700; }}
+            #bannerget:hover {{ background: {theme.grad('get_hot_a', 'get_hot_b')}; color: white; }}
+            #bannerget:pressed {{ background: {theme.grad('get_down_a', 'get_down_b')}; color: white; }}
+            #bannerghost:disabled, #bannerget:disabled, QPushButton[kind="go"]:disabled {{
+                background: rgba(23,26,33,.5); color: {C['text3']}; }}
+            #bannerghost[open="true"] {{ background: {theme.grad('fade_down_a', 'fade_down_b')}; }}
+            #bannerget[open="true"] {{ background: {theme.grad('get_down_a', 'get_down_b')}; }}
+            QPushButton[split="main"] {{ border-top-right-radius: 0; border-bottom-right-radius: 0; }}
+            QPushButton[split="arrow"] {{ border-top-left-radius: 0; border-bottom-left-radius: 0;
+                                          min-width: 32px; max-width: 32px; padding: 0; }}
         """)
 
     def set_game(self, name: str):
@@ -732,11 +1270,42 @@ class MatchCard(QWidget):
         self.title.setAccessibleName(name)
         self.update()  # a game with no banner gets its own colours
 
+    def set_rename(self, old: str, suggest: str | None, staged: bool):
+        """Offer to retitle a game called `old` to `suggest`, or (`staged`) to take that back."""
+        self.unrename_btn.setVisible(staged)
+        self.unrename_btn.setToolTip(f"Keep the name “{old}”")
+        self.unrename_btn.setAccessibleDescription(f"Keep the name {old} instead")
+        self.rename_btn.setVisible(bool(suggest) and not staged)
+        if suggest:
+            short = QFontMetricsF(self.rename_btn.font()).elidedText(suggest, Qt.TextElideMode.ElideRight, 220)
+            self.rename_btn.setText(f"Rename to {short}")
+            self.rename_btn.setToolTip(f"“{old}” doesn't say which game this is. "
+                                       f"Steam will call it “{suggest}” once you apply.")
+            self.rename_btn.setAccessibleDescription(f"Rename {old} to {suggest} in Steam when you apply")
+        self._fit()
+
+    def set_get_animated(self, on: bool):
+        """Show on Get All Artwork whether it takes animated artwork."""
+        self.get_btn.set_animated(on)
+        self._fit()
+
     def set_actions(self, can_get: bool, changes: int, busy: bool):
         self.get_btn.setEnabled(can_get and not busy)
+        self.get_arrow.setEnabled(can_get and not busy)
         self.apply_btn.setText(f"Apply ({changes} Change{'' if changes == 1 else 's'})" if changes else "Apply")
         self.apply_btn.setEnabled(bool(changes) and not busy)
+        self._style_get()
         self._fit()
+
+    def _style_get(self):
+        """One filled button at a time: Get All Artwork is green only when it's the one thing to do,
+        and a quiet ghost while there are changes to apply or a match to check."""
+        name = "bannerghost" if self.apply_btn.isEnabled() or self.state in ("check", "key") else "bannerget"
+        if self.get_btn.objectName() != name:
+            for b in (self.get_btn, self.get_arrow):
+                b.setObjectName(name)
+                b.style().unpolish(b)
+                b.style().polish(b)
 
     def _fit(self):
         """Put the buttons on a row of their own, under the cover and name, when they don't fit beside them."""
@@ -758,45 +1327,129 @@ class MatchCard(QWidget):
             self.row.addWidget(self.acts, 0, Qt.AlignmentFlag.AlignBottom)
         self.setFixedHeight(BANNER_H + (COMPACT_GAP + self.apply_btn.sizeHint().height() if compact else 0))
 
-    def set_banner(self, pm: QPixmap | None, blurred: bool = False):
-        """The game's banner, or (blurred) its cover when it has no banner to show yet."""
+    def set_banner(self, pm: QPixmap | None, blurred: bool = False, spec=(None, None)):
+        """The game's banner, or (blurred) its cover when it has no banner to show yet. `spec`
+        (key, factory) plays an animated banner; the same one again carries on playing."""
+        if not self.layers["banner"].set(*spec) and self.banner is not None:
+            return  # playing on: keep the frame on show
         if pm is self.banner and blurred == self.blurred:
             return
         self.banner, self.blurred, self._scaled = pm, blurred, None
         self.update()
 
+    def _banner_frame(self, pm: QPixmap):
+        self.banner, self.blurred, self._scaled = pm, False, None
+        self.update()
+
+    def set_logo(self, pm: QPixmap | None, spec=(None, None)):
+        if not self.layers["logo"].set(*spec) and self.logo is not None:
+            return
+        self._logo_frame(pm)
+
+    def _logo_frame(self, pm: QPixmap | None):
+        self.logo, self._logo_scaled = pm, None
+        self.update()
+
+    def set_cover(self, pm: QPixmap | None, glyph: str = "", spec=(None, None)):
+        if not self.layers["cover"].set(*spec) and self.cover.pixmap is not None:
+            return
+        self.cover.set_pixmap(pm, glyph)
+
+    def showEvent(self, e):
+        for layer in self.layers.values():
+            layer.start()
+        super().showEvent(e)
+
+    def hideEvent(self, e):
+        for layer in self.layers.values():
+            layer.stop()  # nothing plays where it can't be seen
+        super().hideEvent(e)
+
+    def _logo_box(self) -> QRectF:
+        """Where the logo goes: the right of the banner, from level with the back button (which is
+        on the left) down to the buttons."""
+        top = self.back.geometry().top()
+        bottom = self.acts.mapTo(self, QPoint(0, 0)).y() - 12 if self.acts.isVisible() else self.height() - 70
+        bottom = min(bottom, self.cover.mapTo(self, QPoint(0, 0)).y() + self.cover.height())
+        w = self.width() * 0.4
+        return QRectF(self.width() - 24 - w, top, w, max(24, bottom - top))
+
+    def _logo_art(self) -> tuple[QRectF, QPixmap] | None:
+        if self.logo is None or self.logo.isNull() or self.blurred or self.banner is None:
+            return None
+        box = self._logo_box()
+        dpr = self.devicePixelRatioF()
+        key = (self.logo.cacheKey(), box.size().toSize(), dpr)
+        if self._logo_scaled is None or self._logo_scaled[0] != key:
+            fit = self.logo.size().scaled(box.size().toSize() * dpr, Qt.AspectRatioMode.KeepAspectRatio)
+            if fit.width() > self.logo.width():  # a small logo stays its own size: stretched, it blurs
+                fit = self.logo.size()
+            pm = self.logo.scaled(fit, Qt.AspectRatioMode.IgnoreAspectRatio, Qt.TransformationMode.SmoothTransformation)
+            pm.setDevicePixelRatio(dpr)
+            self._logo_scaled = (key, pm)
+        pm = self._logo_scaled[1]
+        w, h = pm.width() / dpr, pm.height() / dpr
+        return QRectF(box.right() - w, box.center().y() - h / 2, w, h), pm
+
     def set_state(self, state: str, name: str, year: str = "", candidates: int = 0):
         """state: "exact", "check", "notfound", "finding" or "key" (no API key yet)."""
         self.state = state
-        yr = f"&nbsp;<span style='color:{C['text2']}'>{escape(str(year))}</span>" if year else ""
-        game = f"<b style='color:white'>{escape(name)}</b>{yr}"
-        text, colour = {
-            "exact": (f"Artwork from {game} on SteamGridDB&nbsp;·", C["text2"]),
-            "check": ((f"We picked {game} from {candidates} similar names. Is it right?" if candidates > 1
-                       else f"We picked {game}, the closest name we found. Is it right?") + "&nbsp;·", WAIT),
-            "notfound": ("Not found on SteamGridDB&nbsp;·", C["bad"]),
-            "finding": ("Finding this game on SteamGridDB…", C["text2"]),
-            "key": ("Add a free SteamGridDB API key to find this game's artwork.", C["text2"]),
-        }[state]
-        link = ""
-        if state not in ("finding", "key"):
-            words = ("Search by Another Name" if state == "notfound" else "Change Game").replace(" ", "&nbsp;")
-            link = (f"&nbsp;&nbsp;<a href='change' style='color:{C['blue_ink']}; text-decoration:none;"
-                    f" font-weight:600'>{words}</a>")
-        self.meta.setText(f"<span style='color:{colour}'>{text}</span>{link}")
-        self.yes_btn.setVisible(state == "check")
-        self.key_btn.setVisible(state == "key")
-        plain = {"exact": f"Artwork from {name} on SteamGridDB", "check": f"Check this match: {name}",
-                 "notfound": "Not found on SteamGridDB", "finding": "Finding this game on SteamGridDB",
-                 "key": "SteamGridDB API key needed"}[state]
-        self.setAccessibleName(plain)
+        self._match = (name, year, candidates)
+        self._render_meta()
+        self._style_get()
         self._fit()
         self.update()
 
+    def set_steam(self, state: str, name: str = ""):
+        """Steam's official artwork: state "found" (from the store game `name`), "none", "finding",
+        "error" or "off". It shares the match line, so one Change Game covers both."""
+        self._steam = (state, name)
+        self._render_meta()
+
+    def _render_meta(self):
+        from ..steamstore import norm_name
+
+        state = self.state
+        name, year, candidates = self._match
+        steam = self._steam[1] if self._steam[0] == "found" else ""
+        yr = f"&nbsp;<span style='color:{C['text2']}'>{escape(str(year))}</span>" if year else ""
+        game = f"<b style='color:white'>{escape(name)}</b>{yr}"
+        on_steam = f"<b style='color:white'>{escape(steam)}</b> on Steam"
+        same = steam and norm_name(steam) == norm_name(name)
+        exact = f"Artwork from {game} on SteamGridDB"
+        if steam:
+            exact += " and Steam" if same else f" and {on_steam}"
+        text, colour = {
+            "exact": (exact + "&nbsp;·", C["text2"]),
+            "check": ((f"We picked {game} from {candidates} similar names. Is it right?" if candidates > 1
+                       else f"We picked {game}, the closest name we found. Is it right?") + "&nbsp;·", WAIT),
+            "notfound": ((f"Official art from {on_steam}, not found on SteamGridDB&nbsp;·" if steam
+                          else "Not found on SteamGridDB&nbsp;·"), C["text2"] if steam else C["bad"]),
+            "finding": ("Finding this game on SteamGridDB…", C["text2"]),
+            "key": ((f"Official art from {on_steam}. Add a free SteamGridDB API key for more&nbsp;·" if steam
+                     else "Add a free SteamGridDB API key to find this game's artwork."), C["text2"]),
+        }[state]
+        link = ""
+        if state not in ("finding", "key") or steam:
+            words = ("Search by Another Name" if state == "notfound" and not steam else "Change Game").replace(" ", "&nbsp;")
+            a = f"<a style='color:{C['blue_ink']}; text-decoration:none; font-weight:600'"
+            if state == "check":  # a quiet link, so Apply or Get All Artwork stays the one filled button
+                link = f"&nbsp;&nbsp;{a} href='confirm'>Yes,&nbsp;That's&nbsp;It</a>&nbsp;&nbsp;·"
+            link += f"&nbsp;&nbsp;{a} href='change'>{words}</a>"
+        self.meta.setText(f"<span style='color:{colour}'>{text}</span>{link}")
+        self.key_btn.setVisible(state == "key")
+        plain = {"exact": f"Artwork from {name} on SteamGridDB" + (" and Steam" if steam else ""),
+                 "check": f"Check this match: {name}",
+                 "notfound": "Not found on SteamGridDB", "finding": "Finding this game on SteamGridDB",
+                 "key": "SteamGridDB API key needed"}[state]
+        self.setAccessibleName(plain)
+
     def resizeEvent(self, e):
         self._scaled = None
+        self._logo_scaled = None
         super().resizeEvent(e)
         self._fit()
+        self.resized.emit()
 
     def _art(self) -> QPixmap | None:
         if self.banner is None or self.banner.isNull():
@@ -805,12 +1458,13 @@ class MatchCard(QWidget):
         key = (self.size(), dpr)
         if self._scaled is None or self._scaled[0] != key:
             if self.blurred:  # shrink then stretch: a cheap, soft blur
-                small = fill_rect(self.banner, QSize(48, max(1, round(48 * self.height() / max(1, self.width())))))
+                small = fill_rect(self.banner, QSize(48, max(1, round(48 * self.height() / max(1, self.width())))),
+                                  top=True)
                 pm = small.scaled(self.size() * dpr, Qt.AspectRatioMode.IgnoreAspectRatio,
                                   Qt.TransformationMode.SmoothTransformation)
                 pm.setDevicePixelRatio(dpr)
             else:
-                pm = fill_rect(self.banner, self.size(), dpr)
+                pm = fill_rect(self.banner, self.size(), dpr, top=True)  # Steam keeps the top of a banner
             self._scaled = (key, pm)
         return self._scaled[1]
 
@@ -843,6 +1497,9 @@ class MatchCard(QWidget):
             c.setAlpha(alpha)
             fade.setColorAt(at, c)
         p.fillRect(r, fade)
+        logo = self._logo_art()
+        if logo is not None:
+            p.drawPixmap(logo[0].topLeft(), logo[1])
         cv = QRectF(self.cover.geometry())
         p.setRenderHint(QPainter.RenderHint.Antialiasing)
         p.setPen(Qt.PenStyle.NoPen)
@@ -855,7 +1512,6 @@ class MatchCard(QWidget):
 
 
 class GamePage(QWidget):
-    fill = Signal()  # kept for compatibility; the banner header has the buttons now
     change_match = Signal()
     confirm_match = Signal()
 
@@ -881,7 +1537,15 @@ class GamePage(QWidget):
         self.card.add_key.connect(win.ask_api_key)
         self.card.home.connect(win.go_home)
         self.card.get_all.connect(win.fill_current)
+        self.card.get_menu.connect(win.show_get_menu)
+        self.card.set_get_animated(win.get_all_animated)
         self.card.apply.connect(lambda: win.apply_games([win.current_shortcut().appid]))
+        self.card.rename.connect(win.stage_rename)
+        self.card.unrename.connect(win.unstage_rename)
+        # After a resize settles, an animated banner decodes again at the new size.
+        self._resize_timer = QTimer(self, singleShot=True, interval=300)
+        self._resize_timer.timeout.connect(self._card_resized)
+        self.card.resized.connect(self._resize_timer.start)
         top.addWidget(self.card)
 
         lay = QVBoxLayout()
@@ -928,16 +1592,19 @@ class GamePage(QWidget):
                                 self.win.match_candidates(sc) if check else 0)
         else:
             self.card.set_state("finding", sc.name or "(unnamed)")
-        self.card.set_game(sc.name or "(unnamed)")
+        self.card.set_game(self.win.shown_name(sc))
+        staged = self.win.pending.name(sc.appid) is not None
+        self.card.set_rename(sc.name, self.win.rename_suggestion(sc), staged)
         self._card_cover()
 
     def _card_cover(self):
         """The cover beside the name: the game's cover, its waiting pick, else the first option."""
         sc = self.win.current_shortcut()
         pm = self._current_art(sc, "grid") if sc else None
-        if pm is None and self.card.state in ("exact", "check"):
+        spec = self._motion(sc, "grid", self.card.cover.size()) if pm is not None else (None, None)
+        if pm is None and (self.card.state in ("exact", "check") or self.rows["grid"].steam_assets):
             pm = self.rows["grid"].first_thumb()
-        self.card.cover.set_pixmap(pm, "key" if self.card.state == "key" else "")
+        self.card.set_cover(pm, "key" if self.card.state == "key" else "", spec)
         self._banner()
 
     def _current_art(self, sc, key: str) -> QPixmap | None:
@@ -956,9 +1623,54 @@ class GamePage(QWidget):
         if sc is None:
             return
         pm = self._current_art(sc, "hero")
-        if pm is not None:
-            return self.card.set_banner(pm)
-        self.card.set_banner(self._current_art(sc, "grid"), blurred=True)
+        if pm is None:
+            self.card.set_logo(None)
+            return self.card.set_banner(self._current_art(sc, "grid"), blurred=True)
+        self.card.set_banner(pm, spec=self._motion(sc, "hero", self.card.size()))
+        # Its logo over it, as Steam's game page has it (unless the Logo row says not to).
+        if self.win.config.data.get("logo_on_banner", True):
+            logo = self._current_art(sc, "logo")
+            self.card.set_logo(logo, self._motion(sc, "logo", self.card._logo_box().size().toSize()) if logo else (None, None))
+        else:
+            self.card.set_logo(None)
+
+    def _motion(self, sc, key: str, size: QSize) -> tuple:
+        """(key, factory) to play this piece where it's animated (a waiting pick, else what's on
+        disk), for the match card; nothing for a still or with animation turned off.
+
+        It decodes the full file at the size it's shown. The banner's frames are made exactly
+        the card's size in device pixels, cropped as it's drawn, so they're drawn pixel for
+        pixel (no second scaling to blur them), and a banner too big to hold every frame of
+        streams rather than dropping frames. After a resize (see _card_resized) it decodes
+        again, sharp at the new size, and on a screen of another scale. The cover is a fixed
+        size, made to measure; the logo's box rounds up so it carries on across small resizes."""
+        if not self.win.show_animated:
+            return None, None
+        hero = key == "hero"
+        if key == "logo":
+            size = QSize(-(-size.width() // 160) * 160, -(-size.height() // 40) * 40)
+        how = ({"budget": CARD_BUDGET, "crop": True, "stream": True} if hero
+               else {"crop": "middle"} if key == "grid" else {})
+        pick = self.win.pending.get(sc.appid, key)
+        if pick is not None:
+            asset = getattr(pick, "asset", None)
+            spec = (None, None) if pick.clears else self.win.full_motion_spec(asset, size, **how)
+        else:
+            spec = self.win.file_motion_spec(self.win.slot_path(sc, SLOTS[key]), size, **how)
+        dpr = round(self.devicePixelRatioF() * 100)
+        return (None, None) if spec[0] is None else ((spec[0], size.width(), size.height(), dpr), spec[1])
+
+    def showEvent(self, e):
+        super().showEvent(e)
+        handle = self.window().windowHandle()
+        if handle is not None and not getattr(self, "_screen_hooked", False):
+            # Moved to a screen of another scale: the card's animations decode again, sharp there.
+            self._screen_hooked = True
+            handle.screenChanged.connect(lambda *_: self._resize_timer.start())
+
+    def _card_resized(self):
+        if self.isVisible() and self.win.current_shortcut() is not None:
+            self._banner()
 
     def refresh_current(self):
         for row in self.rows.values():
