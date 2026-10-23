@@ -67,7 +67,7 @@ EXE_STYLE = "exe"  # the style of an icon taken from the game's .exe
 _exe_ids = itertools.count(-1, -1)  # SteamGridDB ids are positive, so these never clash
 
 
-ISSUES_URL = "https://github.com/acidtwin/steam-artwork-for-non-steam-games/issues"
+ISSUES_URL = "https://github.com/acidtwin/SteamArtworkForNonSteamGames/issues"
 
 
 def _join(words: list[str]) -> str:

@@ -7,8 +7,8 @@
 <p align="center"><b>Proper Steam library artwork for every game you added yourself. Still or animated, in one click.</b></p>
 
 <p align="center">
-  <a href="https://github.com/acidtwin/steam-artwork-for-non-steam-games/releases"><img src="https://img.shields.io/badge/version-1.0.0-1a9fff?style=flat-square" alt="Version 1.0.0"></a>
-  <a href="https://github.com/acidtwin/steam-artwork-for-non-steam-games/actions/workflows/tests.yml"><img src="https://github.com/acidtwin/steam-artwork-for-non-steam-games/actions/workflows/tests.yml/badge.svg" alt="Tests"></a>
+  <a href="https://github.com/acidtwin/SteamArtworkForNonSteamGames/releases"><img src="https://img.shields.io/badge/version-1.0.0-1a9fff?style=flat-square" alt="Version 1.0.0"></a>
+  <a href="https://github.com/acidtwin/SteamArtworkForNonSteamGames/actions/workflows/tests.yml"><img src="https://github.com/acidtwin/SteamArtworkForNonSteamGames/actions/workflows/tests.yml/badge.svg" alt="Tests"></a>
   <a href="LICENSE"><img src="https://img.shields.io/badge/licence-MIT-5c7e10?style=flat-square" alt="MIT licence"></a>
   <br>
   <img src="https://img.shields.io/badge/Python-3.10%2B-3776AB?style=flat-square&logo=python&logoColor=white" alt="Python 3.10+">
@@ -103,8 +103,8 @@ Version 1.0.0. It isn't on Flathub, PyPI or the AUR yet, so for now run it from 
 You need Python 3.10 or newer.
 
 ```bash
-git clone https://github.com/acidtwin/steam-artwork-for-non-steam-games.git
-cd steam-artwork-for-non-steam-games
+git clone https://github.com/acidtwin/SteamArtworkForNonSteamGames.git
+cd SteamArtworkForNonSteamGames
 python3 -m venv .venv
 source .venv/bin/activate        # Windows: .venv\Scripts\activate
 pip install .

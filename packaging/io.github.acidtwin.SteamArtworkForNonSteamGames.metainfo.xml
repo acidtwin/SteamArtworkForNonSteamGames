@@ -12,16 +12,16 @@
     <p>Works on desktop Linux and on the Steam Deck in desktop mode. A free SteamGridDB API key unlocks the most artwork. Not affiliated with Valve or SteamGridDB.</p>
   </description>
   <launchable type="desktop-id">io.github.acidtwin.SteamArtworkForNonSteamGames.desktop</launchable>
-  <url type="homepage">https://github.com/acidtwin/steam-artwork-for-non-steam-games</url>
-  <url type="bugtracker">https://github.com/acidtwin/steam-artwork-for-non-steam-games/issues</url>
+  <url type="homepage">https://github.com/acidtwin/SteamArtworkForNonSteamGames</url>
+  <url type="bugtracker">https://github.com/acidtwin/SteamArtworkForNonSteamGames/issues</url>
   <screenshots>
     <screenshot type="default">
       <caption>The start page: your non-Steam games as a cover wall</caption>
-      <image>https://raw.githubusercontent.com/acidtwin/steam-artwork-for-non-steam-games/main/docs/screenshot.png</image>
+      <image>https://raw.githubusercontent.com/acidtwin/SteamArtworkForNonSteamGames/main/docs/screenshot.png</image>
     </screenshot>
     <screenshot>
       <caption>A game's page with every piece of artwork and its options</caption>
-      <image>https://raw.githubusercontent.com/acidtwin/steam-artwork-for-non-steam-games/main/docs/game-page.png</image>
+      <image>https://raw.githubusercontent.com/acidtwin/SteamArtworkForNonSteamGames/main/docs/game-page.png</image>
     </screenshot>
   </screenshots>
   <content_rating type="oars-1.1"/>

@@ -1181,7 +1181,7 @@ class ConfirmDialog(QDialog):
         (cancel if bad else self.ok).setFocus()
 
 
-REPO_URL = "https://github.com/acidtwin/steam-artwork-for-non-steam-games"
+REPO_URL = "https://github.com/acidtwin/SteamArtworkForNonSteamGames"
 MAKER_URL = "https://aciddesign.uk"
 
 
