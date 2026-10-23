@@ -1,7 +1,8 @@
 """Moving between the library and a game page, and the Apply button filling as it writes.
 
 From the cover wall the clicked cover grows into the game page's small cover while the library
-fades away (going back, the cover shrinks home again, faster). From anywhere else, a quick
+fades away (going back, the cover shrinks home again, faster). From one game to another, the
+banner cross-fades while the rows below fade in, rising a little. From anywhere else, a quick
 cross-fade. The new page is live underneath from the first frame: this overlay only holds a
 picture of the page being left and the cover in flight, so nothing waits on it."""
 
@@ -13,7 +14,10 @@ from PySide6.QtCore import QEasingCurve, QEvent, QRectF, Qt, QTimer, QVariantAni
 from PySide6.QtGui import QColor, QPainter, QPainterPath, QPixmap
 from PySide6.QtWidgets import QWidget
 
+from .theme import q
+
 GROW_MS, BACK_MS, FADE_MS = 380, 220, 160
+RISE_MS, RISE_PX = 300, 10  # game to game: the rows fade in rising this far
 
 
 class PageTransition(QWidget):
@@ -29,7 +33,9 @@ class PageTransition(QWidget):
         self.fade_ms = FADE_MS
         self.t = 1.0
         self._hide = None
+        self.rise = None
         self._start = 0.0
+        self._rise_ease = QEasingCurve(QEasingCurve.Type.OutCubic)
         self._ease = QEasingCurve(QEasingCurve.Type.OutQuint)
         self._timer = QTimer(self, interval=16, timeout=self._step)
 
@@ -38,11 +44,12 @@ class PageTransition(QWidget):
         return self.stage.grab()
 
     def run(self, old: QPixmap, cover: QPixmap | None = None, src=None, dst=None, back: bool = False,
-            hide=None):
+            hide=None, rise=None):
         """Fade `old` off the live page; with a cover, fly it from src to dst. Each rect is in the
         stage's coordinates, or a function giving it (asked on every frame, so a page still
         laying itself out lands the cover in the right place); None means no flight. `hide(True)`
-        is called to empty the cover's landing place while it flies, and `hide(False)` on landing."""
+        is called to empty the cover's landing place while it flies, and `hide(False)` on landing.
+        `rise` is (picture of the new page, the area below its banner): that area fades in rising."""
         self.finish()  # one at a time: a run still going lands at once
         self.old = old
         self.cover = cover if cover is not None and not cover.isNull() and src is not None and dst is not None else None
@@ -51,8 +58,9 @@ class PageTransition(QWidget):
         self._hide = hide if flying else None
         if self._hide:
             self._hide(True)
-        self.ms = (BACK_MS if back else GROW_MS) if flying else FADE_MS
-        self.fade_ms = min(self.ms, 140 if back else 200)  # the old page goes before the cover lands
+        self.rise = rise if not flying and rise is not None and not rise[0].isNull() else None
+        self.ms = (BACK_MS if back else GROW_MS) if flying else RISE_MS if self.rise else FADE_MS
+        self.fade_ms = min(self.ms, 140 if back else FADE_MS if self.rise else 200)  # the old page goes before the cover lands
         self.setGeometry(self.stage.geometry())
         self.raise_()
         self.show()
@@ -64,7 +72,7 @@ class PageTransition(QWidget):
     def finish(self):
         self._timer.stop()
         self.hide()
-        self.old = self.cover = None
+        self.old = self.cover = self.rise = None
         hide, self._hide = self._hide, None
         if hide:
             hide(False)
@@ -84,10 +92,32 @@ class PageTransition(QWidget):
         p.setRenderHint(QPainter.RenderHint.Antialiasing)
         elapsed = self.t * self.ms
         fade = min(1.0, elapsed / self.fade_ms)
+        if self.rise is not None:
+            new, area = self.rise
+            # Below the banner: the old rows fade out on the page's ground while the new ones
+            # fade in rising into place (a picture of them, for this third of a second).
+            p.save()
+            p.setClipRect(area)
+            p.fillRect(area, q("stage"))
+            if fade < 1.0:
+                p.setOpacity(1.0 - self._ease.valueForProgress(fade))
+                p.drawPixmap(0, 0, self.old)
+            e = self._rise_ease.valueForProgress(self.t)
+            dpr = new.devicePixelRatio()
+            src = QRectF(area.x() * dpr, area.y() * dpr, area.width() * dpr, area.height() * dpr)
+            p.setOpacity(e)
+            p.drawPixmap(area.translated(0, RISE_PX * (1 - e)), new, src)
+            p.restore()
+            outside = QPainterPath()
+            outside.addRect(QRectF(self.rect()))
+            below = QPainterPath()
+            below.addRect(area)
+            p.setClipPath(outside - below)  # the banner just cross-fades, over the live page
         if fade < 1.0:
             p.setOpacity(1.0 - self._ease.valueForProgress(fade))
             p.drawPixmap(0, 0, self.old)
             p.setOpacity(1.0)
+        p.setClipping(False)
         s, d = (v() if callable(v) else v for v in (self.src, self.dst))
         if self.cover is not None and s is not None and d is not None:
             e = self._ease.valueForProgress(self.t)
