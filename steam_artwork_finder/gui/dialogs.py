@@ -4,9 +4,25 @@ from __future__ import annotations
 
 import sys
 import time
+from pathlib import Path
 
-from PySide6.QtCore import QPoint, QRect, QRectF, QSize, QTimer, QUrl, Qt, Signal
-from PySide6.QtGui import QAction, QColor, QDesktopServices, QFont, QGuiApplication, QLinearGradient, QPainter, QPen, QPixmap
+from PySide6.QtCore import QEasingCurve, QPoint, QPointF, QRect, QRectF, QSize, QTimer, QUrl, QVariantAnimation, Qt, Signal
+from PySide6.QtGui import (
+    QAction,
+    QBrush,
+    QColor,
+    QDesktopServices,
+    QFont,
+    QFontDatabase,
+    QFontMetrics,
+    QGradient,
+    QGuiApplication,
+    QLinearGradient,
+    QPainter,
+    QPainterPath,
+    QPen,
+    QPixmap,
+)
 from PySide6.QtSvg import QSvgRenderer
 from PySide6.QtWidgets import (
     QAbstractButton,
@@ -1034,38 +1050,135 @@ def _link(url: str, text: str) -> str:
     return f"<a href='{url}' style='color:{C['blue_ink']}; text-decoration:none'>{text}</a>"
 
 
-def _maker_mark(height: int, dpr: float) -> QLabel:
-    """Acid Design's logo, scaled to `height`, or its name set as a wordmark when no logo ships."""
-    mark = QLabel()
-    mark.setAccessibleName("Acid Design")
-    for name in ("acid-design.svg", "acid-design.png"):
-        path = icons.ICON_DIR / name
-        if not path.exists():
-            continue
-        if path.suffix == ".svg":
-            r = QSvgRenderer(str(path))
-            size = r.defaultSize()
-            w = round(height * size.width() / max(1, size.height()))
-            pm = QPixmap(int(w * dpr), int(height * dpr))
-            pm.fill(Qt.GlobalColor.transparent)
-            p = QPainter(pm)
-            r.render(p, QRectF(0, 0, pm.width(), pm.height()))
-            p.end()
-        else:
-            pm = QPixmap(str(path)).scaledToHeight(int(height * dpr), Qt.TransformationMode.SmoothTransformation)
-        pm.setDevicePixelRatio(dpr)
-        mark.setPixmap(pm)
-        return mark
-    mark.setText("ACID<br>DESIGN")
-    f = QFont(mark.font())
-    f.setPointSizeF(theme.pt("heading"))
-    f.setWeight(QFont.Weight.Black)
-    f.setLetterSpacing(QFont.SpacingType.AbsoluteSpacing, 1.5)
-    mark.setFont(f)
-    mark.setStyleSheet("color: white;")
-    mark.setAlignment(Qt.AlignmentFlag.AlignCenter)
-    mark.setFixedHeight(height)
-    return mark
+FONT_DIR = Path(__file__).with_name("fonts")
+_fonts: dict[str, str] = {}
+
+
+def _font_family(file: str, fallback: str) -> str:
+    """The family of a font that ships in gui/fonts, loaded once; `fallback` if it won't load."""
+    if file not in _fonts:
+        fid = QFontDatabase.addApplicationFont(str(FONT_DIR / file))
+        fams = QFontDatabase.applicationFontFamilies(fid) if fid >= 0 else []
+        _fonts[file] = fams[0] if fams else fallback
+    return _fonts[file]
+
+
+class MakerLockup(QWidget):
+    """Acid Design's lockup, as on aciddesign.uk: the logo, then ACID in Space Grotesk with a
+    silver shimmer that sweeps across every 6 seconds, over DESIGN in spaced-out IBM Plex Mono.
+    The words are drawn live, not baked into a picture; the logo is shown when it ships."""
+
+    LOGO_H = 46
+    LOGO_FILES = ("acid-design.svg", "acid-design.png")  # in gui/icons; the first found is shown
+    GAP = 14
+    CYCLE_MS = 6000
+    # The site's gradient, 100deg, sized to 2.5 times the word and repeating
+    STOPS = ((0.0, "#d8d8d8"), (0.15, "#ffffff"), (0.30, "#7a7a7a"), (0.45, "#ffffff"), (0.60, "#b0b0b0"), (1.0, "#ffffff"))
+
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self.setAccessibleName("Acid Design")
+        self.setCursor(Qt.CursorShape.PointingHandCursor)
+        self.setToolTip(MAKER_URL)
+        self.logo = self._load_logo()
+        self.word_font = QFont(_font_family("SpaceGrotesk-Bold.ttf", "sans-serif"))
+        self.word_font.setPixelSize(26)
+        self.word_font.setWeight(QFont.Weight.Bold)
+        self.word_font.setLetterSpacing(QFont.SpacingType.PercentageSpacing, 101)
+        self.cap_font = QFont(_font_family("IBMPlexMono-Medium.ttf", "monospace"))
+        self.cap_font.setPixelSize(11)
+        self.cap_font.setWeight(QFont.Weight.Medium)
+        self.cap_font.setLetterSpacing(QFont.SpacingType.AbsoluteSpacing, 11 * 0.38)
+        wm, cm = QFontMetrics(self.word_font), QFontMetrics(self.cap_font)
+        self._word_w = wm.horizontalAdvance("ACID")
+        self._word_asc, self._word_h = wm.capHeight(), wm.capHeight()
+        self._cap_w = cm.horizontalAdvance("DESIGN")
+        self._cap_h = cm.capHeight()
+        self._text_w = max(self._word_w, self._cap_w)
+        self._logo_w = round(self.logo.width() / self.logo.devicePixelRatio()) if self.logo else 0
+        self.phase = 0.0  # where the shimmer is in its cycle, 0 to 1
+        self._spin = QVariantAnimation(self, startValue=0.0, endValue=1.0, duration=self.CYCLE_MS, loopCount=-1)
+        self._spin.valueChanged.connect(self._tick)
+
+    def _load_logo(self) -> QPixmap | None:
+        dpr = self.devicePixelRatioF() or 1.0
+        for name in self.LOGO_FILES:
+            path = icons.ICON_DIR / name
+            if not path.exists():
+                continue
+            if path.suffix == ".svg":
+                r = QSvgRenderer(str(path))
+                size = r.defaultSize()
+                w = round(self.LOGO_H * size.width() / max(1, size.height()))
+                pm = QPixmap(int(w * dpr), int(self.LOGO_H * dpr))
+                pm.fill(Qt.GlobalColor.transparent)
+                p = QPainter(pm)
+                r.render(p, QRectF(0, 0, pm.width(), pm.height()))
+                p.end()
+            else:
+                pm = QPixmap(str(path))
+                if pm.isNull():
+                    continue
+                pm = pm.scaledToHeight(int(self.LOGO_H * dpr), Qt.TransformationMode.SmoothTransformation)
+            pm.setDevicePixelRatio(dpr)
+            return pm
+        return None
+
+    def sizeHint(self) -> QSize:
+        w = self._logo_w + (self.GAP if self.logo else 0) + self._text_w
+        return QSize(w + 2, max(self.LOGO_H, self._word_h + 2 + self._cap_h + 8))
+
+    def minimumSizeHint(self) -> QSize:
+        return self.sizeHint()
+
+    def showEvent(self, e):
+        super().showEvent(e)
+        self._spin.start()
+
+    def hideEvent(self, e):
+        self._spin.stop()
+        super().hideEvent(e)
+
+    def _tick(self, v):
+        # Held still for the first fifth of the cycle and the last half, sweeping in between,
+        # so only those 1.8 seconds repaint
+        t = min(1.0, max(0.0, (v - 0.2) / 0.3))
+        phase = QEasingCurve(QEasingCurve.Type.InOutSine).valueForProgress(t)
+        if phase != self.phase:
+            self.phase = phase
+            self.update()
+
+    def shimmer(self, x0: float, w: float) -> QLinearGradient:
+        """The word's fill at the current phase: background-position runs -120% to 220%."""
+        size = 2.5 * w
+        pos = -1.2 + 3.4 * self.phase
+        left = x0 + (w - size) * pos
+        # 100deg is a hair past horizontal: lean the gradient line by 10 degrees
+        g = QLinearGradient(QPointF(left, 0), QPointF(left + size, size * 0.176))
+        for at, col in self.STOPS:
+            g.setColorAt(at, QColor(col))
+        g.setSpread(QGradient.Spread.RepeatSpread)
+        return g
+
+    def paintEvent(self, e):
+        p = QPainter(self)
+        p.setRenderHint(QPainter.RenderHint.Antialiasing)
+        x = 0
+        if self.logo:
+            p.drawPixmap(0, (self.height() - self.LOGO_H) // 2, self.logo)
+            x = self._logo_w + self.GAP
+        block = self._word_h + 2 + self._cap_h + 4
+        top = (self.height() - block) / 2
+        path = QPainterPath()
+        path.addText(QPointF(x, top + self._word_asc), self.word_font, "ACID")
+        p.fillPath(path, QBrush(self.shimmer(x, self._word_w)))
+        p.setFont(self.cap_font)
+        p.setPen(QColor("#8a8a8a"))
+        p.drawText(QPointF(x, top + self._word_h + 6 + self._cap_h), "DESIGN")
+
+    def mouseReleaseEvent(self, e):
+        if e.button() == Qt.MouseButton.LeftButton and self.rect().contains(e.position().toPoint()):
+            QDesktopServices.openUrl(QUrl(MAKER_URL))
 
 
 class AboutDialog(QDialog):
@@ -1107,7 +1220,7 @@ class AboutDialog(QDialog):
         cl = QHBoxLayout(card)
         cl.setContentsMargins(14, 12, 14, 12)
         cl.setSpacing(14)
-        self.maker_mark = _maker_mark(52, dpr)
+        self.maker_mark = MakerLockup()
         cl.addWidget(self.maker_mark, 0, Qt.AlignmentFlag.AlignVCenter)
         words = QVBoxLayout()
         words.setSpacing(3)

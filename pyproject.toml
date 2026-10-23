@@ -22,4 +22,4 @@ steam-artwork-finder = "steam_artwork_finder.gui.app:main"
 include = ["steam_artwork_finder*"]
 
 [tool.setuptools.package-data]
-"steam_artwork_finder.gui" = ["icons/*.svg", "icons/*.png"]
+"steam_artwork_finder.gui" = ["icons/*.svg", "icons/*.png", "fonts/*"]
