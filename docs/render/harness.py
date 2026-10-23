@@ -11,6 +11,7 @@ Apply writes into the copy, and restarting Steam is faked. The Steam login name 
 copy and blurred on every picture.
 
     REAL=1 python3 harness.py real_stills    # also real_pick, real_get, real_page
+    LIBRARY='{"drop": ["Maelstrom"], "add": ["Alan Wake 2"]}'  # tidy the copied game list
 
 Needs PySide6 and Pillow. Copy what you want from ./out into docs/.
 """
@@ -180,6 +181,38 @@ def real_steam_root() -> Path:
 PERSONA = "Player"
 
 
+def edit_library(path: Path, edit: dict):
+    """Change the copied game list only, for tidier pictures: LIBRARY='{"drop": ["Maelstrom"],
+    "add": ["Alan Wake 2"]}' drops every game whose name holds a "drop" text and adds made-up
+    shortcuts with the "add" names. Your real shortcuts.vdf is never opened for writing."""
+    import copy
+
+    from steam_artwork_finder import binvdf
+    from steam_artwork_finder.shortcuts import legacy_appid
+
+    root = binvdf.loads(path.read_bytes())
+    key = next(k for k, v in root.items() if k.lower() == "shortcuts")
+    old = [e for e in root[key].values() if isinstance(e, dict)]
+    name_key = lambda e: next(k for k in e if k.lower() == "appname")  # noqa: E731
+    drop = [d.casefold() for d in edit.get("drop", [])]
+    keep = [e for e in old if not any(d in str(e.get_value(name_key(e), "")).casefold() for d in drop)]
+    have = {str(e.get_value(name_key(e), "")).casefold() for e in keep}
+    for name in (n for n in edit.get("add", []) if n.casefold() not in have):
+        e = copy.deepcopy(old[0])
+        exe = f'"/home/player/Games/{name}/game.exe"'
+        e.set_string(name_key(e), name)
+        e.set_string(next(k for k in e if k.lower() == "exe"), exe)
+        e.set_string(next((k for k in e if k.lower() == "icon"), "icon"), "")
+        e.set_int32(next((k for k in e if k.lower() == "appid"), "appid"), binvdf._to_int32(legacy_appid(exe, name)))
+        keep.append(e)
+    fresh = binvdf.VDFMap()
+    for i, e in enumerate(keep):
+        fresh[str(i)] = e
+    root[key] = fresh
+    path.write_bytes(binvdf.dumps(root))
+    print("game list:", ", ".join(str(e.get_value(name_key(e), "")) for e in keep), flush=True)
+
+
 def setup_real(have: str = "full"):
     """Copy the real Steam user's game list and artwork, and the app's settings, into the throwaway
     home. have="none" leaves the artwork behind, for Get All Artwork to fill."""
@@ -200,6 +233,8 @@ def setup_real(have: str = "full"):
     cfg_dst = root / "userdata" / user.account_id / "config"
     cfg_dst.mkdir(parents=True)
     shutil.copy2(ucfg / "shortcuts.vdf", cfg_dst / "shortcuts.vdf")
+    if os.environ.get("LIBRARY"):
+        edit_library(cfg_dst / "shortcuts.vdf", json.loads(os.environ["LIBRARY"]))
     if have != "none" and (ucfg / "grid").is_dir():
         shutil.copytree(ucfg / "grid", cfg_dst / "grid", ignore=shutil.ignore_patterns(".replaced"),
                         ignore_dangling_symlinks=True)  # Steam leaves broken links behind
