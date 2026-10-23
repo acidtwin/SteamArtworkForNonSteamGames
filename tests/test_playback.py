@@ -172,29 +172,18 @@ def test_a_decode_under_way_stops_when_cancelled(qapp, tmp_path):
     assert len(motion.decode_frames(p, QSize(64, 64))) == 30
 
 
-def test_strip_previews_only_the_option_the_pointer_rests_on(qapp, window):
+def test_hovering_a_strip_option_leaves_the_piece_alone(qapp, window):
+    # A pick flies into the piece instead, so hovering mustn't change it first.
     win = window
     win.open_game(0)
     _pump(qapp, 200)
     row = win.page.rows["grid"]
     row.set_assets([_still(i) for i in range(4)], False)
     _pump(qapp, 50)
-    for v in row.thumbs:
-        v.set_pixmap(win.page.card.cover.pixmap or _qpix())
-    captions = []
-    real = row._set_caption
-    row._set_caption = lambda text, tone="": (captions.append(text), real(text, tone))
-    for v in row.thumbs[:3]:  # swept across
-        row._preview(True, v)
-        _pump(qapp, 20)
-        row._preview(False, v)
-    assert "Previewing" not in captions  # none of those passed over was previewed (or decoded)
-    row._preview(True, row.thumbs[3])
+    before = row.caption.text()
+    row.thumbs[2].hovered.emit(True)
     _pump(qapp, 400)
-    assert row.caption.text() == "Previewing"  # the one it rested on
-    row._preview(False, row.thumbs[3])
-    _pump(qapp, 400)
-    assert row.caption.text() != "Previewing"  # and back once the pointer leaves
+    assert row.caption.text() == before and not row._previewing
 
 
 def _qpix():

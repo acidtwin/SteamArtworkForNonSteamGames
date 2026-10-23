@@ -608,11 +608,6 @@ class ArtworkRow(QWidget):
         self.total = 0
         self._previewing = False
         self.gen = 0  # counts option loads, so a late answer to an earlier one is ignored
-        # A strip option is previewed on the piece once the pointer rests on it, as in See all,
-        # so sweeping across the strip doesn't start a decode for every option passed over.
-        self._rest = QTimer(self, singleShot=True, interval=140)
-        self._rest.timeout.connect(self._preview_now)
-        self._rest_view: ArtView | None = None
         self._flight: _Flight | None = None  # a pick flying into the piece
 
     def eventFilter(self, obj, e):
@@ -782,12 +777,6 @@ class ArtworkRow(QWidget):
         if (not self.isVisible() or not view.isVisible() or view.pixmap.isNull()
                 or view.visibleRegion().isEmpty() or self.art.visibleRegion().isEmpty()):
             return None
-        if self._previewing or self._rest.isActive():
-            # The piece is previewing this option: go back to what's in use, for the pick to land on.
-            self._rest.stop()
-            self._rest_view = None
-            self._previewing = False
-            self.show_current()
         dpr = self.devicePixelRatioF()
         if self.art.checker:  # a logo: as its tile shows it, on the checks
             picture = view.grab()
@@ -941,7 +930,6 @@ class ArtworkRow(QWidget):
                 v.official = isinstance(a, SteamAsset)
                 v.setAccessibleDescription("Press Enter to pick it")
                 v.clicked.connect(lambda a=a: self._option_clicked(a))
-                v.hovered.connect(lambda on, v=v: self._preview(on, v))
                 v.loaded.connect(lambda v=v: self.thumbs and self.thumbs[0] is v and self.thumb_loaded.emit())
                 v.loaded.connect(lambda a=a: self._thumb_arrived(a))
             v.describe(f"{self.slot.label} option {i + 1} of {len(self.assets)}, "
@@ -966,33 +954,9 @@ class ArtworkRow(QWidget):
     def first_thumb(self) -> QPixmap | None:
         return self.thumbs[0].pixmap if self.thumbs and not self.thumbs[0].pixmap.isNull() else None
 
-    def _preview(self, on: bool, view: ArtView):
-        # Moving from one option to the next doesn't flash the piece back in between either.
-        self._rest_view = view if on else None
-        self._rest.start()
-
-    def _preview_now(self):
-        view = self._rest_view
-        if view is None:
-            if self._previewing:
-                self._previewing = False
-                self.show_current()
-            return
-        if not view.pixmap.isNull():
-            backdrop = self.art.backdrop if self.slot.key == "logo" else None
-            self.art.new = False
-            self.art.animated = view.animated
-            asset = next((a for v, a in zip(self.thumbs, self.assets) if v is view), None)
-            self.art.set_motion(*self.win.motion_spec(asset, self.art.size(), crop=not self.art.checker))
-            self.art.set_pixmap(view.pixmap, backdrop)
-            self._set_caption("Previewing", "preview")
-            self._previewing = True
-
     def _clear_strip(self, keep: set[int] = frozenset()):
         """Empty the strip; views whose id() is in `keep` are only taken out, to be put back."""
         self.land()
-        self._rest.stop()
-        self._rest_view = None
         had = bool(self.thumbs)
         for v in self.thumbs:
             self.strip.removeWidget(v)
