@@ -745,8 +745,15 @@ class ArtworkRow(QWidget):
         pick = self.pick()
         self.land()
         flight = None
+        sc = self.win.current_shortcut()
+        applied = self.win.config.get_applied(sc.appid, self.slot.key) if sc else None
+        in_use = bool(applied and applied.get("id") == a.id and self.win.slot_path(sc, self.slot) is not None)
         if pick is not None and not pick.clears and pick.asset.id == a.id:
             self.win.unstage(self.slot)
+        elif in_use:
+            # Already the piece: drop any waiting pick to go back to it, but nothing flies.
+            if pick is not None:
+                self.win.unstage(self.slot)
         else:
             view = next((v for v, b in zip(self.thumbs, self.assets) if b is a), None)
             flight = self._ready_flight(view) if view is not None else None

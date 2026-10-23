@@ -1778,3 +1778,14 @@ def test_a_strip_pick_flies_into_the_piece(qapp, window):
     row.thumbs[0].hide()  # a tile not on show just picks, as before
     row._option_clicked(row.assets[0])
     assert row._flight is None and row.pick().asset.id == 1
+    # The option already in use doesn't fly (or get picked) again.
+    row.thumbs[0].show()
+    win.unstage(row.slot)
+    win.config.get_applied = lambda appid, key: {"id": 2}
+    import tempfile
+    from pathlib import Path
+    disk = Path(tempfile.mkdtemp()) / "in-use.png"
+    QPixmap(6, 9).save(str(disk))
+    win.slot_path = lambda sc, slot, fresh=False: disk
+    row._option_clicked(row.assets[1])
+    assert row._flight is None and row.pick() is None
