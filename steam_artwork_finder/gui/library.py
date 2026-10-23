@@ -29,7 +29,8 @@ from . import icons, motion, theme, workers
 from ..artwork import SLOTS, file_is_animated
 from .gamemenu import SHADOW, FadingPopup, PopupRow
 from .theme import C, q
-from .widgets import FlowLayout, ScaledCache, draw_dashed_empty, draw_dots, fill_rect, quiet_button
+from .widgets import (FlowLayout, ScaledCache, draw_dashed_empty, draw_dots, draw_loading, draw_retrying, fade, fill_rect,
+                      pulse, quiet_button)
 
 ROLE_INDEX = Qt.ItemDataRole.UserRole  # index into the shortcut list
 ICON = QSize(32, 32)
@@ -897,8 +898,41 @@ class WallDelegate(QStyledItemDelegate):
         self._hot = -1
         self._lift_timer = QTimer(self, interval=16, timeout=self._step_lift)
         self.away = -1  # a game whose cover is flying back from its page: its place waits empty
+        # Covers on their way shimmer (as options on the game page do), then fade in once here.
+        self._shimmered: set[int] = set()  # appids painted shimmering, whose cover then fades in
+        self._since: dict[int, float] = {}  # appid -> when its cover arrived, while it fades in
 
     LIFT_MS = 120
+
+    def _shimmer(self, p: QPainter, r: QRectF, appid: int | None, cell: QRect):
+        """A cover still on its way: the dark tile with the light band drifting over it, and the
+        retry count while Get Artwork tries again. Repainted (just this cell) until it's here."""
+        p.save()
+        clip = QPainterPath()
+        clip.addRoundedRect(r, 3, 3)
+        p.setClipPath(clip, Qt.ClipOperation.IntersectClip)
+        draw_loading(p, r, pulse().phase())
+        p.restore()
+        if appid is not None:
+            self._shimmered.add(appid)
+            n = self.win.retrying.get(appid)
+            if n:
+                draw_retrying(p, r, n)
+        pulse().want(self.view.viewport(), cell)
+
+    def _shown(self, appid: int) -> float:
+        """How far a cover that was seen shimmering has faded in (1.0: fully, or it never shimmered)."""
+        if appid in self._shimmered:
+            self._shimmered.discard(appid)
+            self._since[appid] = time.monotonic()
+        since = self._since.get(appid)
+        if since is None:
+            return 1.0
+        shown = fade(since)
+        if shown >= 1.0:
+            del self._since[appid]
+        return shown
+
 
     def _hover(self, row: int, on: bool):
         """Called from paint: start lifting the row the mouse is on, settle the one it left."""
@@ -975,10 +1009,18 @@ class WallDelegate(QStyledItemDelegate):
         pick = self.win.pending.get(sc.appid, "grid")
         new = pick is not None and not pick.clears
         self._hover(index.row(), hover)
+        coming = not new and (pick is None or not pick.clears) and (
+            sc.appid == self.win.fetching or self.win.status.get(sc.appid) == "getting")
         if idx == self.away:
             pass
-        elif not new and (pick is not None or self.win.cover_path(sc) is None):
+        elif not new and (pick is not None or self.win.cover_path(sc) is None) and not coming:
             draw_dashed_empty(p, r, sc.name, plus=False, focus=hover or focus)
+        elif not new and (pick is not None or self.win.cover_path(sc) is None):
+            self._shimmer(p, r, sc.appid, option.rect)  # Get Artwork is fetching it
+            if hover or focus:
+                p.setPen(QPen(q("blue"), 2 if focus else 1))
+                p.setBrush(Qt.BrushStyle.NoBrush)
+                p.drawRoundedRect(r.adjusted(0.5, 0.5, -0.5, -0.5), 3, 3)
         else:
             p.save()
             t = self.lift.get(index.row(), 0.0)
@@ -997,9 +1039,14 @@ class WallDelegate(QStyledItemDelegate):
             p.setClipPath(clip)
             pm = small_cover(self, sc, self.COVER, option.rect)
             if pm is None or pm.isNull():
-                p.fillRect(r, q("raised"))  # decoding, or not an image
+                self._shimmer(p, r, sc.appid, option.rect)  # decoding (or, rarely, not a picture)
             else:
+                shown = self._shown(sc.appid)
+                if shown < 1.0:  # just arrived: it fades in over the shimmer
+                    self._shimmer(p, r, None, option.rect)
+                    p.setOpacity(shown)
                 p.drawPixmap(r.topLeft(), pm)
+                p.setOpacity(1.0)
             if t > 0:
                 p.fillRect(r, QColor(255, 255, 255, int(16 * e)))  # a touch brighter, as Steam does
             p.setClipping(False)

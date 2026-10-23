@@ -295,6 +295,8 @@ class MainWindow(QMainWindow):
         self.user: SteamUser | None = None
         self.sfile = None
         self.status: dict[int, str] = {}  # appid -> "notfound" | "check" | "getting"
+        self.fetching: int | None = None  # the game Get Artwork is downloading for now (its cover shimmers)
+        self.retrying: dict[int, int] = {}  # appid -> the retry Get Artwork is on for it (1 to 3)
         self.guesses: dict[int, Game] = {}  # best guesses not yet confirmed by an action
         self._matching = False  # the startup lookup of every game is running
         self._match_count = (0, 0)  # games looked up so far, of how many
@@ -2573,6 +2575,21 @@ class MainWindow(QMainWindow):
 
     # ---- getting artwork in bulk ---------------------------------------------
 
+    def _download_retrying(self, url: str, sc: Shortcut, progress) -> bytes:
+        """Worker (Get Artwork): download url, tried again up to workers.RETRIES times with a
+        growing pause when it fails or arrives cut off; each retry is reported for the game's cover."""
+        for n in range(workers.RETRIES + 1):
+            try:
+                return workers._fetch(url, self.sgdb.download)
+            except (AuthError, GoneError):
+                raise
+            except Exception:
+                if n == workers.RETRIES or self._stop_fill:
+                    raise
+            progress(("retry", sc, n + 1))
+            time.sleep(workers.RETRY_PAUSE[min(n, len(workers.RETRY_PAUSE) - 1)] / 1000)
+        raise AssertionError("unreachable")
+
     def _fetch_missing(self, jobs, progress, use_sgdb: bool = True, notfound: frozenset = frozenset(),
                        animated: bool = False):
         """Worker: for each (shortcut, slots, saved match, single, Steam lookup), match and download
@@ -2624,7 +2641,7 @@ class MainWindow(QMainWindow):
                         assets = self.sgdb.assets(slot.key, game.id, animated=True)
                         top = next((x for x in assets if x.animated), None)
                         if top is not None:
-                            data = self.sgdb.download(top.url)
+                            data = self._download_retrying(top.url, sc, progress)
                             progress(("asset", sc, slot, *_spool_pick(data, sc.appid, slot.key), top, game.id))
                             got = True
                             continue
@@ -2636,7 +2653,7 @@ class MainWindow(QMainWindow):
                 a = official.get(slot.key)
                 if a is not None:
                     try:
-                        progress(("asset", sc, slot, *_spool_pick(self.sgdb.download(a.url), sc.appid, slot.key), a, None))
+                        progress(("asset", sc, slot, *_spool_pick(self._download_retrying(a.url, sc, progress), sc.appid, slot.key), a, None))
                         got = True
                         continue
                     except Exception:
@@ -2650,7 +2667,7 @@ class MainWindow(QMainWindow):
                         report["gaps"] += 1
                         progress(("empty", sc, slot))
                         continue
-                    data = self.sgdb.download(assets[0].url)
+                    data = self._download_retrying(assets[0].url, sc, progress)
                     progress(("asset", sc, slot, *_spool_pick(data, sc.appid, slot.key), assets[0], game.id))
                     got = True
                 except AuthError:
@@ -2699,7 +2716,13 @@ class MainWindow(QMainWindow):
                 _, i, sc = ev
                 self._progress(f"Getting artwork  {i + 1} of {plural(total, 'game')}")
                 self.status[sc.appid] = "getting"
+                self.fetching = sc.appid
+                self.retrying.clear()
                 self.refresh_soon()
+            elif kind == "retry":
+                _, sc, n = ev
+                self.retrying[sc.appid] = n
+                self.start.wall.viewport().update()
             elif kind == "match":
                 _, sc, game, n, saved = ev
                 self.status.pop(sc.appid, None)
@@ -2720,6 +2743,7 @@ class MainWindow(QMainWindow):
                     self._show_steam(sc, found)
             elif kind == "asset":
                 _, sc, slot, file, img, asset, gid = ev
+                self.retrying.pop(sc.appid, None)
                 self.config.set_no_art(sc.appid, slot.key, False)
                 if self.pending.get(sc.appid, slot.key) is not None or not self._fill_still_wanted(sc, asset, gid):
                     Path(file).unlink(missing_ok=True)  # the user picked, cleared or rematched it meanwhile
@@ -2732,6 +2756,8 @@ class MainWindow(QMainWindow):
                 self.config.set_no_art(sc.appid, slot.key, True)  # not counted as missing for a while
 
         def done(report):
+            self.fetching = None
+            self.retrying.clear()
             self._set_busy("")
             self.set_connection("connected")
             self.last_errors = list(report["errors"])
@@ -2794,6 +2820,8 @@ class MainWindow(QMainWindow):
             self.show_note("done" if found else "info", " · ".join(line), hold=8000 if found else None)
 
         def failed(msg):
+            self.fetching = None
+            self.retrying.clear()
             self._set_busy("")
             self._key_problem(msg)
             for sc, *_ in jobs:
