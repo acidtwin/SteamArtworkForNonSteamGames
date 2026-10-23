@@ -378,7 +378,7 @@ def test_steam_folder_popover_path_fits_on_first_open(qapp, tmp_path, monkeypatc
     pop = steamfolder.SteamFolderPopover(host)
     root = tmp_path / "Games" / "SteamLibraryOnTheBigDrive" / "Steam"
     if sys.platform == "win32":  # shown in full there (no "~"), and the test's temp folder is long
-        root = Path(tmp_path.anchor) / "Games" / "SteamLibraryOnTheBigDrive" / "Steam"
+        root = Path("D:/SteamLibrary/Steam")  # still far wider than 80 px
     pop._located[root] = None  # not in any of the usual places, so no lookup
     pop.set_current(root, ["Deck User"], 0, None)  # before it has ever been shown or laid out
     assert "…" not in pop.sub.text()  # the full path fits; it used to be cut to 80 px
