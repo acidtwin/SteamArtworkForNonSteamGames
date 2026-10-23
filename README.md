@@ -1,6 +1,23 @@
-# Steam Artwork for Non-Steam Games
+<p align="center">
+  <img src="packaging/io.github.acidtwin.SteamArtworkForNonSteamGames.svg" alt="" width="112">
+</p>
 
-[![Tests](https://github.com/acidtwin/steam-artwork-for-non-steam-games/actions/workflows/tests.yml/badge.svg)](https://github.com/acidtwin/steam-artwork-for-non-steam-games/actions/workflows/tests.yml)
+<h1 align="center">Steam Artwork for Non-Steam Games</h1>
+
+<p align="center"><b>Proper Steam library artwork for every game you added yourself. Still or animated, in one click.</b></p>
+
+<p align="center">
+  <a href="https://github.com/acidtwin/steam-artwork-for-non-steam-games/releases"><img src="https://img.shields.io/badge/version-1.0.0-1a9fff?style=flat-square" alt="Version 1.0.0"></a>
+  <a href="https://github.com/acidtwin/steam-artwork-for-non-steam-games/actions/workflows/tests.yml"><img src="https://github.com/acidtwin/steam-artwork-for-non-steam-games/actions/workflows/tests.yml/badge.svg" alt="Tests"></a>
+  <a href="LICENSE"><img src="https://img.shields.io/badge/licence-MIT-5c7e10?style=flat-square" alt="MIT licence"></a>
+  <br>
+  <img src="https://img.shields.io/badge/Python-3.10%2B-3776AB?style=flat-square&logo=python&logoColor=white" alt="Python 3.10+">
+  <img src="https://img.shields.io/badge/PySide6-Qt%206-41CD52?style=flat-square&logo=qt&logoColor=white" alt="PySide6 (Qt 6)">
+  <img src="https://img.shields.io/badge/Linux-first-FCC624?style=flat-square&logo=linux&logoColor=black" alt="Linux first">
+  <img src="https://img.shields.io/badge/Steam%20Deck-desktop%20mode-1a9fff?style=flat-square&logo=steamdeck&logoColor=white" alt="Steam Deck desktop mode">
+  <img src="https://img.shields.io/badge/Flatpak-manifest-4A90D9?style=flat-square&logo=flatpak&logoColor=white" alt="Flatpak manifest">
+  <img src="https://img.shields.io/badge/SteamGridDB-API%20v2-3a4a5c?style=flat-square" alt="SteamGridDB API v2">
+</p>
 
 A small desktop app that gives your **non-Steam games** proper artwork in Steam. It finds Steam on its own, lists every non-Steam shortcut you've added, and pulls all five artwork types from [SteamGridDB](https://www.steamgriddb.com), or Steam's own store art when the game is sold there, in one click. Still or animated. You can then swap any piece you don't like from a visual picker.
 
@@ -10,19 +27,19 @@ I made it because the two tools most people use for this on Linux felt clunky an
 
 Linux first, including Steam Deck desktop mode: the window fits the Deck's 1280×800 screen. Windows support is built in but not yet packaged or tested on real hardware.
 
-<sub>The games and artwork in these pictures are made up for the demo. Your own library will show real artwork.</sub>
+<sub>Pictures from a real library (the Steam login name is blurred). Artwork by the SteamGridDB community and the games' publishers.</sub>
 
 ## Features
 
 ### Your library as a cover wall
 
-![The library: a wall of covers, with a dashed tile for a game that has none](docs/screenshot.png)
+![The library: a wall of covers, one for each non-Steam game](docs/screenshot.png)
 
-The start page looks like your Steam library. Games without a cover show as dashed tiles, so the gaps stand out, and the counts along the top say how many games have each piece. Switch between **Grid**, **List** and **Details** views, sort **A to Z**, **Z to A**, **Missing artwork first** or **Recently added**, and narrow the list to **Missing Art** or **To Check**. The search box filters the wall too.
+The start page looks like your Steam library. Games without a cover show as dashed tiles, so the gaps stand out, and the counts along the top say how many games have each piece. Switch between **Grid**, **List** and **Details** views, sort **A to Z**, **Z to A**, **Missing artwork first** or **Recently added**, and narrow the list to **Missing Artwork** or **Needs a Look**. The search box filters the wall too.
 
 <p>
   <img src="docs/library-details.png" alt="The Details view: each game with a tick or a gap for every piece" width="49%">
-  <img src="docs/filter-menu.png" alt="The filter menu: All, Missing Art, To Check" width="49%">
+  <img src="docs/filter-menu.png" alt="The filter menu: All, Missing Artwork, Needs a Look" width="49%">
 </p>
 
 ### All five pieces, each with its options beside it
@@ -35,11 +52,11 @@ The start page looks like your Steam library. Games without a cover show as dash
 
 **See more** opens a panel with every option for that piece, four covers wide, animated ones playing at full size. Filter by style, hover to see an option on the page behind, click to pick it.
 
-![The See all panel: every cover for a game, with style filters](docs/tray.png)
+![The See all panel: every cover for a game, animated ones playing; hovering previews it on the page, a click picks it](docs/see-all.webp)
 
 ### Animated artwork
 
-![Animated covers playing on the cover wall](docs/animated-covers.webp)
+![A game page with its animated cover, banner and logo playing](docs/animated-page.webp)
 
 Animated covers, wide covers, banners and logos sit in the same strips as still ones, marked with a small play tag, and play in the app and in your Steam library. The game page plays them too, with the logo over the banner as Steam shows it. Turn them off with **Show Animated Artwork** in the ⋯ menu. Icons stay still, as Steam doesn't animate them.
 
@@ -63,9 +80,11 @@ Shortcuts often end up with titles like `Launcher` or `game.exe`. The app looks 
 
 On a game's page, **Get All Artwork** does the same for one game. The arrow beside it chooses whether it takes **Still** or **Animated** artwork, and the button says **Animated** when that's on. The same choice is **Get All Prefers Animated Artwork** in the ⋯ menu, and Get Artwork on the library page follows it too.
 
+![The arrow beside Get All Artwork: Still Artwork or Animated Artwork](docs/get-all-menu.png)
+
 ### Nothing changes until you press Apply
 
-![Two games with new artwork waiting, ready to apply](docs/staged-library.png)
+![A game with new artwork waiting, ready to apply](docs/staged-library.png)
 
 Picks wait as **Ready to apply** until you press **Apply**, so you can try things without touching Steam. Apply backs up Steam's game list first, writes everything in one go, and offers **Undo** straight after.
 
