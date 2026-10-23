@@ -27,19 +27,19 @@ I made it because the two tools most people use for this on Linux felt clunky an
 
 Linux first, including Steam Deck desktop mode: the window fits the Deck's 1280×800 screen. Windows support is built in but not yet packaged or tested on real hardware.
 
-<sub>The games and artwork in these pictures are made up for the demo. Your own library will show real artwork.</sub>
+<sub>Pictures from a real library (the Steam login name is blurred). Artwork by the SteamGridDB community and the games' publishers.</sub>
 
 ## Features
 
 ### Your library as a cover wall
 
-![The library: a wall of covers, with a dashed tile for a game that has none](docs/screenshot.png)
+![The library: a wall of covers, one for each non-Steam game](docs/screenshot.png)
 
-The start page looks like your Steam library. Games without a cover show as dashed tiles, so the gaps stand out, and the counts along the top say how many games have each piece. Switch between **Grid**, **List** and **Details** views, sort **A to Z**, **Z to A**, **Missing artwork first** or **Recently added**, and narrow the list to **Missing Art** or **To Check**. The search box filters the wall too.
+The start page looks like your Steam library. Games without a cover show as dashed tiles, so the gaps stand out, and the counts along the top say how many games have each piece. Switch between **Grid**, **List** and **Details** views, sort **A to Z**, **Z to A**, **Missing artwork first** or **Recently added**, and narrow the list to **Missing Artwork** or **Needs a Look**. The search box filters the wall too.
 
 <p>
   <img src="docs/library-details.png" alt="The Details view: each game with a tick or a gap for every piece" width="49%">
-  <img src="docs/filter-menu.png" alt="The filter menu: All, Missing Art, To Check" width="49%">
+  <img src="docs/filter-menu.png" alt="The filter menu: All, Missing Artwork, Needs a Look" width="49%">
 </p>
 
 ### All five pieces, each with its options beside it
@@ -52,11 +52,11 @@ The start page looks like your Steam library. Games without a cover show as dash
 
 **See more** opens a panel with every option for that piece, four covers wide, animated ones playing at full size. Filter by style, hover to see an option on the page behind, click to pick it.
 
-![The See all panel: every cover for a game, with style filters](docs/tray.png)
+![The See all panel: every cover for a game, animated ones playing; hovering previews it on the page, a click picks it](docs/see-all.webp)
 
 ### Animated artwork
 
-![Animated covers playing on the cover wall](docs/animated-covers.webp)
+![A game page with its animated cover, banner and logo playing](docs/animated-page.webp)
 
 Animated covers, wide covers, banners and logos sit in the same strips as still ones, marked with a small play tag, and play in the app and in your Steam library. The game page plays them too, with the logo over the banner as Steam shows it. Turn them off with **Show Animated Artwork** in the ⋯ menu. Icons stay still, as Steam doesn't animate them.
 
@@ -80,9 +80,11 @@ Shortcuts often end up with titles like `Launcher` or `game.exe`. The app looks 
 
 On a game's page, **Get All Artwork** does the same for one game. The arrow beside it chooses whether it takes **Still** or **Animated** artwork, and the button says **Animated** when that's on. The same choice is **Get All Prefers Animated Artwork** in the ⋯ menu, and Get Artwork on the library page follows it too.
 
+![The arrow beside Get All Artwork: Still Artwork or Animated Artwork](docs/get-all-menu.png)
+
 ### Nothing changes until you press Apply
 
-![Two games with new artwork waiting, ready to apply](docs/staged-library.png)
+![A game with new artwork waiting, ready to apply](docs/staged-library.png)
 
 Picks wait as **Ready to apply** until you press **Apply**, so you can try things without touching Steam. Apply backs up Steam's game list first, writes everything in one go, and offers **Undo** straight after.
 

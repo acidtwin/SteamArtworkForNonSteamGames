@@ -201,7 +201,8 @@ def setup_real(have: str = "full"):
     cfg_dst.mkdir(parents=True)
     shutil.copy2(ucfg / "shortcuts.vdf", cfg_dst / "shortcuts.vdf")
     if have != "none" and (ucfg / "grid").is_dir():
-        shutil.copytree(ucfg / "grid", cfg_dst / "grid", ignore=shutil.ignore_patterns(".replaced"))
+        shutil.copytree(ucfg / "grid", cfg_dst / "grid", ignore=shutil.ignore_patterns(".replaced"),
+                        ignore_dangling_symlinks=True)  # Steam leaves broken links behind
     else:
         (cfg_dst / "grid").mkdir()
     sf = ShortcutsFile(cfg_dst / "shortcuts.vdf")
