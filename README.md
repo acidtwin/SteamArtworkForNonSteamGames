@@ -1,6 +1,23 @@
-# Steam Artwork for Non-Steam Games
+<p align="center">
+  <img src="packaging/io.github.acidtwin.SteamArtworkForNonSteamGames.svg" alt="" width="112">
+</p>
 
-[![Tests](https://github.com/acidtwin/steam-artwork-for-non-steam-games/actions/workflows/tests.yml/badge.svg)](https://github.com/acidtwin/steam-artwork-for-non-steam-games/actions/workflows/tests.yml)
+<h1 align="center">Steam Artwork for Non-Steam Games</h1>
+
+<p align="center"><b>Proper Steam library artwork for every game you added yourself. Still or animated, in one click.</b></p>
+
+<p align="center">
+  <a href="https://github.com/acidtwin/steam-artwork-for-non-steam-games/releases"><img src="https://img.shields.io/badge/version-1.0.0-1a9fff?style=flat-square" alt="Version 1.0.0"></a>
+  <a href="https://github.com/acidtwin/steam-artwork-for-non-steam-games/actions/workflows/tests.yml"><img src="https://github.com/acidtwin/steam-artwork-for-non-steam-games/actions/workflows/tests.yml/badge.svg" alt="Tests"></a>
+  <a href="LICENSE"><img src="https://img.shields.io/badge/licence-MIT-5c7e10?style=flat-square" alt="MIT licence"></a>
+  <br>
+  <img src="https://img.shields.io/badge/Python-3.10%2B-3776AB?style=flat-square&logo=python&logoColor=white" alt="Python 3.10+">
+  <img src="https://img.shields.io/badge/PySide6-Qt%206-41CD52?style=flat-square&logo=qt&logoColor=white" alt="PySide6 (Qt 6)">
+  <img src="https://img.shields.io/badge/Linux-first-FCC624?style=flat-square&logo=linux&logoColor=black" alt="Linux first">
+  <img src="https://img.shields.io/badge/Steam%20Deck-desktop%20mode-1a9fff?style=flat-square&logo=steamdeck&logoColor=white" alt="Steam Deck desktop mode">
+  <img src="https://img.shields.io/badge/Flatpak-manifest-4A90D9?style=flat-square&logo=flatpak&logoColor=white" alt="Flatpak manifest">
+  <img src="https://img.shields.io/badge/SteamGridDB-API%20v2-3a4a5c?style=flat-square" alt="SteamGridDB API v2">
+</p>
 
 A small desktop app that gives your **non-Steam games** proper artwork in Steam. It finds Steam on its own, lists every non-Steam shortcut you've added, and pulls all five artwork types from [SteamGridDB](https://www.steamgriddb.com), or Steam's own store art when the game is sold there, in one click. Still or animated. You can then swap any piece you don't like from a visual picker.
 
