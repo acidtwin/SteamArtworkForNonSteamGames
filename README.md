@@ -7,7 +7,7 @@
 <p align="center"><b>Proper Steam library artwork for every game you added yourself. Still or animated, in one click.</b></p>
 
 <p align="center">
-  <a href="https://github.com/acidtwin/SteamArtworkForNonSteamGames/releases"><img src="https://img.shields.io/badge/version-1.0.1-1a9fff?style=flat-square" alt="Version 1.0.1"></a>
+  <a href="https://github.com/acidtwin/SteamArtworkForNonSteamGames/releases"><img src="https://img.shields.io/badge/version-1.1.0-1a9fff?style=flat-square" alt="Version 1.1.0"></a>
   <a href="https://github.com/acidtwin/SteamArtworkForNonSteamGames/actions/workflows/tests.yml"><img src="https://github.com/acidtwin/SteamArtworkForNonSteamGames/actions/workflows/tests.yml/badge.svg" alt="Tests"></a>
   <a href="LICENSE"><img src="https://img.shields.io/badge/licence-MIT-5c7e10?style=flat-square" alt="MIT licence"></a>
   <br>
@@ -16,6 +16,7 @@
   <img src="https://img.shields.io/badge/Linux-first-FCC624?style=flat-square&logo=linux&logoColor=black" alt="Linux first">
   <img src="https://img.shields.io/badge/Steam%20Deck-desktop%20mode-1a9fff?style=flat-square&logo=steamdeck&logoColor=white" alt="Steam Deck desktop mode">
   <a href="https://github.com/acidtwin/SteamArtworkForNonSteamGames/releases/latest/download/SteamArtworkForNonSteamGames.flatpak"><img src="https://img.shields.io/badge/Flatpak-download-4A90D9?style=flat-square&logo=flatpak&logoColor=white" alt="Download the Flatpak"></a>
+  <a href="https://github.com/acidtwin/SteamArtworkForNonSteamGames/releases/latest/download/SteamArtworkForNonSteamGames-Windows.zip"><img src="https://img.shields.io/badge/Windows-download-0078D4?style=flat-square&logo=windows&logoColor=white" alt="Download for Windows"></a>
   <img src="https://img.shields.io/badge/SteamGridDB-API%20v2-3a4a5c?style=flat-square" alt="SteamGridDB API v2">
 </p>
 
@@ -25,7 +26,7 @@ I wanted an intuitive, easy-to-use and visually pleasing alternative for giving 
 
 ![Getting animated artwork for every game in one click, then applying it](docs/get-artwork.webp)
 
-Linux first, including Steam Deck desktop mode: the window fits the Deck's 1280×800 screen. Windows support is built in but not yet packaged or tested on real hardware.
+Linux first, including Steam Deck desktop mode: the window fits the Deck's 1280×800 screen. Also on Windows, as a portable app.
 
 <sub>Pictures from a real library (the Steam login name is blurred). Artwork by the SteamGridDB community and the games' publishers.</sub>
 
@@ -98,7 +99,7 @@ Native, Flatpak and Snap installs on Linux (`~/.local/share/Steam`, `~/.steam/st
 
 ## Install
 
-Version 1.0.1.
+Version 1.1.0.
 
 ### Flatpak (recommended)
 
@@ -112,6 +113,12 @@ flatpak run io.github.acidtwin.SteamArtworkForNonSteamGames
 Many software centres (KDE Discover, GNOME Software) also install it if you open the file. The KDE runtime it needs comes from Flathub, so the Flathub remote should be set up ([setup guide](https://flathub.org/setup)). On a Steam Deck, do this in desktop mode.
 
 To build the Flatpak yourself, use the manifest in [`packaging/flatpak/`](packaging/flatpak/).
+
+### Windows (portable)
+
+Download [**SteamArtworkForNonSteamGames-Windows.zip**](https://github.com/acidtwin/SteamArtworkForNonSteamGames/releases/latest/download/SteamArtworkForNonSteamGames-Windows.zip) from the latest release, unzip it anywhere, and run `SteamArtworkForNonSteamGames.exe` from the folder. There's nothing to install.
+
+The app isn't signed, so the first time you run it Windows SmartScreen may say it "protected your PC": click **More info**, then **Run anyway**. The build is made by [GitHub Actions](.github/workflows/windows.yml) from this repository.
 
 ### From source
 
@@ -201,13 +208,12 @@ The tests build synthetic `shortcuts.vdf` files, so they don't need Steam instal
 | `steam_artwork_finder/pending.py` | Picks waiting for Apply |
 | `steam_artwork_finder/gui/` | The Qt (PySide6) window: `library.py` (game list, cover wall), `gamepage.py` (artwork rows), `tray.py` (the See all panel), `motion.py` (animated artwork), `workers.py` (downloads and retries), `theme.py` (colours from DESIGN.md) |
 | `docs/render/` | Makes the README pictures: runs the app offscreen against made-up games, or a copy of your own library (`REAL=1`) |
-| `packaging/` | Desktop entry, icon and AppStream metainfo for Linux |
+| `packaging/` | Desktop entry, icon and AppStream metainfo for Linux; `windows/` has the PyInstaller build for Windows |
 
 ## Roadmap
 
 - Publish on Flathub (once the app has more history), PyPI and the AUR (the Flatpak needs read/write access to `~/.local/share/Steam`, `~/.steam` and `~/.var/app/com.valvesoftware.Steam`, and `--talk-name=org.freedesktop.Flatpak` to tell whether Steam is running from inside the sandbox)
 - Touch-friendly menus and previews for Steam Deck
-- Windows build with PyInstaller, tested on a real install
 
 ## Credits
 
