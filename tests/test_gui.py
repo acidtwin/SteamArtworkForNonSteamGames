@@ -1,5 +1,7 @@
 """Offscreen tests: the window builds against a synthetic Steam install, and artwork is staged then applied."""
 import os
+import sys
+from pathlib import Path
 
 import pytest
 
@@ -36,8 +38,11 @@ def _pump(app, ms=300, until=None):
 @pytest.fixture
 def window(qapp, steam_root, tmp_path, monkeypatch):
     monkeypatch.setenv("HOME", str(tmp_path))
+    monkeypatch.setenv("USERPROFILE", str(tmp_path))  # Path.home() on Windows
     monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path / "cfg"))
+    monkeypatch.setenv("APPDATA", str(tmp_path / "cfg"))  # Windows
     monkeypatch.setenv("XDG_CACHE_HOME", str(tmp_path / "cache"))
+    monkeypatch.setenv("LOCALAPPDATA", str(tmp_path / "cache"))  # Windows
     from steam_artwork_finder.gui import app as appmod
 
     monkeypatch.setattr(appmod, "steam_running", lambda root=None: False)
@@ -236,6 +241,7 @@ def test_right_click_in_the_list_keeps_the_open_page(qapp, window):
     win._game_menu.close()
 
 
+@pytest.mark.skipif(sys.platform == "win32", reason="Flatpak Steam is a Linux install place")
 def test_steam_folder_popover_searches_and_switches(qapp, window, tmp_path, steam_root):
     import shutil
 
@@ -281,6 +287,7 @@ def test_steam_folder_popover_searches_and_switches(qapp, window, tmp_path, stea
     assert steamfolder.tilde(tmp_path / "x") == "~/x"
 
 
+@pytest.mark.skipif(sys.platform == "win32", reason="Flatpak Steam is a Linux install place")
 def test_steam_folder_popover_searches_only_when_no_folder_in_use(qapp, window, tmp_path, steam_root):
     import shutil
 
@@ -310,6 +317,7 @@ def test_steam_folder_popover_searches_only_when_no_folder_in_use(qapp, window, 
     _pump(qapp, 400)
 
 
+@pytest.mark.skipif(sys.platform == "win32", reason="Flatpak Steam is a Linux install place")
 def test_steam_folder_popover_keeps_disk_checks_off_the_ui_thread(qapp, window, tmp_path, steam_root, monkeypatch):
     import shutil
     import threading
@@ -362,11 +370,15 @@ def test_steam_folder_popover_path_fits_on_first_open(qapp, tmp_path, monkeypatc
     from steam_artwork_finder.gui import steamfolder
 
     monkeypatch.setenv("HOME", str(tmp_path))
+
+    monkeypatch.setenv("USERPROFILE", str(tmp_path))  # Path.home() on Windows
     host = QWidget()
     host.resize(1000, 800)
     host.show()
     pop = steamfolder.SteamFolderPopover(host)
     root = tmp_path / "Games" / "SteamLibraryOnTheBigDrive" / "Steam"
+    if sys.platform == "win32":  # shown in full there (no "~"), and the test's temp folder is long
+        root = Path("D:/SteamLibrary/Steam")  # still far wider than 80 px
     pop._located[root] = None  # not in any of the usual places, so no lookup
     pop.set_current(root, ["Deck User"], 0, None)  # before it has ever been shown or laid out
     assert "…" not in pop.sub.text()  # the full path fits; it used to be cut to 80 px
@@ -875,6 +887,8 @@ def test_thumbnail_cache_replaces_a_cut_off_file(qapp, tmp_path, monkeypatch):
     from PySide6.QtGui import QImage
 
     monkeypatch.setenv("XDG_CACHE_HOME", str(tmp_path / "cache"))
+
+    monkeypatch.setenv("LOCALAPPDATA", str(tmp_path / "cache"))  # Windows
     buf = QBuffer()
     buf.open(QBuffer.OpenModeFlag.WriteOnly)
     img = QImage(4, 4, QImage.Format.Format_RGB32)
@@ -1538,6 +1552,8 @@ def test_exe_icon_is_the_fallback_for_steam_and_the_list(qapp, window, tmp_path,
     from steam_artwork_finder.exeicon import exe_icon, exe_path
 
     monkeypatch.setenv("XDG_CACHE_HOME", str(tmp_path / "cache"))
+
+    monkeypatch.setenv("LOCALAPPDATA", str(tmp_path / "cache"))  # Windows
     img = QImage(64, 64, QImage.Format.Format_ARGB32)
     img.fill(0xFFCC3333)
     img.save(str(tmp_path / "i.png"))

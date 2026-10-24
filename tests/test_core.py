@@ -351,6 +351,7 @@ def test_finds_steam_in_every_linux_install_place(tmp_path, monkeypatch):
 
     monkeypatch.setattr(steam.sys, "platform", "linux")
     monkeypatch.setenv("HOME", str(tmp_path))
+    monkeypatch.setenv("USERPROFILE", str(tmp_path))  # Path.home() on Windows
     monkeypatch.delenv("XDG_DATA_HOME", raising=False)
     monkeypatch.delenv("STEAM_DIR", raising=False)
     homes = {

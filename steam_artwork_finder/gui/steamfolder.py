@@ -4,6 +4,7 @@ by hand."""
 
 from __future__ import annotations
 
+import sys
 import time
 from dataclasses import dataclass
 from pathlib import Path
@@ -80,11 +81,15 @@ def steam_root_in(path: Path) -> Path | None:
 
 def tilde(path: Path | str) -> str:
     s, home = str(path), str(Path.home())
+    if sys.platform == "win32":
+        return s  # "~" means nothing to most Windows users
     return "~" + s[len(home):] if s == home or s.startswith(home + "/") else s
 
 
-# The usual Steam folder, kept on one line: a word joiner after each "/" stops a break there.
-NO_BREAK_PATH = "~/.local/share/Steam".replace("/", "/\u2060")
+# The usual Steam folder, kept on one line: a word joiner after each "\" or "/" stops a break there.
+NO_BREAK_PATH = (r"C:\Program Files (x86)\Steam".replace("\\", "\\\u2060") if sys.platform == "win32"
+                 else "~/.local/share/Steam".replace("/", "/\u2060"))
+
 
 class Pulse(QWidget):
     """A round folder badge that sends out rings while searching, then turns into a tick (or a cross)."""
