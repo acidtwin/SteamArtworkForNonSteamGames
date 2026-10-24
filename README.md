@@ -101,6 +101,16 @@ Native, Flatpak and Snap installs on Linux (`~/.local/share/Steam`, `~/.steam/st
 
 Version 1.1.0.
 
+### System requirements
+
+| | Linux | Windows |
+|---|---|---|
+| **System** | 64-bit (x86_64) Linux with [Flatpak](https://flathub.org/setup), including Steam Deck desktop mode | Windows 10 (version 1809 or later) or Windows 11, 64-bit |
+| **Download** | 12 MB, plus the KDE runtime from Flathub the first time (about 1 GB installed, shared with other KDE apps) | 65 MB zip, nothing to install |
+| **Steam** | Installed and signed in at least once (native, Flatpak or Snap) | Installed and signed in at least once |
+
+Both need an internet connection to fetch artwork, and a screen of at least 1280×800. A free [SteamGridDB API key](https://www.steamgriddb.com/profile/preferences/api) unlocks the community artwork; Steam's own store artwork works without one. Running from source needs Python 3.10 or newer instead of Flatpak.
+
 ### Flatpak (recommended)
 
 Download [**SteamArtworkForNonSteamGames.flatpak**](https://github.com/acidtwin/SteamArtworkForNonSteamGames/releases/latest/download/SteamArtworkForNonSteamGames.flatpak) (12 MB) from the latest release, then install it:
